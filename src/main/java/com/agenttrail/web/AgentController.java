@@ -1,6 +1,6 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.AgentLoop;
+import com.agenttrail.runtime.AgentRuntime;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -8,15 +8,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class AgentController {
 
-    private final AgentLoop agentLoop;
+    private final AgentRuntime runtime;
 
-    public AgentController(AgentLoop agentLoop) {
-        this.agentLoop = agentLoop;
+    public AgentController(AgentRuntime runtime) {
+        this.runtime = runtime;
     }
 
     @PostMapping("/agent/chat")
     public AgentChatResponse chat(@RequestBody AgentChatRequest request) {
-        String answer = agentLoop.run(request.message());
+        String answer = runtime.respond(request.message());
         return new AgentChatResponse(answer);
     }
 }

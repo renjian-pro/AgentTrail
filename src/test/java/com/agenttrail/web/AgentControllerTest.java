@@ -1,10 +1,9 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.AgentLoop;
-import com.agenttrail.loop.LlmResponse;
-import com.agenttrail.loop.support.ScriptedLlmClient;
+import com.agenttrail.runtime.AgentRuntime;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,16 +11,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AgentControllerTest {
 
     @Test
-    void returnsTheAgentLoopAnswerForAChatRequest() {
-        ScriptedLlmClient llmClient = new ScriptedLlmClient(List.of(
-                new LlmResponse.FinalAnswer("hi there")
-        ));
-        AgentLoop agentLoop = new AgentLoop(llmClient, List.of(), 5);
-        AgentController controller = new AgentController(agentLoop);
+    void returnsTheRuntimeAnswerForAChatRequest() {
+        List<String> receivedInputs = new ArrayList<>();
+        AgentRuntime runtime = userInput -> {
+            receivedInputs.add(userInput);
+            return "hi there";
+        };
+        AgentController controller = new AgentController(runtime);
 
         AgentChatResponse response = controller.chat(new AgentChatRequest("hello"));
 
         assertThat(response.answer()).isEqualTo("hi there");
-        assertThat(llmClient.callCount()).isEqualTo(1);
+        assertThat(receivedInputs).containsExactly("hello");
     }
 }
