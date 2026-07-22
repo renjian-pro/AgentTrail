@@ -1,0 +1,63 @@
+# AgentTrail CI —— 主干提交与 PR 的构建验证流水线
+# 触发：push 到 main / PR 到 main / 手动 (workflow_dispatch)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write        # dorny/test-reporter 创建 check run 需要
+  pull-requests: read
+
+jobs:
+  build:
+    name: Build & test (JDK 21)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven   # 自动缓存 ~/.m2/repository，key 基于 pom.xml
+
+      # ./mvnw 使用 Maven Wrapper 的 only-script 模式（无需提交 wrapper jar）
+      # verify 阶段：执行 surefire 单元测试 (*Test.java) + spring-boot:repackage 生成 fat jar
+      # *LiveIT.java 命名带 IT，surefire 默认不执行，不会因缺 DEEPSEEK_API_KEY 而失败
+      - name: Build and test
+        run: ./mvnw -B -ntp verify
+
+      # 测试报告渲染到 PR / commit 的 check run，失败用例可点开看堆栈
+      # if: always() 保证测试失败时也上传报告
+      - name: Publish test report
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: JUnit tests
+          path: target/surefire-reports/TEST-*.xml
+          reporter: java-junit
+
+      # SonarCloud 静态分析：bug + 漏洞 + 代码异味 + 覆盖率 + 重复代码
+      # 前置：GitHub Secrets 配 SONAR_TOKEN（sonarcloud.io 注册后获取）
+      - name: SonarCloud analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./mvnw -B -ntp org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-trail-jar
+          path: target/agent-trail-*.jar
+          if-no-files-found: error
+          retention-days: 7

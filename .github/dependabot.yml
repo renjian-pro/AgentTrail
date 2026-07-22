@@ -1,0 +1,30 @@
+# Dependabot —— 自动监控依赖更新与安全漏洞
+# 每周一扫描，发现新版本或漏洞依赖后自动提 PR
+version: 2
+
+updates:
+  # Maven 依赖（pom.xml 里的 Spring Boot / AgentScope / Jackson 等）
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - maven
+    commit-message:
+      prefix: deps
+
+  # GitHub Actions 版本（workflow 里用的 actions/checkout、setup-java 等）
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: ci
