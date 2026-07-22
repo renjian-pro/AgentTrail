@@ -12,7 +12,7 @@ on:
 permissions:
   contents: read
   checks: write        # dorny/test-reporter 创建 check run 需要
-  pull-requests: read
+  pull-requests: write # SonarCloud 在 PR 上评论需要
 
 jobs:
   build:
@@ -48,7 +48,9 @@ jobs:
 
       # SonarCloud 静态分析：bug + 漏洞 + 代码异味 + 覆盖率 + 重复代码
       # 前置：GitHub Secrets 配 SONAR_TOKEN（sonarcloud.io 注册后获取）
+      # 没配 token 时自动跳过，配了自动生效
       - name: SonarCloud analysis
+        if: ${{ env.SONAR_TOKEN != '' }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
