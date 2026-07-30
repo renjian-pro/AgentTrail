@@ -11,6 +11,7 @@ import java.util.List;
 
 import static com.agenttrail.loop.core.support.ChatResponses.text;
 import static com.agenttrail.loop.core.support.ChatResponses.toolCall;
+import static com.agenttrail.loop.core.support.ChatResponses.toolCallFragment;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class AgentLoopExecutorToolCallTest {
@@ -36,5 +37,26 @@ class AgentLoopExecutorToolCallTest {
         );
         assertThat(echoTool.recordedArguments()).containsExactly("{\"text\":\"ping\"}");
         assertThat(chatModel.roundCount()).isEqualTo(2);
+    }
+
+    @Test
+    void executesToolWhoseArgumentsArrivedSplitAcrossChunks() {
+        RecordingToolCallback echoTool = new RecordingToolCallback("echo", "Echoes the input back", "pong");
+        ScriptedChatModel chatModel = new ScriptedChatModel(
+                List.of(
+                        toolCall("call-1", "echo", "{\"text\":"),
+                        toolCallFragment("call-1", "\"pi"),
+                        toolCallFragment("call-1", "ng\"}")
+                ),
+                List.of(text("done: pong"))
+        );
+        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(echoTool), 5);
+
+        List<AgentStreamEvent> events = executor.stream("please echo ping", new RunnableParams("conv-1", "user-1"))
+                .collectList()
+                .block(Duration.ofSeconds(5));
+
+        assertThat(echoTool.recordedArguments()).containsExactly("{\"text\":\"ping\"}");
+        assertThat(events).contains(new AgentStreamEvent.ToolEnd("echo", "call-1", "pong"));
     }
 }
