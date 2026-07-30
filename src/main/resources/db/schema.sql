@@ -33,3 +33,39 @@ CREATE TABLE IF NOT EXISTS agent_session
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT '智能体单轮问答记录';
+
+-- 技能（Skill）元数据表。
+--
+-- 这张表刻意**不存技能正文**：文件系统才是 SKILL.md 内容的唯一真相。正文动辄上千行，
+-- 还带着 references/ scripts/ 一堆资源文件，塞进数据库既难维护，也让"运维直接往 skills
+-- 目录扔一个文件夹"这种最省事的上线方式没法用。
+--
+-- 那这张表存在的意义是什么？只有一样东西是文件系统里根本没有的：enabled。
+-- 其余 name/description/skill_path 都是为了列表页和装配查询而从磁盘冗余过来的，
+-- 每轮定时对账都按磁盘刷新一遍，磁盘永远赢；只有 enabled 反过来，对账绝不去动它
+-- （踩坑点 #48：两个数据源各自是不同东西的真相，对账的方向必须按字段分别定）。
+
+CREATE TABLE IF NOT EXISTS agent_skill
+(
+    -- 用自增主键而不是应用侧生成的雪花 id：这张表的写入只有定时对账和后台运营两条低频路径，
+    -- 没有分库分表和跨实例并发插入的压力，自增主键足够且更好读
+    id          BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    -- 190 而不是更长：这一列上有唯一索引，utf8mb4 每字符 4 字节，190*4=760 字节稳落在
+    -- 任何 InnoDB 索引键长上限之内。技能名的语义是"一个目录名"，几百字符的技能名没有意义
+    name        VARCHAR(190)  NOT NULL COMMENT '技能名，等于 skills 根目录下的子目录名，也是模型调用 Skill 工具时传的值',
+    -- 只作运维排查用。装配时并不信它，而是按"skills 根目录 + name"重新解析：
+    -- 一是可移植（存量数据里的绝对路径带着别人机器的盘符），
+    -- 二是安全（DB 可能被别的通道写脏，直接拿它存的路径读文件等于把路径穿越入口开在数据库上）
+    skill_path  VARCHAR(1000) NULL COMMENT '技能目录绝对路径，仅供运维排查',
+    description VARCHAR(3000) NULL DEFAULT '' COMMENT '取自 SKILL.md frontmatter，渲染进 Skill 工具的描述供模型选技能',
+    enabled     TINYINT       NOT NULL DEFAULT 1 COMMENT '1 启用 0 停用。运营在后台切换，下一轮对话立刻生效，不用重启',
+    file_name   VARCHAR(255)  NULL COMMENT '上传时的原始 zip 文件名；运维直接放目录被对账发现的为 NULL',
+    created_at  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    -- 技能名就是业务主键：对账是"扫一遍磁盘再和全表比对"的幂等操作，
+    -- 唯一索引是它反复重跑也不会插出重复记录的最后一道保证
+    UNIQUE KEY uk_skill_name (name)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT '技能元数据（正文在文件系统，这里只存启用状态和查询用字段）';
