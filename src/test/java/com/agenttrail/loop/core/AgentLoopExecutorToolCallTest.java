@@ -34,7 +34,7 @@ class AgentLoopExecutorToolCallTest {
                 new AgentStreamEvent.ToolStart("echo", "call-1", "{\"text\":\"ping\"}"),
                 new AgentStreamEvent.ToolEnd("echo", "call-1", "pong"),
                 new AgentStreamEvent.Text("done: pong"),
-                new AgentStreamEvent.Complete("conv-1")
+                new AgentStreamEvent.Complete("conv-1", null)
         );
         assertThat(echoTool.recordedArguments()).containsExactly("{\"text\":\"ping\"}");
         assertThat(chatModel.roundCount()).isEqualTo(2);

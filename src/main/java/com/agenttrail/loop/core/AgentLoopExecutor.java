@@ -5,6 +5,8 @@ import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
+import com.agenttrail.loop.persistence.TurnPersistenceHook;
+import com.agenttrail.loop.persistence.TurnRecord;
 import com.agenttrail.loop.task.AgentTaskManager;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -37,32 +39,38 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class AgentLoopExecutor {
 
+    /** 新一轮开始前预加载的历史上限——和单轮上下文压缩阈值是两码事，故意不复用同一个常量。 */
+    private static final int HISTORY_TOKEN_BUDGET = 8_000;
+
     private final LlmInvoker llmInvoker;
     private final ToolCallExecutor toolCallExecutor;
     private final AgentTaskManager taskManager;
     private final ContextCompactor contextCompactor;
     private final ThinkingModeProcessor thinkingModeProcessor;
+    private final TurnPersistenceHook persistenceHook;
     private final List<ToolCallback> tools;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
-        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED);
+        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
     }
 
     /**
-     * @param taskManager   任务管理器由外部传入并**共享**——停止接口要能找到正在跑的任务，
-     *                      每次请求各自 new 一个的话，停止请求永远找不到目标
-     * @param contextPolicy 上下文压缩策略；传 null 表示不压缩，循环行为与没有该机制时一致
-     * @param thinkingMode  当前所用模型交付思考过程的方式
+     * @param taskManager     任务管理器由外部传入并**共享**——停止接口要能找到正在跑的任务，
+     *                        每次请求各自 new 一个的话，停止请求永远找不到目标
+     * @param contextPolicy   上下文压缩策略；传 null 表示不压缩，循环行为与没有该机制时一致
+     * @param thinkingMode    当前所用模型交付思考过程的方式
+     * @param persistenceHook 会话持久化回调；传 null 表示不落库、不预加载历史（如子 Agent）
      */
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
                              AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode) {
+                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(tools);
         this.taskManager = taskManager;
         this.contextCompactor = (contextPolicy == null) ? null : new ContextCompactor(contextPolicy, chatModel);
         this.thinkingModeProcessor = new ThinkingModeProcessor(thinkingMode);
+        this.persistenceHook = persistenceHook;
         this.tools = tools;
         this.maxRounds = maxRounds;
     }
@@ -86,9 +94,14 @@ public class AgentLoopExecutor {
         }
 
         List<Message> messages = new ArrayList<>();
+        if (persistenceHook != null) {
+            messages.addAll(persistenceHook.loadHistory(params.conversationId(), HISTORY_TOKEN_BUDGET));
+        }
         messages.add(new UserMessage(question));
 
-        scheduleRound(new RunContext(question, params, messages, sink, new AtomicInteger(0)));
+        RunContext context = new RunContext(
+                question, params, messages, sink, new AtomicInteger(0), System.currentTimeMillis());
+        scheduleRound(context);
         return sink.asFlux();
     }
 
@@ -142,7 +155,7 @@ public class AgentLoopExecutor {
         thinkingModeProcessor.finishRound(state, context.sink());
 
         if (state.mode() == RoundMode.TEXT) {
-            completeRun(context);
+            completeRun(state, context);
             return;
         }
 
@@ -177,9 +190,17 @@ public class AgentLoopExecutor {
     /**
      * 收尾。这里**不再补发正文**——文本已经在 chunk 到达时逐段投递出去了，
      * 收尾时再发一次完整正文会让前端收到两份重复内容。
+     *
+     * <p>落库必须在 emitComplete 之前同步做完——挂在流关闭之后的收尾回调里，进程退出时
+     * 可能根本跑不到，这一轮就白问了（踩坑点 #63）。
      */
-    private void completeRun(RunContext context) {
-        context.emit(new AgentStreamEvent.Complete(context.conversationId()));
+    private void completeRun(RoundState state, RunContext context) {
+        String think = state.reasoning().isEmpty() ? null : state.reasoning();
+        Long turnId = persistenceHook == null ? null : persistenceHook.onTurnComplete(new TurnRecord(
+                context.conversationId(), context.params().userId(), context.question(),
+                state.text(), think, null, null, context.elapsedMillis()));
+
+        context.emit(new AgentStreamEvent.Complete(context.conversationId(), turnId));
         context.emitComplete();
         // 释放单飞占位，让该会话能发起下一轮对话
         taskManager.removeTask(context.conversationId());

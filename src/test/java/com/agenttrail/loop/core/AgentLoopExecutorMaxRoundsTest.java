@@ -38,7 +38,7 @@ class AgentLoopExecutorMaxRoundsTest {
 
         assertThat(events).endsWith(
                 new AgentStreamEvent.Text("best effort answer"),
-                new AgentStreamEvent.Complete("conv-1"));
+                new AgentStreamEvent.Complete("conv-1", null));
         assertThat(chatModel.roundCount()).isEqualTo(3);
         assertThat(chatModel.toolNamesAtRound(0)).containsExactly("noop");
         assertThat(chatModel.toolNamesAtRound(1)).containsExactly("noop");
@@ -60,7 +60,7 @@ class AgentLoopExecutorMaxRoundsTest {
                 .collectList()
                 .block(Duration.ofSeconds(5));
 
-        assertThat(events).endsWith(new AgentStreamEvent.Complete("conv-1"));
+        assertThat(events).endsWith(new AgentStreamEvent.Complete("conv-1", null));
         assertThat(chatModel.roundCount()).isEqualTo(2);
     }
 }

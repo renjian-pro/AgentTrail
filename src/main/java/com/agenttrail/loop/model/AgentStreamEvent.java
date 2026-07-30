@@ -31,7 +31,11 @@ public sealed interface AgentStreamEvent {
     record Error(String code, String message) implements AgentStreamEvent {
     }
 
-    /** 整轮对话结束（无论是正常给出答案还是被中断），流随即关闭。 */
-    record Complete(String conversationId) implements AgentStreamEvent {
+    /**
+     * 整轮对话结束（无论是正常给出答案还是被中断），流随即关闭。
+     *
+     * @param turnId 这一轮落库后的主键；没接会话持久化时为 null，前端不指望能拿到它
+     */
+    record Complete(String conversationId, Long turnId) implements AgentStreamEvent {
     }
 }

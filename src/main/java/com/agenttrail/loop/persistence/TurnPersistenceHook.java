@@ -1,5 +1,9 @@
 package com.agenttrail.loop.persistence;
 
+import org.springframework.ai.chat.messages.Message;
+
+import java.util.List;
+
 /**
  * 一轮问答结束时的持久化回调。
  *
@@ -16,4 +20,9 @@ public interface TurnPersistenceHook {
      * @return 落库后的单轮记录 id；实现方无法提供时返回 null，此时 Complete 事件不带 id
      */
     Long onTurnComplete(TurnRecord record);
+
+    /** 新一轮开始前预加载历史。默认不加载——不需要跨轮记忆的场景（如子 Agent）保持无状态。 */
+    default List<Message> loadHistory(String conversationId, int tokenBudget) {
+        return List.of();
+    }
 }

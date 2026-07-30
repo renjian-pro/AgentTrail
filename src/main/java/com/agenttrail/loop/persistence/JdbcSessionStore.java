@@ -89,6 +89,7 @@ public class JdbcSessionStore implements TurnPersistenceHook {
      * @param tokenBudget    允许历史占用的 token 上限，超出部分从最老的开始丢
      * @return 按时间正序的历史消息
      */
+    @Override
     public List<Message> loadHistory(String conversationId, int tokenBudget) {
         List<TurnSummary> recentFirst = jdbcClient.sql(SELECT_RECENT_TURNS)
                 .param(conversationId)
