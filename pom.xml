@@ -30,7 +30,6 @@
 		<java.version>21</java.version>
 		<agentscope.version>2.0.0</agentscope.version>
 		<spring-ai.version>2.0.0</spring-ai.version>
-		<testcontainers.version>1.21.3</testcontainers.version>
 		<sonar.organization>renjian-pro</sonar.organization>
 		<sonar.host.url>https://sonarcloud.io</sonar.host.url>
 		<sonar.projectKey>renjian-pro_AgentTrail</sonar.projectKey>
@@ -49,13 +48,6 @@
 				<groupId>org.springframework.ai</groupId>
 				<artifactId>spring-ai-bom</artifactId>
 				<version>${spring-ai.version}</version>
-				<type>pom</type>
-				<scope>import</scope>
-			</dependency>
-			<dependency>
-				<groupId>org.testcontainers</groupId>
-				<artifactId>testcontainers-bom</artifactId>
-				<version>${testcontainers.version}</version>
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>
@@ -106,34 +98,38 @@
 			<scope>test</scope>
 		</dependency>
 
-		<!--
-			集成测试起真实 MySQL/Redis 容器，不用 H2 —— SQL AST 校验、权限改写这些
-			在 H2 上的行为和 MySQL 不一致，用 H2 会掩盖真实 bug（roadmap Phase 0.0）
-		-->
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-testcontainers</artifactId>
-			<scope>test</scope>
-		</dependency>
-
-		<dependency>
-			<groupId>org.testcontainers</groupId>
-			<artifactId>mysql</artifactId>
-			<scope>test</scope>
-		</dependency>
-
-		<dependency>
-			<groupId>org.testcontainers</groupId>
-			<artifactId>junit-jupiter</artifactId>
-			<scope>test</scope>
-		</dependency>
 	</dependencies>
+
+	<!--
+		集成测试连的是开发机上常驻的 MySQL/Redis（见 com.agenttrail.support.SharedMySql），
+		不用 Testcontainers 现拉现起容器 —— 这台机器上 Testcontainers 起一个全新 MySQL 要等
+		initdb 初始化数据目录，慢到分钟级；直接连常驻实例更快，隔离靠"各自清自己的库/表"。
+		同样不用 H2：SQL AST 校验、权限改写这些在 H2 上的行为和 MySQL 不一致，会掩盖真实 bug。
+	-->
 
 	<build>
 		<plugins>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+
+			<!--
+				Surefire 默认只认 *Test/*Tests/*TestCase，不认 *IT —— *IT 是 Failsafe 的命名约定，
+				而本项目没接 Failsafe。不显式加上 **/*IT.java，JdbcSessionStoreIT 这类真连 MySQL
+				的集成测试会被 mvn test 悄悄跳过，看着全绿实际上根本没跑。
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<includes>
+						<include>**/*Test.java</include>
+						<include>**/*Tests.java</include>
+						<include>**/*TestCase.java</include>
+						<include>**/*IT.java</include>
+					</includes>
+				</configuration>
 			</plugin>
 
 			<!-- JaCoCo：生成覆盖率报告，供 SonarCloud 读取 -->

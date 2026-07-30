@@ -1,5 +1,6 @@
 package com.agenttrail.loop.skills;
 
+import com.agenttrail.support.SharedMySql;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -9,17 +10,12 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
-import org.testcontainers.containers.MySQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import javax.sql.DataSource;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,24 +24,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 文件系统 ↔ 数据库双存储的对账与请求级热加载（踩坑点 #48）。
  *
- * <p>起真实 MySQL 容器而不是 H2：这张表用到了 {@code ON UPDATE CURRENT_TIMESTAMP}、
- * utf8mb4 下的唯一索引键长限制、{@code TINYINT} 布尔映射，这些在 H2 上的行为和 MySQL 不一致，
- * 用 H2 测出来的"绿"没有意义。建表脚本直接跑 {@code db/schema.sql} 本体，
- * 顺带把 DDL 本身也校验了一遍。
+ * <p>连真实 MySQL（{@link SharedMySql}，开发机上常驻的实例）而不是 H2：这张表用到了
+ * {@code ON UPDATE CURRENT_TIMESTAMP}、utf8mb4 下的唯一索引键长限制、{@code TINYINT}
+ * 布尔映射，这些在 H2 上的行为和 MySQL 不一致，用 H2 测出来的"绿"没有意义。
+ * 建表脚本直接跑 {@code db/schema.sql} 本体，顺带把 DDL 本身也校验了一遍。
  */
-@Testcontainers
 class SkillManagerTest {
-
-    /**
-     * 数据目录挂 tmpfs：MySQL 首次启动要跑一遍 initdb，落在 Docker Desktop 的虚拟磁盘上
-     * 慢到会顶穿默认 120 秒的等待窗口。放内存里既快又符合"测试数据本来就该是一次性的"。
-     * 启动窗口同时放宽，避免机器负载高时假失败。
-     */
-    @Container
-    static final MySQLContainer<?> MYSQL = new MySQLContainer<>(DockerImageName.parse("mysql:8.0"))
-            .withTmpFs(Map.of("/var/lib/mysql", "rw"))
-            .withStartupTimeoutSeconds(300)
-            .withConnectTimeoutSeconds(300);
 
     private static DataSource dataSource;
 
@@ -58,8 +42,8 @@ class SkillManagerTest {
     @BeforeAll
     static void createSchema() {
         DriverManagerDataSource source = new DriverManagerDataSource(
-                MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
-        source.setDriverClassName(MYSQL.getDriverClassName());
+                SharedMySql.jdbcUrl(), SharedMySql.username(), SharedMySql.password());
+        source.setDriverClassName("com.mysql.cj.jdbc.Driver");
         new ResourceDatabasePopulator(new ClassPathResource("db/schema.sql")).execute(source);
         dataSource = source;
     }

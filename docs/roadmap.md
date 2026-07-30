@@ -34,7 +34,7 @@
 | 0.7 | Skills 渐进式披露（单 mega-tool） | ❌ 未实现 |
 | 0.8 | TodoWrite | ◐ 事件模型（`TodoItem`/`TodoProgress`）已定义，工具本身未写 |
 | 0.9 | FileSystem/Bash/Grep 内置工具 | ❌ 未实现 |
-| 0.2 | DeepSeek `reasoning_content` 在目标 Spring AI 版本上的行为 | ❌ 未验证（阻塞项） |
+| 0.2 | DeepSeek `reasoning_content` 在目标 Spring AI 版本上的行为 | ◐ 已静态验证：2.0.0 部分修复，装饰器仍要写（踩坑点 #5a），流式行为待实测 |
 | 1 | Redis 分布式任务锁 / Pub-Sub 跨实例中断 | ❌ 未实现 |
 | 1 | 断点续传 / HITL 暂停恢复 | ❌ 未实现 |
 | 3 | 分层记忆（短期/画像/语义） | ❌ 未实现 |
@@ -61,7 +61,11 @@
 - `REASONING_CONTENT`/`THINK_TAG`/`DISABLED` 三分支，对应 DeepSeek/Qwen（独立字段）、MiniMax（`<think>` 标签混排）、无思考模型
 - `ThinkTagParser` 跨 chunk 状态机处理标签被截断的情况（踩坑点 #3）
 - reasoning_content 提取走 metadata key 优先、反射兜底，反射 `Method` 按 Class 缓存（踩坑点 #4）
-- **阻塞项**：DeepSeek `reasoning_content` 强制回传要求在 Spring AI 2.0 上先验证是否已修复（踩坑点 #5），这是 Phase 0 能不能顺利跑起来的前置条件，第一步先确认这个
+- ~~**阻塞项**：DeepSeek `reasoning_content` 强制回传要求在 Spring AI 2.0 上先验证是否已修复~~ → **已调研，结论：部分修复**（踩坑点 #5a）。Spring AI 2.0.0 把"序列化时回传"这一半修好了（1.x 到 1.1.8 都没修），但只在历史消息仍是 `DeepSeekAssistantMessage` 实例时生效；**流式 + 工具调用**这条路上聚合器会把子类型抹平，reasoning 照样丢，手写 loop 自己拼的 `AssistantMessage` 同理。所以：
+  - **ChatModel 装饰器仍然要写**，但职责收窄成"保证放进历史的消息带着 reasoning + 修掉 2.0 新增的两个类型坑（`text != null` 断言、options 硬转 `DeepSeekChatOptions`）"，序列化交给 SDK
+  - **`ThinkingModeProcessor` 只读 metadata 的取舍不变，但装饰器必须把子类字段规范化进 metadata**，否则对接 DeepSeek 官方模块时一个 `Thinking` 事件都发不出来
+  - **不要走 OpenAI 兼容端点访问 DeepSeek 的 thinking 模式**：2.0.0 上 OpenAI 模块流式/非流式都拿不到 `reasoning_content`，修复在未发版的 2.0.1 里
+  - **剩余待实测**：服务端到底在什么条件下回 400，只能拿真实 key 验证，方案见踩坑点 #5a 的第 ④ 段。这一项不再阻塞 Phase 0 动工——先按上面的装饰器方案实现，实测用来确认而不是用来决定设计
 
 ### 0.3 两层上下文压缩（设计已验证，待在本项目实现）
 - micro_compact（结构不变、老工具内容/参数截断成 JSON 占位符，保留最近 N 条原文）+ auto_compact（超 token 阈值整体摘要替换），GC 分代类比
@@ -304,4 +308,6 @@ Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版
 
 ## 下一步
 
-第一步：确认 DeepSeek `reasoning_content` 在 Spring AI 2.0 上的行为（Phase 0 的阻塞项），然后按已验证的设计在 `com.agenttrail.loop` 里实现。之后哪个 Capability Pack 先做、要不要跳过某个 Phase，按实际进度自己定。
+原来的第一步（确认 DeepSeek `reasoning_content` 在 Spring AI 2.0 上的行为）已经调研完，结论是**部分修复、装饰器仍要写**，详见踩坑点 #5a——这一项不再阻塞动工。
+
+接下来：按已验证的设计在 `com.agenttrail.loop` 里实现 Phase 0，其中接 DeepSeek 那一步连带把 #5a 列的装饰器和两个类型坑一起解决掉；拿到真实 key 之后再按 #5a 第 ④ 段补一次实测确认。之后哪个 Capability Pack 先做、要不要跳过某个 Phase，按实际进度自己定。

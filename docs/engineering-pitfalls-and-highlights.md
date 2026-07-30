@@ -24,10 +24,66 @@
 - **解法**：反射结果（`Method` 对象）**按 Class 缓存**（`volatile Method reasoningContentGetter` + `volatile Class reasoningContentGetterClass`），避免每个 chunk 都重新 `getMethod` 查找。
 - **Java 角度**：反射性能优化的经典手法（缓存 `Method`/`Field` 对象），双重检查 + volatile 保证可见性，面试问"反射为什么慢、怎么优化"直接有实例。
 
-### 5. DeepSeek `reasoning_content` 强制回传（Spring AI 1.x 的已知坑，2.0 需要重新验证）
+### 5. DeepSeek `reasoning_content` 强制回传（Spring AI 1.x 的已知坑，2.0 上为部分修复）
 - **坑**：DeepSeek-V4 系模型开启 thinking 模式时，**上一轮返回的 `reasoning_content` 必须原样回传给下一轮 API**，否则直接 HTTP 400。Spring AI 1.x 的原生 `DeepSeekChatModel` 没处理这个回传逻辑，导致"第一轮成功、工具执行后第二轮直接 400，ReAct loop 卡死"。
 - **解法**：自己包一层 `ChatModel` 装饰器，在构造下一轮请求时把上一轮的 `reasoning_content` 塞回消息体。
 - **本项目行动项**：**必须在实现前先验证 Spring AI 2.0 是否已经修好这个问题**（2.0 全面切换到官方 SDK，有可能已经解决，也有可能还在）——这是一个会直接导致 P0 功能不可用的隐患，不能假设它已经修复。
+
+#### 5a. Spring AI 2.0.0 上的验证结论：**部分修复**
+
+调研方式：反编译/比对 `spring-ai-deepseek` 1.1.0 / 1.1.8 / 2.0.0 的官方 sources jar，加上 `spring-ai-model` 2.0.0、`spring-ai-client-chat` 2.0.0，再对照上游 issue/commit。**没有调真实 API**，所以结论分成"静态证据充分"和"需要实测确认"两档，下面逐条标注。
+
+**① 序列化这一半修好了（证据充分）**
+
+`DeepSeekChatModel#createRequest` 的 ASSISTANT 分支，1.x 一直把 `ChatCompletionMessage` 的第 7 个参数（`@JsonProperty("reasoning_content")`）写死成 `null`；2.0.0 改成从消息里读出来回传：
+
+```java
+// 2.0.0：spring-ai-deepseek 的 DeepSeekChatModel#createRequest
+String reasoningContent = null;
+if (message instanceof DeepSeekAssistantMessage deepSeekAssistantMessage) {
+    reasoningContent = deepSeekAssistantMessage.getReasoningContent();
+    ...
+}
+return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
+        toolCalls, isPrefixAssistantMessage, reasoningContent));
+```
+
+上游 commit `e2486b1`（2026-05-25，"Fix reasoning_content lost with Deepseek"，closes GH-6118 / GH-6143），随 2.0.0-RC1 进入 2.0 线。**没有回合到 1.x**——已核对到 1.1.x 线最新的 1.1.8，那一行仍然是 `null`。GH-6026 这张原始 issue 至今还挂着 open，光看 issue 状态会误判成"没修"，必须看代码。
+
+**② 但触发条件很窄，默认命中不了（证据充分）**
+
+`reasoningContent` 是 `DeepSeekAssistantMessage` 这个**子类的私有字段**，既不在 `AssistantMessage.metadata` 里，基类 `AssistantMessage` 在 2.0.0 里也压根没有任何 reasoning 相关字段。于是上面那段 `instanceof` 判断，只在"放进历史的那个消息对象**仍然是 `DeepSeekAssistantMessage` 实例且字段没丢**"时才成立。现实中三条路里有两条不成立：
+
+- **非流式**：`DefaultToolCallingManager#buildConversationHistoryAfterToolExecution` 是原样 `messages.add(assistantMessage)`，子类型和字段都留着 → **修复生效**。
+- **流式**：2.0 把工具循环从 ChatModel 里挪到了 `ToolCallingAdvisor`，它递归下一轮之前先走 `ChatClientMessageAggregator` → `MessageAggregator`，而 `MessageAggregator` 的收尾是无条件 `AssistantMessage.builder()...build()`——**子类型被抹平成基类，`reasoningContent` 整个丢掉**（它只认 Gemini 风格的 `isThought`/`thoughts` metadata 约定，不认 reasoning 字段）→ **修复不生效**。
+- **自己手写 loop（本项目 ADR-0002 的路线）**：历史消息是我们自己拼的。`AgentLoopExecutor#finishRound` 现在写的是 `AssistantMessage.builder().toolCalls(toolCalls).build()`——基类实例、也没带 reasoning → **修复不生效**。
+
+也就是说：SDK 把"怎么序列化"这一半修好了，"谁来保证消息对象里还带着 reasoning"这一半仍然是调用方的责任。**流式 + 工具调用**这个组合——恰好就是 ReAct loop 的默认形态——在 2.0.0 上仍然会丢 `reasoning_content`。
+
+**③ 走 OpenAI 兼容端点访问 DeepSeek 在 2.0.0 上更糟（证据充分）**
+
+2.0 的 OpenAI 模块换成了官方 openai-java SDK，`reasoning_content` 落进 `Delta._additionalProperties`，`ChunkMerger` 不复制它，`AssistantMessage` 也没地方存 → **流式和非流式都拿不到**（上游 GH-6230 / GH-6484 / GH-6558，均针对 2.0.0 复现）。相关修复挂在 **2.0.1 里程碑**（PR #6373 等），而 2.0.1 尚未发版，Maven Central 上 2.0 线的最新正式版就是 2.0.0。结论：**要用 thinking 模式，就得走 `spring-ai-deepseek` 官方模块，不能图省事用 OpenAI 兼容接口**。
+
+**④ 需要实测才能定论的部分**
+
+静态分析能证明"字段在某条路径上被丢了"，但**不能证明 DeepSeek 服务端在这种情况下一定回 400**——服务端的校验条件（哪个模型、是否带 tool_calls、thinking 是否开启）只能实测。实测方案：
+
+1. 拿一个能开 thinking 的 DeepSeek key，用 `spring-ai-deepseek:2.0.0` 的原生 `DeepSeekChatModel`；
+2. **Case A（非流式）**：`call()` 一轮拿到带工具调用的响应 → 原样把 `response.getResult().getOutput()` 塞进历史 → 再 `call()` 一轮。预期成功（验证 ① 的结论）；
+3. **Case B（同上但先降级消息类型）**：把第 2 步的输出换成 `AssistantMessage.builder().content(...).toolCalls(...).build()` 再发第二轮。预期 400，错误文案含 "The `reasoning_content` in the thinking mode must be passed back to the API."（验证 ② 的结论，也是本项目手写 loop 当前的形态）；
+4. **Case C（流式）**：`stream()` + 工具调用走完两轮，看是否 400。
+5. 三个 case 都记录**原始 HTTP 请求体**（打开 `spring-ai` 的 request 日志或挂一个抓包代理），直接看 assistant 消息里有没有 `reasoning_content` 字段——比看异常文案可靠。
+
+**⑤ 顺带发现的两个会先于 400 炸掉的问题（证据充分，属于同一次接线要一起解决的）**
+
+- `createRequest` 在 2.0.0 里对 assistant 消息加了 `Assert.state(text != null, "text must not be null")`。而 thinking 模式的工具调用轮 `content` 本来就可能是 null，`AssistantMessage.builder()` 不显式 `.content()` 时 `getText()` 也返回 null → **`IllegalStateException`，请求根本发不出去**。拼历史消息时必须显式给空串。
+- 2.0 取消了 ChatModel 层对 options 的 `copyToTarget` 合并（commit `836d691`"Restore options replacing instead of merging in ChatModel"），`createRequest` 直接 `(DeepSeekChatOptions) prompt.getOptions()` 硬转。`LlmInvoker` 现在每轮传的是通用 `ToolCallingChatOptions` → **`ClassCastException`**。要么按 provider 传具体 options 类型，要么由装饰器负责换。
+
+**⑥ 对本项目的行动项**
+
+装饰器**还是要写**，但职责比 1.x 时代小了一大截：1.x 要整段重写 `createRequest`，2.0 只需要保证两件事——**(a)** 把每轮流式聚合出来的 reasoning 重新包成 `DeepSeekAssistantMessage`（或等价地规范化进 metadata 再由装饰器还原）后放进历史，**(b)** 顺手解决 ⑤ 的两个类型问题；序列化那一半交给 SDK。
+
+另外 `ThinkingModeProcessor#reasoningOf` 目前只读 metadata、明确拒绝反射兜底——这个取舍本身没问题，但要注意它**在 2.0.0 上对 DeepSeek 官方模块直接失效**（字段在子类上，metadata 里没有），所以"由该厂商的 ChatModel 装饰器把字段规范化进 metadata"这句注释不是可选项，是必须落地的前置条件，否则 `Thinking` 事件一个都发不出来。
 
 ### 6. 上下文压缩占位符必须是合法 JSON，不能是自然语言（真实生产 bug）
 - **坑**：早期版本用 `[之前用过 read_file，结果 3200 字符]` 这种自然语言占位符替换旧工具结果，导致模型把它当结构化数据解析，某些 Provider 校验 tool response 格式直接返回 400。
