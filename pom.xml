@@ -29,6 +29,7 @@
 	<properties>
 		<java.version>21</java.version>
 		<agentscope.version>2.0.0</agentscope.version>
+		<spring-ai.version>2.0.0</spring-ai.version>
 		<sonar.organization>renjian-pro</sonar.organization>
 		<sonar.host.url>https://sonarcloud.io</sonar.host.url>
 		<sonar.projectKey>renjian-pro_AgentTrail</sonar.projectKey>
@@ -43,12 +44,25 @@
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>
+			<dependency>
+				<groupId>org.springframework.ai</groupId>
+				<artifactId>spring-ai-bom</artifactId>
+				<version>${spring-ai.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
 		</dependencies>
 	</dependencyManagement>
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
+		</dependency>
+
+		<!-- ChatModel / ChatResponse / Message / ToolCallback — 手写 loop 直调 ChatModel.stream，不用 ChatClient -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-client-chat</artifactId>
 		</dependency>
 
 		<dependency>
