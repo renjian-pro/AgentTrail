@@ -1,8 +1,11 @@
 ---
-status: accepted
+status: partially superseded
+superseded-by: 0002 (决策 4、5 条被推翻；第 1、2、3 条仍有效)
 ---
 
 # AgentTrail 定位为通用 Agent Runtime；模型接入用 Spring AI，编排层默认交给 AgentScope Java 2.0
+
+> ⚠️ 决策 4（编排层交给框架自动执行）、决策 5（默认框架选 AgentScope Java 2.0）已被 [ADR 0002](0002-hand-rolled-loop-as-v1-mainline.md) 推翻——V1 主线改为手写 ReAct Loop，AgentScope 延后为有计划的 V2 引入项。
 
 ## 背景
 
