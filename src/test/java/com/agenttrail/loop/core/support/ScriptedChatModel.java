@@ -3,6 +3,7 @@ package com.agenttrail.loop.core.support;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
@@ -27,11 +28,27 @@ public class ScriptedChatModel implements ChatModel {
     private final Deque<List<ChatResponse>> scriptedRounds;
     private final List<List<Message>> recordedMessages = new ArrayList<>();
     private final List<List<String>> recordedToolNames = new ArrayList<>();
+    private final List<ChatOptions> recordedOptions = new ArrayList<>();
+    private ChatOptions defaultOptions;
 
     /** @param rounds 每个参数是一轮，轮内是该轮按序下发的 chunk 列表 */
     @SafeVarargs
     public ScriptedChatModel(List<ChatResponse>... rounds) {
         this.scriptedRounds = new ArrayDeque<>(List.of(rounds));
+    }
+
+    /**
+     * 模拟"这家厂商的 ChatModel 要求用自己的具体 options 子类型"——
+     * 验证 {@code LlmInvoker} 不会用一个通用类型的 options 覆盖掉它（会导致下游 ClassCastException）。
+     */
+    public ScriptedChatModel withDefaultOptions(ChatOptions options) {
+        this.defaultOptions = options;
+        return this;
+    }
+
+    @Override
+    public ChatOptions getOptions() {
+        return defaultOptions;
     }
 
     @Override
@@ -43,6 +60,7 @@ public class ScriptedChatModel implements ChatModel {
     public Flux<ChatResponse> stream(Prompt prompt) {
         recordedMessages.add(List.copyOf(prompt.getInstructions()));
         recordedToolNames.add(toolNamesOf(prompt));
+        recordedOptions.add(prompt.getOptions());
         if (scriptedRounds.isEmpty()) {
             throw new IllegalStateException("ScriptedChatModel 预设的轮次已用尽——循环跑的轮数超出了测试预期");
         }
@@ -72,5 +90,10 @@ public class ScriptedChatModel implements ChatModel {
     /** 第 {@code index} 轮实际挂给模型的工具名清单。 */
     public List<String> toolNamesAtRound(int index) {
         return recordedToolNames.get(index);
+    }
+
+    /** 第 {@code index} 轮实际发给模型的 options——用于断言具体类型有没有被通用实现覆盖掉。 */
+    public ChatOptions optionsAtRound(int index) {
+        return recordedOptions.get(index);
     }
 }

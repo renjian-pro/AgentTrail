@@ -98,6 +98,13 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!-- 仅测试范围：用真实 DeepSeekChatOptions 验证 LlmInvoker 不会丢失厂商具体类型（#5a） -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-deepseek</artifactId>
+			<scope>test</scope>
+		</dependency>
+
 	</dependencies>
 
 	<!--

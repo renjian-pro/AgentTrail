@@ -19,6 +19,7 @@ import reactor.core.publisher.Sinks;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -147,7 +148,7 @@ public class AgentLoopExecutor {
 
         List<AssistantMessage.ToolCall> toolCalls = state.toolCalls();
         // 先把带 tool_calls 的助手消息落进历史，再落工具结果——顺序颠倒模型侧会解析失败
-        context.messages().add(AssistantMessage.builder().toolCalls(toolCalls).build());
+        context.messages().add(buildAssistantMessage(state, toolCalls));
 
         ToolParamInjector paramInjector = new ToolParamInjector(context.params().toolParams());
         List<ToolResponseMessage.ToolResponse> responses =
@@ -155,6 +156,22 @@ public class AgentLoopExecutor {
         context.messages().add(ToolResponseMessage.builder().responses(responses).build());
 
         scheduleRound(context);
+    }
+
+    /**
+     * content 必须显式给空串而非留 null——部分厂商的 createRequest 对 assistant 消息做了
+     * Assert.state(text != null)（#5a⑤）。思考内容写进 reasoning_content metadata 保留下来，
+     * 转回具体厂商消息类型的工作交给该厂商的 ChatModel 装饰器，本类不关心对接的是哪家模型。
+     */
+    private static AssistantMessage buildAssistantMessage(RoundState state, List<AssistantMessage.ToolCall> toolCalls) {
+        AssistantMessage.Builder builder = AssistantMessage.builder()
+                .content(state.text())
+                .toolCalls(toolCalls);
+        String reasoning = state.reasoning();
+        if (!reasoning.isEmpty()) {
+            builder.properties(Map.of("reasoning_content", reasoning));
+        }
+        return builder.build();
     }
 
     /**
