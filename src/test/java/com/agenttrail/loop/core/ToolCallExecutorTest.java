@@ -7,11 +7,15 @@ import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
 import reactor.core.publisher.Sinks;
 
 import java.util.List;
+import java.util.Map;
 
 import static com.agenttrail.loop.core.support.ChatResponses.call;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ToolCallExecutorTest {
+
+    /** 本类只测执行语义，系统级参数注入的行为由 {@link ToolParamInjectorTest} 单独覆盖。 */
+    private static final ToolParamInjector NO_INJECTION = new ToolParamInjector(Map.of());
 
     private final Sinks.Many<AgentStreamEvent> sink = Sinks.many().unicast().onBackpressureBuffer();
 
@@ -20,7 +24,7 @@ class ToolCallExecutorTest {
         RecordingToolCallback tool = new RecordingToolCallback("echo", "echoes", "ok");
         ToolCallExecutor executor = new ToolCallExecutor(List.of(tool));
 
-        executor.execute(List.of(call("call-1", "echo", "{\"text\":\"ping\"}")), sink);
+        executor.execute(List.of(call("call-1", "echo", "{\"text\":\"ping\"}")), sink, NO_INJECTION);
 
         assertThat(tool.recordedArguments()).containsExactly("{\"text\":\"ping\"}");
     }
@@ -36,7 +40,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of(tool));
 
         List<ToolResponse> responses = executor.execute(
-                List.of(call("call-1", "echo", "{\"text\":\"pin")), sink);
+                List.of(call("call-1", "echo", "{\"text\":\"pin")), sink, NO_INJECTION);
 
         assertThat(tool.recordedArguments()).containsExactly("{}");
         assertThat(responses).singleElement().extracting(ToolResponse::responseData).isEqualTo("ok");
@@ -47,7 +51,7 @@ class ToolCallExecutorTest {
         RecordingToolCallback tool = new RecordingToolCallback("noop", "does nothing", "ok");
         ToolCallExecutor executor = new ToolCallExecutor(List.of(tool));
 
-        executor.execute(List.of(call("call-1", "noop", null), call("call-2", "noop", "   ")), sink);
+        executor.execute(List.of(call("call-1", "noop", null), call("call-2", "noop", "   ")), sink, NO_INJECTION);
 
         assertThat(tool.recordedArguments()).containsExactly("{}", "{}");
     }
@@ -58,7 +62,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of());
 
         List<ToolResponse> responses = executor.execute(
-                List.of(call("call-1", "does-not-exist", "{}")), sink);
+                List.of(call("call-1", "does-not-exist", "{}")), sink, NO_INJECTION);
 
         assertThat(responses).singleElement().extracting(ToolResponse::responseData)
                 .asString().contains("does-not-exist");
@@ -80,7 +84,7 @@ class ToolCallExecutorTest {
 
         List<ToolResponse> responses = executor.execute(List.of(
                 call("call-1", "slow", "{}"),
-                call("call-2", "fast", "{}")), sink);
+                call("call-2", "fast", "{}")), sink, NO_INJECTION);
 
         assertThat(responses).extracting(ToolResponse::id).containsExactly("call-1", "call-2");
         assertThat(responses).extracting(ToolResponse::responseData)
@@ -101,7 +105,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of(first, second));
 
         long startedAt = System.currentTimeMillis();
-        executor.execute(List.of(call("call-1", "first", "{}"), call("call-2", "second", "{}")), sink);
+        executor.execute(List.of(call("call-1", "first", "{}"), call("call-2", "second", "{}")), sink, NO_INJECTION);
         long elapsed = System.currentTimeMillis() - startedAt;
 
         assertThat(elapsed).isLessThan(250);

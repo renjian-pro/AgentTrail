@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import static com.agenttrail.loop.core.support.ChatResponses.text;
 import static com.agenttrail.loop.core.support.ChatResponses.toolCall;
@@ -58,5 +59,27 @@ class AgentLoopExecutorToolCallTest {
 
         assertThat(echoTool.recordedArguments()).containsExactly("{\"text\":\"ping\"}");
         assertThat(events).contains(new AgentStreamEvent.ToolEnd("echo", "call-1", "pong"));
+    }
+
+    /**
+     * 端到端验证不可见通道：模型给出的 userId 是伪造的，执行时必须被 Runtime 覆盖掉。
+     * 这是数据权限能力包的安全前提——权限主体不能由模型决定。
+     */
+    @Test
+    void overridesModelSuppliedSystemParametersBeforeExecutingTheTool() {
+        RecordingToolCallback sqlTool = new RecordingToolCallback(
+                "executeSql", "runs sql", RecordingToolCallback.schemaWith("sql", "userId"), "1 row");
+        ScriptedChatModel chatModel = new ScriptedChatModel(
+                List.of(toolCall("call-1", "executeSql", "{\"sql\":\"select 1\",\"userId\":\"someone-else\"}")),
+                List.of(text("done"))
+        );
+        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(sqlTool), 5);
+        RunnableParams params = new RunnableParams("conv-1", "u-42", Map.of("userId", "u-42"));
+
+        executor.stream("run a query", params).collectList().block(Duration.ofSeconds(5));
+
+        assertThat(sqlTool.recordedArguments()).singleElement().asString()
+                .contains("\"userId\":\"u-42\"")
+                .doesNotContain("someone-else");
     }
 }

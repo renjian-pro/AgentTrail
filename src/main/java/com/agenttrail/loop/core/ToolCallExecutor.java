@@ -60,23 +60,32 @@ class ToolCallExecutor {
      * @param sink      事件流，用于实时推送 ToolStart / ToolEnd
      * @return 与 {@code toolCalls} 一一对应、顺序一致的工具响应
      */
-    List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink) {
+    List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
+                               ToolParamInjector paramInjector) {
         return Flux.fromIterable(toolCalls)
                 .flatMapSequential(toolCall -> Mono
-                        .fromCallable(() -> executeOne(toolCall, sink))
+                        .fromCallable(() -> executeOne(toolCall, sink, paramInjector))
                         .subscribeOn(Schedulers.boundedElastic()))
                 .collectList()
                 .block();
     }
 
-    private ToolResponse executeOne(ToolCall toolCall, Sinks.Many<AgentStreamEvent> sink) {
-        String arguments = sanitizeArguments(toolCall);
+    private ToolResponse executeOne(ToolCall toolCall, Sinks.Many<AgentStreamEvent> sink,
+                                    ToolParamInjector paramInjector) {
+        ToolCallback tool = toolsByName.get(toolCall.name());
+        if (tool == null) {
+            // 模型幻觉出的工具：连参数都不必处理，直接把错误当结果喂回去
+            sink.tryEmitNext(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), toolCall.arguments()));
+            String result = errorPayload("unknown tool: " + toolCall.name());
+            sink.tryEmitNext(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
+            return new ToolResponse(toolCall.id(), toolCall.name(), result);
+        }
+
+        // 先兜底参数合法性，再注入系统级参数——注入依赖参数是可解析的 JSON 对象
+        String arguments = paramInjector.inject(sanitizeArguments(toolCall), tool.getToolDefinition());
         sink.tryEmitNext(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), arguments));
 
-        ToolCallback tool = toolsByName.get(toolCall.name());
-        String result = (tool == null)
-                ? errorPayload("unknown tool: " + toolCall.name())
-                : tool.call(arguments);
+        String result = tool.call(arguments);
 
         sink.tryEmitNext(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
         return new ToolResponse(toolCall.id(), toolCall.name(), result);

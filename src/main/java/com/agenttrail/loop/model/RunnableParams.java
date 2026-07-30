@@ -1,11 +1,32 @@
 package com.agenttrail.loop.model;
 
+import java.util.Map;
+
 /**
- * 单次循环执行的运行时参数。
+ * 单次循环执行的运行时参数，承载"双通道"动态参数（踩坑点 #59）。
  *
- * <p>后续会扩展出"双通道"能力（踩坑点 #59）：一类参数模型可见、会进 prompt；
- * 另一类模型不可见，由 Runtime 在工具执行前强制注入覆盖——比如 userId 这种
- * 绝不能让模型自己填、填错就越权的系统级参数。
+ * <p>两条通道的区别在于**模型看不看得见**：
+ * <ul>
+ *   <li>会话标识这类（{@code conversationId}/{@code userId}）：Runtime 自己用，不进 prompt
+ *   <li>{@code toolParams}：模型完全看不见，由 Runtime 在工具执行前强制注入并覆盖模型给的值，
+ *       并按目标工具的 inputSchema 白名单过滤——详见 {@code ToolParamInjector}
+ * </ul>
+ *
+ * <p>userId 之所以必须走不可见通道：让模型自己往工具参数里填 userId，等于把越权的口子
+ * 交给一个可以被用户诱导的组件。数据权限相关的能力包都依赖这个机制。
+ *
+ * @param conversationId 会话标识，跨轮可见
+ * @param userId         当前用户，权限判定的主体
+ * @param toolParams     模型不可见、执行前强制注入的系统级参数
  */
-public record RunnableParams(String conversationId, String userId) {
+public record RunnableParams(String conversationId, String userId, Map<String, Object> toolParams) {
+
+    public RunnableParams {
+        toolParams = (toolParams == null) ? Map.of() : Map.copyOf(toolParams);
+    }
+
+    /** 不需要注入任何系统级参数时的简写。 */
+    public RunnableParams(String conversationId, String userId) {
+        this(conversationId, userId, Map.of());
+    }
 }

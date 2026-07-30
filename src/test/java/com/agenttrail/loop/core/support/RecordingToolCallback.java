@@ -26,8 +26,34 @@ public class RecordingToolCallback implements ToolCallback {
 
     /** 返回值依赖入参的工具，用于验证不同调用确实拿到了各自的参数。 */
     public RecordingToolCallback(String name, String description, Function<String, String> behaviour) {
-        this.definition = ToolDefinition.builder().name(name).description(description).inputSchema("{}").build();
+        this(name, description, "{}", behaviour);
+    }
+
+    /** 声明了入参 schema 的工具，用于验证系统级参数注入时的白名单过滤。 */
+    public RecordingToolCallback(String name, String description, String inputSchema, String result) {
+        this(name, description, inputSchema, arguments -> result);
+    }
+
+    private RecordingToolCallback(String name, String description, String inputSchema,
+                                  Function<String, String> behaviour) {
+        this.definition = ToolDefinition.builder()
+                .name(name)
+                .description(description)
+                .inputSchema(inputSchema)
+                .build();
         this.behaviour = behaviour;
+    }
+
+    /** 构造一个只声明了这些字段的 JSON Schema，省得测试里手写一长串。 */
+    public static String schemaWith(String... propertyNames) {
+        StringBuilder properties = new StringBuilder();
+        for (String propertyName : propertyNames) {
+            if (!properties.isEmpty()) {
+                properties.append(',');
+            }
+            properties.append('"').append(propertyName).append("\":{\"type\":\"string\"}");
+        }
+        return "{\"type\":\"object\",\"properties\":{" + properties + "}}";
     }
 
     @Override
