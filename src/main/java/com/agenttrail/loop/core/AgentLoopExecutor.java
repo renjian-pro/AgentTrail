@@ -1,5 +1,7 @@
 package com.agenttrail.loop.core;
 
+import com.agenttrail.loop.context.ContextCompactor;
+import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.task.AgentTaskManager;
@@ -26,28 +28,35 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>工具执行权完全在本类手里：模型调用直接打到 {@link ChatModel#stream}，不经过
  * {@code ChatClient}/Advisor 链（见 ADR-0002），因此框架层的自动工具执行天然不会发生。
+ *
+ * <p>各职责由独立协作者承担，本类只负责编排：
+ * {@link LlmInvoker} 发请求、{@link RoundState} 攒本轮响应、{@link ToolCallExecutor} 执行工具、
+ * {@link ContextCompactor} 控上下文体积、{@link AgentTaskManager} 管任务生命周期。
  */
 public class AgentLoopExecutor {
 
     private final LlmInvoker llmInvoker;
     private final ToolCallExecutor toolCallExecutor;
     private final AgentTaskManager taskManager;
+    private final ContextCompactor contextCompactor;
     private final List<ToolCallback> tools;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
-        this(chatModel, tools, maxRounds, new AgentTaskManager());
+        this(chatModel, tools, maxRounds, new AgentTaskManager(), null);
     }
 
     /**
-     * @param taskManager 任务管理器由外部传入并**共享**——停止接口要能找到正在跑的任务，
-     *                    每次请求各自 new 一个的话，停止请求永远找不到目标
+     * @param taskManager   任务管理器由外部传入并**共享**——停止接口要能找到正在跑的任务，
+     *                      每次请求各自 new 一个的话，停止请求永远找不到目标
+     * @param contextPolicy 上下文压缩策略；传 null 表示不压缩，循环行为与没有该机制时一致
      */
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager) {
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(tools);
         this.taskManager = taskManager;
+        this.contextCompactor = (contextPolicy == null) ? null : new ContextCompactor(contextPolicy, chatModel);
         this.tools = tools;
         this.maxRounds = maxRounds;
     }
@@ -73,7 +82,7 @@ public class AgentLoopExecutor {
         List<Message> messages = new ArrayList<>();
         messages.add(new UserMessage(question));
 
-        scheduleRound(messages, sink, params, new AtomicInteger(0));
+        scheduleRound(new RunContext(question, params, messages, sink, new AtomicInteger(0)));
         return sink.asFlux();
     }
 
@@ -82,29 +91,26 @@ public class AgentLoopExecutor {
      *
      * <p>之所以要等整个流结束才决策，是因为一轮的性质（文本轮 / 工具调用轮）在流跑完之前
      * 是不确定的，详见 {@link RoundState}。
-     *
-     * @param roundCounter 跨轮共享的轮次计数器；因为递归发生在异步回调里，用 AtomicInteger
-     *                     而不是方法参数传值，保证每一层看到的是同一个计数
      */
-    private void scheduleRound(List<Message> messages, Sinks.Many<AgentStreamEvent> sink,
-                               RunnableParams params, AtomicInteger roundCounter) {
-        boolean toolsExhausted = maxRounds > 0 && roundCounter.incrementAndGet() > maxRounds;
+    private void scheduleRound(RunContext context) {
         // 超出轮次预算后，本轮改成不挂任何工具——模型看不见工具，就没法再发起调用
+        boolean toolsExhausted = maxRounds > 0 && context.nextRound() > maxRounds;
         List<ToolCallback> roundTools = toolsExhausted ? List.of() : tools;
-        RoundState state = new RoundState();
 
-        Disposable subscription = llmInvoker.streamRound(messages, roundTools)
+        // 压缩放在发请求之前：此时上一轮的工具结果刚落进历史，正是上下文最膨胀的时刻
+        if (contextCompactor != null) {
+            contextCompactor.compact(context.messages(), context.question());
+        }
+
+        RoundState state = new RoundState();
+        Disposable subscription = llmInvoker.streamRound(context.messages(), roundTools)
                 .doOnNext(chunk -> processChunk(chunk, state))
-                .doOnComplete(() -> finishRound(messages, state, sink, params, roundCounter))
-                .doOnError(err -> {
-                    sink.tryEmitNext(new AgentStreamEvent.Error("LLM_CALL_FAILED", err.getMessage()));
-                    sink.tryEmitComplete();
-                    taskManager.removeTask(params.conversationId());
-                })
+                .doOnComplete(() -> finishRound(state, context))
+                .doOnError(error -> failRun(error, context))
                 .subscribe();
 
         // 每轮都要重新登记，否则停止请求作用在上一轮早已结束的订阅上（踩坑点 #9）
-        taskManager.setDisposable(params.conversationId(), subscription);
+        taskManager.setDisposable(context.conversationId(), subscription);
     }
 
     /** 处理单个流式 chunk：要么是工具调用分片，要么是正文文本片段。 */
@@ -126,26 +132,35 @@ public class AgentLoopExecutor {
     }
 
     /** 一轮流结束后的分支：无工具调用即终局；有工具调用则执行、拼回消息、递归下一轮。 */
-    private void finishRound(List<Message> messages, RoundState state, Sinks.Many<AgentStreamEvent> sink,
-                             RunnableParams params, AtomicInteger roundCounter) {
+    private void finishRound(RoundState state, RunContext context) {
         if (state.mode() == RoundMode.TEXT) {
-            sink.tryEmitNext(new AgentStreamEvent.Text(state.text()));
-            sink.tryEmitNext(new AgentStreamEvent.Complete(params.conversationId()));
-            sink.tryEmitComplete();
-            // 任务正常跑完，释放单飞占位，让该会话能发起下一轮对话
-            taskManager.removeTask(params.conversationId());
+            completeRun(state.text(), context);
             return;
         }
 
         List<AssistantMessage.ToolCall> toolCalls = state.toolCalls();
         // 先把带 tool_calls 的助手消息落进历史，再落工具结果——顺序颠倒模型侧会解析失败
-        messages.add(AssistantMessage.builder().toolCalls(toolCalls).build());
+        context.messages().add(AssistantMessage.builder().toolCalls(toolCalls).build());
 
-        ToolParamInjector paramInjector = new ToolParamInjector(params.toolParams());
+        ToolParamInjector paramInjector = new ToolParamInjector(context.params().toolParams());
         List<ToolResponseMessage.ToolResponse> responses =
-                toolCallExecutor.execute(toolCalls, sink, paramInjector);
-        messages.add(ToolResponseMessage.builder().responses(responses).build());
+                toolCallExecutor.execute(toolCalls, context.sink(), paramInjector);
+        context.messages().add(ToolResponseMessage.builder().responses(responses).build());
 
-        scheduleRound(messages, sink, params, roundCounter);
+        scheduleRound(context);
+    }
+
+    private void completeRun(String finalAnswer, RunContext context) {
+        context.emit(new AgentStreamEvent.Text(finalAnswer));
+        context.emit(new AgentStreamEvent.Complete(context.conversationId()));
+        context.emitComplete();
+        // 释放单飞占位，让该会话能发起下一轮对话
+        taskManager.removeTask(context.conversationId());
+    }
+
+    private void failRun(Throwable error, RunContext context) {
+        context.emit(new AgentStreamEvent.Error("LLM_CALL_FAILED", error.getMessage()));
+        context.emitComplete();
+        taskManager.removeTask(context.conversationId());
     }
 }
