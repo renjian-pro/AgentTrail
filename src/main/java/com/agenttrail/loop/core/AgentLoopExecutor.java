@@ -4,6 +4,7 @@ import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.task.AgentTaskManager;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -39,24 +40,28 @@ public class AgentLoopExecutor {
     private final ToolCallExecutor toolCallExecutor;
     private final AgentTaskManager taskManager;
     private final ContextCompactor contextCompactor;
+    private final ThinkingModeProcessor thinkingModeProcessor;
     private final List<ToolCallback> tools;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
-        this(chatModel, tools, maxRounds, new AgentTaskManager(), null);
+        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED);
     }
 
     /**
      * @param taskManager   任务管理器由外部传入并**共享**——停止接口要能找到正在跑的任务，
      *                      每次请求各自 new 一个的话，停止请求永远找不到目标
      * @param contextPolicy 上下文压缩策略；传 null 表示不压缩，循环行为与没有该机制时一致
+     * @param thinkingMode  当前所用模型交付思考过程的方式
      */
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy) {
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                             ThinkingMode thinkingMode) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(tools);
         this.taskManager = taskManager;
         this.contextCompactor = (contextPolicy == null) ? null : new ContextCompactor(contextPolicy, chatModel);
+        this.thinkingModeProcessor = new ThinkingModeProcessor(thinkingMode);
         this.tools = tools;
         this.maxRounds = maxRounds;
     }
@@ -104,7 +109,7 @@ public class AgentLoopExecutor {
 
         RoundState state = new RoundState();
         Disposable subscription = llmInvoker.streamRound(context.messages(), roundTools)
-                .doOnNext(chunk -> processChunk(chunk, state))
+                .doOnNext(chunk -> processChunk(chunk, state, context))
                 .doOnComplete(() -> finishRound(state, context))
                 .doOnError(error -> failRun(error, context))
                 .subscribe();
@@ -113,28 +118,30 @@ public class AgentLoopExecutor {
         taskManager.setDisposable(context.conversationId(), subscription);
     }
 
-    /** 处理单个流式 chunk：要么是工具调用分片，要么是正文文本片段。 */
-    private void processChunk(ChatResponse chunk, RoundState state) {
+    /** 处理单个流式 chunk：工具调用分片、正文文本、独立字段里的思考内容，三者都可能出现。 */
+    private void processChunk(ChatResponse chunk, RoundState state, RunContext context) {
         if (chunk.getResult() == null || chunk.getResult().getOutput() == null) {
             return;
         }
         AssistantMessage output = chunk.getResult().getOutput();
 
+        // 思考内容可能和工具调用出现在同一个 chunk 里，所以先无条件处理它
+        thinkingModeProcessor.processReasoning(output, state, context.sink());
+
         if (output.hasToolCalls()) {
             output.getToolCalls().forEach(state::acceptToolCall);
             return;
         }
-
-        String text = output.getText();
-        if (text != null) {
-            state.appendText(text);
-        }
+        thinkingModeProcessor.processText(output.getText(), state, context.sink());
     }
 
     /** 一轮流结束后的分支：无工具调用即终局；有工具调用则执行、拼回消息、递归下一轮。 */
     private void finishRound(RoundState state, RunContext context) {
+        // 先让标签解析器把攒住的尾巴吐出来，否则最后几个字会丢
+        thinkingModeProcessor.finishRound(state, context.sink());
+
         if (state.mode() == RoundMode.TEXT) {
-            completeRun(state.text(), context);
+            completeRun(context);
             return;
         }
 
@@ -150,8 +157,11 @@ public class AgentLoopExecutor {
         scheduleRound(context);
     }
 
-    private void completeRun(String finalAnswer, RunContext context) {
-        context.emit(new AgentStreamEvent.Text(finalAnswer));
+    /**
+     * 收尾。这里**不再补发正文**——文本已经在 chunk 到达时逐段投递出去了，
+     * 收尾时再发一次完整正文会让前端收到两份重复内容。
+     */
+    private void completeRun(RunContext context) {
         context.emit(new AgentStreamEvent.Complete(context.conversationId()));
         context.emitComplete();
         // 释放单飞占位，让该会话能发起下一轮对话

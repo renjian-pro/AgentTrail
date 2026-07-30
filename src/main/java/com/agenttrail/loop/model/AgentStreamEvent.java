@@ -15,6 +15,10 @@ public sealed interface AgentStreamEvent {
     record Text(String content) implements AgentStreamEvent {
     }
 
+    /** 模型的思考过程，与正文分开投递，供前端折叠展示。 */
+    record Thinking(String content) implements AgentStreamEvent {
+    }
+
     /** 某个工具即将执行，携带重组完成的原始参数，供前端展示"正在做什么"。 */
     record ToolStart(String toolName, String toolCallId, String arguments) implements AgentStreamEvent {
     }
