@@ -216,13 +216,15 @@ com.agenttrail
 │   ├── trace/                                 # issue #17：TraceAudit
 │   │   ├── TraceRecord.java                   # 一轮一条：输入/输出/think/token/耗时/成败
 │   │   ├── TraceStore.java                    # 接口
-│   │   └── InMemoryTraceStore.java            # 内存实现（JDBC/Redis 留作后续）
+│   │   ├── InMemoryTraceStore.java            # 内存实现
+│   │   └── JdbcTraceStore.java                # JDBC 实现，一行一条记录，表见 db/schema.sql
 │   │
 │   ├── structured/JsonRepair.java             # issue #18：JSON 自动修复（markdown围栏/尾逗号/引号/转义）
 │   │
 │   ├── memory/                                # issue #19：分层记忆中间层（画像/偏好/指令/事实）
 │   │   ├── MemoryType.java / MemoryItem.java
 │   │   ├── MemoryStore.java / InMemoryMemoryStore.java
+│   │   ├── JdbcMemoryStore.java                # JDBC 实现，一行一条记忆，表见 db/schema.sql
 │   │   ├── MemoryPromptFormatter.java         # 按类型分组渲染成"# 长期记忆"提示词区块
 │   │   └── MemoryExtractor.java               # 一轮结束后一次 LLM 调用提取，失败静默降级
 │   │
@@ -235,7 +237,9 @@ com.agenttrail
 │   │   ├── PauseState.java / SafePoint.java / PauseReason.java / PendingToolCall.java / ResumeInstruction.java
 │   │   ├── PauseConfig.java                   # 审批名单 + PauseStateStore 的组合配置
 │   │   ├── PauseStateStore.java               # 接口
-│   │   └── InMemoryPauseStateStore.java       # 内存实现（JDBC/Redis 留作后续）
+│   │   ├── InMemoryPauseStateStore.java       # 内存实现
+│   │   ├── JdbcPauseStateStore.java           # JDBC 实现，整份快照序列化成一段 JSON，表见 db/schema.sql
+│   │   └── PauseStateJson.java                # PauseState ↔ JSON 的手工双向转换（含 Message 列表重建）
 │   │
 │   ├── task/                                  # issue #1/#9/#10/#11/#12：任务生命周期
 │   │   ├── AgentTaskManager.java              # 单飞注册 + Disposable 每轮重注册 + 原子 stopTask
@@ -316,8 +320,8 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 
 - **V1 只接了裸引擎**：`AgentLoopExecutorConfig` 没开工具/暂停恢复/追踪审计/分层记忆任何一个可选机制，也没有会话持久化（每次请求都是全新 conversationId，没有多轮记忆）；`AgentLoopController` 用的是同步 `call()`，不是 SSE 流式——这两点都是"先跑通装配"的最小切片，不是最终形态，第四节的扩展模式随时可以往上叠。
 - **换模型供应商**：只要额外的模型（OpenAI/智谱等）也有 Spring AI starter 且和 DeepSeek 的 starter 不同时存在于 classpath，`AgentLoopExecutorConfig` 不用改一行代码——它认的是通用 `ChatModel` 接口。同时装多个供应商的 starter 时会有多个 `ChatModel` Bean，需要按 Spring 标准做法用 `@Qualifier`/`@Primary` 挑一个默认的。
-- `TraceStore`/`MemoryStore`/`PauseStateStore` 都只有内存实现，进程重启会丢数据；接口设计上都不排斥换 JDBC/Redis。
-- `AgentTaskManager` 不会定时续期已持有的 Redis 锁。
+- `TraceStore`/`MemoryStore`/`PauseStateStore` 各有内存版和 JDBC 版两种实现（`JdbcTraceStore`/`JdbcMemoryStore`/`JdbcPauseStateStore`，表结构在 `db/schema.sql`）；`AgentLoopExecutorConfig` 目前装的是内存版，换成 JDBC 版只需要在装配时传对应的实例，不用改 `AgentLoopExecutor` 一行代码。
+- `AgentTaskManager` 默认不会定时续期已持有的 Redis 锁——`RedisTaskLock.startAutoRenewal()` 已经实现了这个能力，但要显式调用才开启（同一套"null/未调用=关闭"惯例）。
 - `MemoryExtractor.extractAndSave` 同步阻塞（见第五节），有明确的延迟代价，是否改异步是个待决策的取舍点，不是 bug。
 - DeepSeek `reasoning_content` 的流式行为还没拿真实 key 实测过。
 

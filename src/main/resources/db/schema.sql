@@ -69,3 +69,67 @@ CREATE TABLE IF NOT EXISTS agent_skill
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT '技能元数据（正文在文件系统，这里只存启用状态和查询用字段）';
+
+-- TraceAudit（issue #17）：每一行对应一次模型调用，不是一行一轮对话——
+-- 一轮里如果有工具调用，模型调用本身和工具执行是分开的两件事，这张表只审计前者。
+-- 时间相关字段一律存 epoch millis（BIGINT），不用 TIMESTAMP：和 TraceRecord/MemoryItem
+-- 这两个领域对象里的字段类型直接对应，读出来不需要在 java.time 和 java.sql.Timestamp
+-- 之间做一层转换。
+
+CREATE TABLE IF NOT EXISTS agent_trace
+(
+    id                BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    conversation_id   VARCHAR(100) NOT NULL COMMENT '会话标识',
+    round             INT          NOT NULL COMMENT '轮次序号，从 1 开始',
+    input_data        LONGTEXT     NULL COMMENT '本轮发给模型的消息历史渲染文本',
+    output_data       LONGTEXT     NULL COMMENT '本轮产出：文本轮是最终正文，工具调用轮是工具调用列表渲染文本；模型调用失败时为 NULL',
+    think             LONGTEXT     NULL COMMENT '本轮思考过程，没有时为 NULL',
+    prompt_tokens     BIGINT       NOT NULL COMMENT '本轮 prompt token 消耗；模型未在响应里报告时为 -1',
+    completion_tokens BIGINT       NOT NULL COMMENT '本轮 completion token 消耗；模型未在响应里报告时为 -1',
+    duration_millis   BIGINT       NOT NULL COMMENT '本轮耗时（毫秒）',
+    success           TINYINT      NOT NULL COMMENT '本轮模型调用是否成功：1 成功 0 失败',
+    error_message     LONGTEXT     NULL COMMENT '失败时的错误信息；成功时为 NULL',
+    recorded_at       BIGINT       NOT NULL COMMENT '记录写入时刻（epoch millis）',
+    PRIMARY KEY (id),
+    -- 读回一个会话的完整 trace 永远是「按轮次正序」，复合索引直接支撑这个查询
+    KEY idx_trace_conversation_round (conversation_id, round)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT 'TraceAudit：每次模型调用的审计记录';
+
+-- 分层记忆中间层（issue #19）：画像/偏好/指令/事实，按 userId 整体读取，不需要按条目单独查找/删除。
+
+CREATE TABLE IF NOT EXISTS agent_memory
+(
+    id         BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    user_id    VARCHAR(100) NOT NULL COMMENT '所属用户',
+    type       VARCHAR(20)  NOT NULL COMMENT '记忆类型：PROFILE/PREFERENCE/INSTRUCTION/FACT',
+    content    LONGTEXT     NOT NULL COMMENT '记忆正文',
+    created_at BIGINT       NOT NULL COMMENT '提取时刻（epoch millis）',
+    PRIMARY KEY (id),
+    -- 读取永远是「按用户查全部」，按提取顺序返回；提取顺序用主键自增序足够，不用另建时间索引
+    KEY idx_memory_user (user_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT '分层记忆中间层：画像/偏好/指令/事实';
+
+-- HITL 暂停快照（issue #13）：整份 PauseState（含消息历史、挂起工具调用、运行时参数）
+-- 序列化成一段 JSON 存进 snapshot_json——它本身是一份复杂的嵌套快照，不是天然扁平的记录，
+-- 拆列存储没有额外的查询收益。reason/paused_at 单独拆成列只为运维排查方便，
+-- 恢复逻辑永远只读 snapshot_json，不依赖这两列的值。
+--
+-- 同一个会话只应该有一份暂停状态，所以 conversation_id 是唯一键，
+-- 保存时用 ON DUPLICATE KEY UPDATE 覆盖，语义对应 PauseStateStore#save 的约定。
+
+CREATE TABLE IF NOT EXISTS agent_pause_state
+(
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    conversation_id VARCHAR(100) NOT NULL COMMENT '会话标识',
+    reason          VARCHAR(50)  NOT NULL COMMENT '暂停原因，仅供运维排查；恢复逻辑读的是 snapshot_json',
+    paused_at       BIGINT       NOT NULL COMMENT '暂停发生时刻（epoch millis），仅供运维排查',
+    snapshot_json   LONGTEXT     NOT NULL COMMENT '完整 PauseState 序列化 JSON，恢复时的唯一真相来源',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_pause_conversation (conversation_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT 'HITL 暂停快照，同一会话只保留最新一份';

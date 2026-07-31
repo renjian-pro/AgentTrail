@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * issue #11 的四条验收标准都要求"真实 Redis"，不是内存模拟——归属校验和续期能不能真的原子、
@@ -145,6 +146,64 @@ class RedisTaskLockIT {
 
         idleLock.releaseAll();
         idleLock.releaseAll();
+    }
+
+    // ==================== 定时续期 ====================
+
+    /**
+     * 核心验收点：一把 TTL 很短的锁，如果没人续期就必然会在 TTL 内过期——这里开了自动续期之后，
+     * 等过原始 TTL 好几倍的时间，锁还得是原持有者的，证明确实是续期生效了，不是凑巧没被抢。
+     */
+    @Test
+    void autoRenewalKeepsALockAliveWellPastItsOriginalTtl() {
+        String conversationId = uniqueConversationId();
+        RedisTaskLock renewingLock = new RedisTaskLock(redisson, "instance-renewing", Duration.ofSeconds(1));
+        renewingLock.tryAcquire(conversationId);
+
+        renewingLock.startAutoRenewal();
+        try {
+            // 原始 TTL 只有 1 秒；等 3 秒多，没有续期的话早就该被抢走了
+            Timing.sleep(Duration.ofMillis(3_200));
+
+            assertThat(lockAsInstanceA.tryAcquire(conversationId))
+                    .as("自动续期应该让锁活得比原始 TTL 久得多").isFalse();
+        } finally {
+            renewingLock.releaseAll();
+        }
+    }
+
+    /** 没开自动续期时，行为必须和 issue #11 刚做完时完全一样——闲置的实例不会偷偷续期。 */
+    @Test
+    void aLockWithoutAutoRenewalStartedStillExpiresNormally() {
+        String conversationId = uniqueConversationId();
+        RedisTaskLock lockWithoutRenewal = new RedisTaskLock(redisson, "instance-no-renewal", Duration.ofSeconds(1));
+        lockWithoutRenewal.tryAcquire(conversationId);
+        // 故意不调用 startAutoRenewal()
+
+        Timing.sleep(Duration.ofMillis(1_200));
+
+        assertThat(lockAsInstanceA.tryAcquire(conversationId))
+                .as("没开自动续期，锁必须按原始 TTL 正常过期").isTrue();
+    }
+
+    /**
+     * 一批持有的锁里有一个已经不再属于本实例（模拟”key 已经独立过期/被抢占，但本地
+     * {@code heldConversationIds} 还不知情”这种滞后），续期其它锁不能受它影响。
+     */
+    @Test
+    void renewAllHeldLocksSkipsOwnershipLostLocksWithoutAffectingTheRest() {
+        String stillOwnedConversation = uniqueConversationId();
+        String lostConversation = uniqueConversationId();
+        lockAsInstanceA.tryAcquire(stillOwnedConversation);
+        lockAsInstanceA.tryAcquire(lostConversation);
+        // 直接删掉 Redis 里的 key，模拟它已经独立过期——key 前缀和 RedisTaskLock 内部一致，
+        // 这里复用是因为测试需要绕开对象自身的 API 去伪造"归属已经丢了"这个外部事实
+        redisson.getBucket("agenttrail:task-lock:" + lostConversation).delete();
+
+        assertThatCode(lockAsInstanceA::renewAllHeldLocks).doesNotThrowAnyException();
+
+        assertThat(lockAsInstanceA.renew(stillOwnedConversation))
+                .as("没受影响的那把锁必须还能正常续期").isTrue();
     }
 
     private static String uniqueConversationId() {

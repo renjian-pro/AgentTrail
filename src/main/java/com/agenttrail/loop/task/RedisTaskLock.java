@@ -12,6 +12,9 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 跨实例任务锁：回答"这个 conversationId 现在归哪个实例跑"，只管归属，不管 Reactor 订阅本身——
@@ -34,6 +37,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h2>优雅关闭</h2>
  * <p>{@link #releaseAll()} 挂 {@code @PreDestroy}，应用关闭时主动释放本实例当前持有的全部锁，
  * 而不是放着等 TTL 过期——否则应用重启的这段窗口期，别的实例要白等一个 TTL 周期才能接手。
+ *
+ * <h2>定时续期</h2>
+ * <p>{@link #startAutoRenewal()} 显式开启后台续期：每隔 {@code ttl/3} 把 {@link #heldConversationIds}
+ * 里当前持有的每一把锁续期一遍。**不在构造函数里自动开启**——本类自己的单测（
+ * {@code RedisTaskLockIT#aLockSelfHealsAfterItsOwnerDisappearsWithoutReleasingIt}）需要一个"实例
+ * 还活着、但不再续期"的状态来模拟持有者崩溃，如果构造函数自动起后台线程，这类测试就没法用一个
+ * 闲置实例简单模拟"崩溃不续期"，必须额外引入一层"暂停续期"的开关，反而更复杂。调用方（生产装配）
+ * 需要续期时显式调用这一个方法即可。
  */
 public class RedisTaskLock {
 
@@ -63,9 +74,12 @@ public class RedisTaskLock {
     private final String instanceId;
     private final Duration ttl;
 
-    /** 本实例**认为**自己持有的会话集合，只用于优雅关闭时知道该尝试释放哪些 key——
-     *  不是权威状态，权威状态永远是 Redis 里的 value 是不是等于 {@link #instanceId}。 */
+    /** 本实例**认为**自己持有的会话集合，只用于优雅关闭时知道该尝试释放哪些 key、以及定时续期时
+     *  该续期哪些 key——不是权威状态，权威状态永远是 Redis 里的 value 是不是等于 {@link #instanceId}。 */
     private final Set<String> heldConversationIds = ConcurrentHashMap.newKeySet();
+
+    /** {@link #startAutoRenewal()} 显式开启后才非 null；未开启时定时续期完全不产生任何开销。 */
+    private volatile ScheduledExecutorService renewalScheduler;
 
     public RedisTaskLock(RedissonClient redisson, String instanceId, Duration ttl) {
         this.redisson = redisson;
@@ -99,9 +113,54 @@ public class RedisTaskLock {
         return released;
     }
 
-    /** 尽力释放本实例当前持有的全部锁；单个释放失败不影响其余的，失败的那部分留给 TTL 自愈兜底。 */
+    /**
+     * 开启后台定时续期：每隔 {@code ttl/3} 调一次 {@link #renewAllHeldLocks()}。
+     *
+     * <p>幂等——重复调用不会开出第二个调度线程。续期间隔取 TTL 的三分之一，是"错过一次续期还有
+     * 两次机会补救"和"不必要地频繁打 Redis"之间的常见折中，和 Redisson 自带 watchdog 的默认节奏
+     * 是同一个量级。
+     */
+    public synchronized void startAutoRenewal() {
+        if (renewalScheduler != null) {
+            return;
+        }
+        renewalScheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "redis-task-lock-renewal-" + instanceId);
+            thread.setDaemon(true);
+            return thread;
+        });
+        long intervalMillis = Math.max(1L, ttl.toMillis() / 3);
+        renewalScheduler.scheduleAtFixedRate(
+                this::renewAllHeldLocks, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 把当前持有的每一把锁都续期一遍；单条续期失败（网络抖动、这把锁已经被抢占）不影响其它——
+     * 一批锁里的一个坏消息不该拖累这一轮其余锁的续期。由 {@link #startAutoRenewal()} 定时调用，
+     * 也可以在测试里直接调用来断言续期确实发生了。
+     */
+    void renewAllHeldLocks() {
+        for (String conversationId : Set.copyOf(heldConversationIds)) {
+            try {
+                if (!renew(conversationId)) {
+                    log.warn("续期时发现会话 {} 的锁已经不在本实例名下（可能已被抢占或提前失去所有权）",
+                            conversationId);
+                }
+            } catch (RuntimeException failure) {
+                log.warn("续期会话 {} 的任务锁失败，等下一轮重试: {}", conversationId, failure.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 尽力释放本实例当前持有的全部锁；单个释放失败不影响其余的，失败的那部分留给 TTL 自愈兜底。
+     * 释放之前先停掉续期调度——不然还没释放完，续期线程可能正好又把某把锁续了一次。
+     */
     @PreDestroy
     public void releaseAll() {
+        if (renewalScheduler != null) {
+            renewalScheduler.shutdownNow();
+        }
         for (String conversationId : Set.copyOf(heldConversationIds)) {
             try {
                 release(conversationId);

@@ -49,10 +49,10 @@
 | 0.11 | 同步（非流式）调用（对应 core/01；`call()` 直接包一层 `stream()`，复用单飞注册/上下文压缩等全部既有机制） | ✅ 已完成（issue #15） |
 | 0.12 | 分层记忆体系中间层（画像/偏好/指令/事实，对应 core/05；短期历史层见 0.5，跨会话语义摘要层留给 Phase 4） | ✅ 已完成（issue #19） |
 | 0.13 | 分阶段输出 / Timeline（`StageOutputProvider` SPI + 循环在固定生命周期点调用，对应 core/06） | ✅ 已完成（issue #16） |
-| 0.14 | TraceAudit 追踪审计（每轮 Prompt/工具调用/耗时/Token 落库，对应 core/17；`TraceStore` 目前只有内存实现） | ✅ 已完成（issue #17） |
+| 0.14 | TraceAudit 追踪审计（每轮 Prompt/工具调用/耗时/Token 落库，对应 core/17；内存 + `JdbcTraceStore` 两种实现） | ✅ 已完成（issue #17） |
 | 0.15 | 结构化输出（JSON Schema 注入 + 自动修复，对应 core/13 的基础机制部分） | ✅ 已完成（issue #18）。"高危输出走 Reviewer Agent 二次确认"仍然是 Phase 3 的业务层判断（见下方 Phase 3 表），这条基础机制是它的前置依赖 |
-| 1 | Redis 分布式任务锁 / Pub-Sub 跨实例中断 | ✅ 已完成（issue #11/#12）。已知缺口：`AgentTaskManager` 不会定时续期已持有的锁，长会话要么调用方把 TTL 设够长，要么后续加一个定时续期调度器（见 `AgentTaskManager` javadoc） |
-| 1 | 断点续传 / HITL 暂停恢复 | ✅ 核心机制已完成（issue #13）：`PauseState` 快照 + 两条恢复分支都有测试覆盖。`PauseStateStore` 目前只有内存实现，JDBC/Redis 持久化留作后续（接口已按不排斥后续实现的方式设计） |
+| 1 | Redis 分布式任务锁 / Pub-Sub 跨实例中断 | ✅ 已完成（issue #11/#12）。`RedisTaskLock.startAutoRenewal()` 显式开启后台续期，解决了"长会话跑得比 TTL 久，锁在还活着的时候过期被抢"这个缺口 |
+| 1 | 断点续传 / HITL 暂停恢复 | ✅ 核心机制已完成（issue #13）：`PauseState` 快照 + 两条恢复分支都有测试覆盖。内存 + `JdbcPauseStateStore` 两种实现，整份快照序列化成 JSON 落库 |
 | 14 | 幂等工具模板 | ✅ 已完成（issue #14） |
 | 8* | SubAgent 子代理（`call_{name}` 工具包装，对应 core/18） | ❌ 未实现。*机制本身通用、无 Capability Pack 前置依赖，随时能做；Phase 8 的"等 2-3 个能力包"只对"拿真实业务 Agent 演示"成立 |
 
@@ -341,10 +341,16 @@ Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版
 可以第一个做的。
 
 已知的、故意留到后续的缺口（不阻塞 Phase 2，但动到对应机制时要记得补上）：
-- `AgentTaskManager` 不会定时续期已持有的 Redis 锁，长会话要么调用方把 TTL 设够长，
-  要么后续加一个定时续期调度器
-- `PauseStateStore` 只有内存实现，重启会丢暂停中的会话；JDBC/Redis 实现待写
-- `TraceStore`/`MemoryStore` 同样只有内存实现（issue #17/#19 接口设计已不排斥后续换 JDBC/Redis）
+- ~~`AgentTaskManager` 不会定时续期已持有的 Redis 锁~~ → 已补上：`RedisTaskLock.startAutoRenewal()`
+  显式开启后台续期（每 `ttl/3` 续一次），默认不开启，行为和之前完全一致；`RedisTaskLockIT` 覆盖了
+  "续期让锁活得比原始 TTL 久""没开启时按原 TTL 正常过期""一批锁里有一个丢了归属不影响其它续期"
+  三种场景
+- ~~`PauseStateStore`/`TraceStore`/`MemoryStore` 只有内存实现~~ → 已补上 JDBC 实现
+  （`JdbcPauseStateStore`/`JdbcTraceStore`/`JdbcMemoryStore`），表结构在 `db/schema.sql`
+  （`agent_pause_state`/`agent_trace`/`agent_memory`），走真实 MySQL 集成测试。`PauseState` 整体
+  序列化成一段 JSON（`PauseStateJson`，含消息历史、挂起工具调用、`RunnableParams`——`OutputType`
+  按目标类的类名存，恢复时 `Class.forName` 重建，前提是该类还在 classpath 上）；`TraceStore`/
+  `MemoryStore` 因为本身是扁平记录，按列存不用整体 JSON
 - DeepSeek `reasoning_content` 的流式行为还没拿真实 key 实测过（`DeepSeekLlmClientLiveIT` 已经
   搭好，缺一次真实调用去跑它）
 - V1 的 HTTP 入口（`AgentLoopExecutorConfig` + `AgentLoopController`，`POST /agent/v1/chat`）目前
