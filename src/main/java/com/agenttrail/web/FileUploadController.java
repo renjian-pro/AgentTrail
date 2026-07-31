@@ -2,6 +2,7 @@ package com.agenttrail.web;
 
 import com.agenttrail.loop.file.FileParsingException;
 import com.agenttrail.loop.file.FileQaService;
+import com.agenttrail.loop.rag.VectorizationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -43,13 +44,19 @@ public class FileUploadController {
             throw new UncheckedIOException(readFailure);
         } catch (FileParsingException parseFailure) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, parseFailure.getMessage(), parseFailure);
+        } catch (VectorizationException vectorizationFailure) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, vectorizationFailure.getMessage(), vectorizationFailure);
         }
     }
 
+    /**
+     * @param question 大文件（走 RAG）问答用的问题；小文件忽略这个参数，不传也不报错
+     */
     @GetMapping("/agent/v1/files/{fileId}/content")
-    public FileContentResponse content(@PathVariable long fileId) {
+    public FileContentResponse content(@PathVariable long fileId,
+            @RequestParam(name = "question", required = false) String question) {
         try {
-            return new FileContentResponse(fileId, fileQaService.contentFor(fileId));
+            return new FileContentResponse(fileId, fileQaService.contentFor(fileId, question));
         } catch (NoSuchElementException notFound) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, notFound.getMessage(), notFound);
         }

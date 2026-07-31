@@ -158,6 +158,21 @@
 			<version>2.18.0</version>
 		</dependency>
 
+		<!-- 大文件 RAG 检索问答（issue #26）：向量库 + 查询压缩/多查询扩展，工件名对齐参考实现 -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-starter-vector-store-pgvector</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-rag</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
 		<!-- Redis 分布式锁的集成测试用（issue #11），版本交给 spring-boot-dependencies BOM 管理。
 		     Testcontainers 2.x 把 JUnit5 扩展模块从 org.testcontainers:junit-jupiter 改名成了
 		     org.testcontainers:testcontainers-junit-jupiter，旧坐标在这个大版本下已经没有对应发布 -->

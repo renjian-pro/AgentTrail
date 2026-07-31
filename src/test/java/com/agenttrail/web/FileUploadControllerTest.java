@@ -1,8 +1,12 @@
 package com.agenttrail.web;
 
+import com.agenttrail.loop.core.support.ScriptedChatModel;
 import com.agenttrail.loop.file.FileQaService;
 import com.agenttrail.loop.file.FileTextParser;
 import com.agenttrail.loop.file.InMemoryFileStore;
+import com.agenttrail.loop.rag.FileVectorizationService;
+import com.agenttrail.loop.rag.RagRetrievalService;
+import com.agenttrail.loop.rag.support.RecordingVectorStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.web.server.ResponseStatusException;
@@ -14,8 +18,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class FileUploadControllerTest {
 
+    private final RecordingVectorStore vectorStore = new RecordingVectorStore();
     private final FileUploadController controller = new FileUploadController(
-            new FileQaService(new InMemoryFileStore(), new FileTextParser(), 100));
+            new FileQaService(new InMemoryFileStore(), new FileTextParser(),
+                    new FileVectorizationService(vectorStore),
+                    new RagRetrievalService(vectorStore, new ScriptedChatModel()),
+                    100));
 
     @Test
     void uploadParsesAndPersistsThenReturnsTheRoutingDecision() {
@@ -36,14 +44,14 @@ class FileUploadControllerTest {
                 "hello world".getBytes(StandardCharsets.UTF_8));
         FileUploadResponse uploaded = controller.upload(file, "conv-1");
 
-        FileContentResponse content = controller.content(uploaded.fileId());
+        FileContentResponse content = controller.content(uploaded.fileId(), null);
 
         assertThat(content.content()).isEqualTo("hello world");
     }
 
     @Test
     void contentRejectsAnUnknownFileIdAsNotFound() {
-        assertThatThrownBy(() -> controller.content(999L))
+        assertThatThrownBy(() -> controller.content(999L, null))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("404");
     }
