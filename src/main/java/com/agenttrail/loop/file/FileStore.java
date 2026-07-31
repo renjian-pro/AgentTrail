@@ -26,4 +26,11 @@ public interface FileStore {
      * 结果写回这里做懒缓存，下次直接命中，不重复调用。
      */
     void updateParsedText(long id, String parsedText);
+
+    /**
+     * 把一个会话里还没归属到具体轮次的文件（{@code turnId} 为 null）回填到刚结束的这一轮
+     * （issue #28）——上传发生在这一轮结束之前，那时候轮次 id 还不存在，只能等
+     * {@code onTurnComplete} 返回 id 之后才回填。
+     */
+    void linkFilesToTurn(String conversationId, long turnId);
 }

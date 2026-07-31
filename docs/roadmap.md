@@ -171,15 +171,15 @@
 
 ---
 
-## Phase 4：文件问答 + RAG 能力包
+## Phase 4：文件问答 + RAG 能力包 —— ✅ 已完成（issue #20/#21/#26/#27/#28）
 
 | 机制 | 说明 |
 |---|---|
-| 文件解析 | 统一解析 PDF/Office/HTML/纯文本（Tika 或等价库） |
-| 小文件直出 / 大文件 RAG 路由 | 按字符数阈值分流，避免所有文件都走 RAG 的延迟成本 |
-| RAG 检索管线 | 查询压缩（`CompressionQueryTransformer`）→ 多查询扩展（`MultiQueryExpander`，3 个改写+原始）→ PgVector 相似度检索（按 fileId 过滤）→ 去重合并 |
-| 多轮文件生命周期 | `conversation_id`（跨轮可见性）vs `session_id`（历史回放归属）两个独立 key；system prompt 里按"本轮上传"成组渲染，避免"这两个文件"被模型理解成单个列表项 |
-| 图片多模态 | 走多模态模型（Qwen-VL 或等价），和文本一起进上下文 |
+| 文件解析 | 统一解析 PDF/Office/HTML/纯文本，走 Apache Tika（issue #21）——tika-core 2.9.2 自带的 commons-io 版本比它实际需要的旧，已在 pom.xml 显式钉到 2.18.0 |
+| 小文件直出 / 大文件 RAG 路由 | 按字符数阈值（默认 5000）分流，避免所有文件都走 RAG 的延迟成本（issue #21） |
+| RAG 检索管线 | 查询压缩（`CompressionQueryTransformer`）→ 多查询扩展（`MultiQueryExpander`，3 个改写+原始）→ PgVector 相似度检索（按 fileId 过滤）→ 去重合并（issue #26）；向量化失败直接抛异常，不像参考实现那样打个 warn 日志就静默降级 |
+| 多轮文件生命周期 | `conversation_id`（跨轮可见性）vs `turn_id`（历史回放归属，指向 `agent_session.id`）两个独立 key；system prompt 里按"本轮上传"成组渲染，避免"这两个文件"被模型理解成单个列表项（issue #28，复用 issue #19 memoryStore 的注入缝） |
+| 图片多模态 | 走 qwen3-vl-plus，懒加载（首次被问到才调用）+ 结果写回缓存，不对没人问起的图片烧多模态调用成本（issue #27） |
 
 ---
 

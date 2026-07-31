@@ -3,6 +3,8 @@ package com.agenttrail.loop.core;
 import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.context.MessageRendering;
+import com.agenttrail.loop.file.FilePromptFormatter;
+import com.agenttrail.loop.file.FileStore;
 import com.agenttrail.loop.memory.MemoryExtractor;
 import com.agenttrail.loop.memory.MemoryPromptFormatter;
 import com.agenttrail.loop.memory.MemoryStore;
@@ -76,6 +78,7 @@ public class AgentLoopExecutor {
     private final TraceStore traceStore;
     private final MemoryStore memoryStore;
     private final MemoryExtractor memoryExtractor;
+    private final FileStore fileStore;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
@@ -161,6 +164,23 @@ public class AgentLoopExecutor {
                              ToolCatalog toolCatalog, PauseConfig pauseConfig,
                              StageOutputManager stageOutputManager, TraceStore traceStore,
                              MemoryStore memoryStore) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, null);
+    }
+
+    /**
+     * @param fileStore 文件问答的元数据存储（issue #28）；传 null 表示不启用——既不在
+     *                  {@link #stream} 里注入"会话文件"区块，也不在收尾时回填 turnId，
+     *                  行为与没有这个机制时完全一致。文件的解析/向量化/多模态识别由
+     *                  {@code FileQaService} 编排（issue #21/#26/#27），本类只负责
+     *                  "让模型看见这一轮和历史上传了哪些文件"+"轮次结束后回填归属"
+     */
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                             StageOutputManager stageOutputManager, TraceStore traceStore,
+                             MemoryStore memoryStore, FileStore fileStore) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
@@ -174,6 +194,7 @@ public class AgentLoopExecutor {
         this.traceStore = traceStore;
         this.memoryStore = memoryStore;
         this.memoryExtractor = (memoryStore == null) ? null : new MemoryExtractor(chatModel, memoryStore);
+        this.fileStore = fileStore;
         this.maxRounds = maxRounds;
     }
 
@@ -201,6 +222,7 @@ public class AgentLoopExecutor {
         private StageOutputManager stageOutputManager;
         private TraceStore traceStore;
         private MemoryStore memoryStore;
+        private FileStore fileStore;
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
             this.chatModel = chatModel;
@@ -253,9 +275,15 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        public Builder fileStore(FileStore fileStore) {
+            this.fileStore = fileStore;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
             return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
-                    persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore);
+                    persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
+                    fileStore);
         }
     }
 
@@ -293,6 +321,12 @@ public class AgentLoopExecutor {
             // 也不需要为这一个机制单独引入"系统提示词构建器"（issue #18 的格式指令就没这么做，
             // 那是追加在问题后面；这里的内容性质不同，适合放在历史最前）
             messages.add(new SystemMessage(memorySection));
+        }
+        String fileSection = buildFileSection(params.conversationId());
+        if (!fileSection.isEmpty()) {
+            // 和记忆区块一样是独立的一条 SystemMessage，不是同一段文本里拼接——两者关注点不同，
+            // 分开便于各自独立开关、独立测试断言
+            messages.add(new SystemMessage(fileSection));
         }
         if (persistenceHook != null) {
             messages.addAll(persistenceHook.loadHistory(params.conversationId(), HISTORY_TOKEN_BUDGET));
@@ -589,6 +623,14 @@ public class AgentLoopExecutor {
         return MemoryPromptFormatter.formatSection(memoryStore.findByUserId(userId));
     }
 
+    /** 未启用（{@link #fileStore} 为 null）时返回空串——调用方直接据此判断要不要插入（issue #28）。 */
+    private String buildFileSection(String conversationId) {
+        if (fileStore == null) {
+            return "";
+        }
+        return FilePromptFormatter.formatSection(fileStore.findByConversationId(conversationId));
+    }
+
     /**
      * content 必须显式给空串而非留 null——部分厂商的 createRequest 对 assistant 消息做了
      * Assert.state(text != null)（#5a⑤）。思考内容写进 reasoning_content metadata 保留下来，
@@ -617,6 +659,11 @@ public class AgentLoopExecutor {
         Long turnId = persistenceHook == null ? null : persistenceHook.onTurnComplete(new TurnRecord(
                 context.conversationId(), context.params().userId(), context.question(),
                 state.text(), think, null, null, context.elapsedMillis()));
+
+        // 上传发生在这一轮结束之前，那时候轮次 id 还不存在，只能等这里拿到 id 才回填（issue #28）
+        if (fileStore != null && turnId != null) {
+            fileStore.linkFilesToTurn(context.conversationId(), turnId);
+        }
 
         // 和落库一样必须在 emitComplete 之前同步做完；提取本身失败会被 MemoryExtractor 内部吞掉，
         // 不会因为这一步把整轮对话搞崩

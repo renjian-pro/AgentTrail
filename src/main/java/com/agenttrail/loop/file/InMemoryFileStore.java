@@ -48,4 +48,15 @@ public class InMemoryFileStore implements FileStore {
                 existing.turnId(), existing.fileName(), existing.contentType(), existing.sizeBytes(),
                 existing.kind(), parsedText, existing.rawBytes(), existing.createdAtMillis()));
     }
+
+    @Override
+    public void linkFilesToTurn(String conversationId, long turnId) {
+        for (UploadedFile file : filesById.values()) {
+            if (file.conversationId().equals(conversationId) && file.turnId() == null) {
+                filesById.put(file.id(), new UploadedFile(file.id(), file.conversationId(), turnId, file.fileName(),
+                        file.contentType(), file.sizeBytes(), file.kind(), file.parsedText(), file.rawBytes(),
+                        file.createdAtMillis()));
+            }
+        }
+    }
 }

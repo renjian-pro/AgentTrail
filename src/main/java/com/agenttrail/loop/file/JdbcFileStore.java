@@ -36,6 +36,10 @@ public class JdbcFileStore implements FileStore {
             UPDATE agent_file SET parsed_text = ? WHERE id = ?
             """;
 
+    private static final String LINK_FILES_TO_TURN_SQL = """
+            UPDATE agent_file SET turn_id = ? WHERE conversation_id = ? AND turn_id IS NULL
+            """;
+
     private final JdbcClient jdbcClient;
 
     public JdbcFileStore(DataSource dataSource) {
@@ -80,6 +84,14 @@ public class JdbcFileStore implements FileStore {
         jdbcClient.sql(UPDATE_PARSED_TEXT_SQL)
                 .param(parsedText)
                 .param(id)
+                .update();
+    }
+
+    @Override
+    public void linkFilesToTurn(String conversationId, long turnId) {
+        jdbcClient.sql(LINK_FILES_TO_TURN_SQL)
+                .param(turnId)
+                .param(conversationId)
                 .update();
     }
 
