@@ -4,6 +4,8 @@ import com.agenttrail.loop.core.support.ScriptedChatModel;
 import com.agenttrail.loop.file.FileQaService;
 import com.agenttrail.loop.file.FileTextParser;
 import com.agenttrail.loop.file.InMemoryFileStore;
+import com.agenttrail.loop.multimodal.ImageDescriptionService;
+import com.agenttrail.loop.multimodal.support.RecordingSyncChatModel;
 import com.agenttrail.loop.rag.FileVectorizationService;
 import com.agenttrail.loop.rag.RagRetrievalService;
 import com.agenttrail.loop.rag.support.RecordingVectorStore;
@@ -23,6 +25,7 @@ class FileUploadControllerTest {
             new FileQaService(new InMemoryFileStore(), new FileTextParser(),
                     new FileVectorizationService(vectorStore),
                     new RagRetrievalService(vectorStore, new ScriptedChatModel()),
+                    new ImageDescriptionService(new RecordingSyncChatModel(), "vl-model"),
                     100));
 
     @Test

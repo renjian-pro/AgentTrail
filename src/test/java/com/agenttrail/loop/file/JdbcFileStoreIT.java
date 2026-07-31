@@ -36,10 +36,15 @@ class JdbcFileStoreIT {
         store = new JdbcFileStore(dataSource);
     }
 
+    private static UploadedFile textFile(String conversationId, String fileName, long sizeBytes, String parsedText,
+            long createdAtMillis) {
+        return new UploadedFile(null, conversationId, null, fileName, "text/plain", sizeBytes, FileKind.TEXT,
+                parsedText, null, createdAtMillis);
+    }
+
     @Test
     void savingReturnsAGeneratedIdAndTheRecordCanBeFoundById() {
-        long id = store.save(new UploadedFile(null, "conv-1", null, "note.txt", "text/plain",
-                11, "hello world", 1_700_000_000_000L));
+        long id = store.save(textFile("conv-1", "note.txt", 11, "hello world", 1_700_000_000_000L));
 
         Optional<UploadedFile> found = store.findById(id);
 
@@ -47,12 +52,12 @@ class JdbcFileStoreIT {
         assertThat(found.get().id()).isEqualTo(id);
         assertThat(found.get().fileName()).isEqualTo("note.txt");
         assertThat(found.get().parsedText()).isEqualTo("hello world");
+        assertThat(found.get().kind()).isEqualTo(FileKind.TEXT);
     }
 
     @Test
     void turnIdIsNullUntilExplicitlyBackfilled() {
-        long id = store.save(new UploadedFile(null, "conv-1", null, "note.txt", "text/plain",
-                11, "hello world", 1_700_000_000_000L));
+        long id = store.save(textFile("conv-1", "note.txt", 11, "hello world", 1_700_000_000_000L));
 
         assertThat(store.findById(id).orElseThrow().turnId()).isNull();
     }
@@ -64,9 +69,9 @@ class JdbcFileStoreIT {
 
     @Test
     void findByConversationIdReturnsAllFilesForThatConversationInUploadOrder() {
-        store.save(new UploadedFile(null, "conv-1", null, "first.txt", "text/plain", 5, "first", 1L));
-        store.save(new UploadedFile(null, "conv-1", null, "second.txt", "text/plain", 6, "second", 2L));
-        store.save(new UploadedFile(null, "conv-2", null, "other.txt", "text/plain", 5, "other", 3L));
+        store.save(textFile("conv-1", "first.txt", 5, "first", 1L));
+        store.save(textFile("conv-1", "second.txt", 6, "second", 2L));
+        store.save(textFile("conv-2", "other.txt", 5, "other", 3L));
 
         List<UploadedFile> files = store.findByConversationId("conv-1");
 
@@ -76,17 +81,42 @@ class JdbcFileStoreIT {
     @Test
     void storesTheFullParsedTextEvenWhenItIsLarge() {
         String largeText = "x".repeat(20_000);
-        long id = store.save(new UploadedFile(null, "conv-1", null, "large.txt", "text/plain",
-                20_000, largeText, 1_700_000_000_000L));
+        long id = store.save(textFile("conv-1", "large.txt", 20_000, largeText, 1_700_000_000_000L));
 
         assertThat(store.findById(id).orElseThrow().parsedText()).hasSize(20_000);
     }
 
     @Test
     void contentTypeCanBeNull() {
-        long id = store.save(new UploadedFile(null, "conv-1", null, "unknown.bin", null,
-                5, "", 1_700_000_000_000L));
+        UploadedFile file = new UploadedFile(null, "conv-1", null, "unknown.bin", null, 5, FileKind.TEXT, "",
+                null, 1_700_000_000_000L);
+        long id = store.save(file);
 
         assertThat(store.findById(id).orElseThrow().contentType()).isNull();
+    }
+
+    @Test
+    void anImageFileStoresItsKindAndRawBytesWithNoParsedTextYet() {
+        byte[] rawBytes = {1, 2, 3, 4};
+        UploadedFile image = new UploadedFile(null, "conv-1", null, "photo.png", "image/png", 4, FileKind.IMAGE,
+                null, rawBytes, 1_700_000_000_000L);
+
+        long id = store.save(image);
+        UploadedFile found = store.findById(id).orElseThrow();
+
+        assertThat(found.kind()).isEqualTo(FileKind.IMAGE);
+        assertThat(found.parsedText()).isNull();
+        assertThat(found.rawBytes()).containsExactly(1, 2, 3, 4);
+    }
+
+    @Test
+    void updateParsedTextWritesBackTheLazilyComputedImageDescription() {
+        UploadedFile image = new UploadedFile(null, "conv-1", null, "photo.png", "image/png", 4, FileKind.IMAGE,
+                null, new byte[]{1, 2, 3}, 1_700_000_000_000L);
+        long id = store.save(image);
+
+        store.updateParsedText(id, "一只猫坐在窗台上");
+
+        assertThat(store.findById(id).orElseThrow().parsedText()).isEqualTo("一只猫坐在窗台上");
     }
 }

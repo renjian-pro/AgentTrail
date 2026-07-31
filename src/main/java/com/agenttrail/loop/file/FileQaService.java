@@ -1,18 +1,24 @@
 package com.agenttrail.loop.file;
 
+import com.agenttrail.loop.multimodal.ImageDescriptionService;
 import com.agenttrail.loop.rag.RagRetrievalService;
 import com.agenttrail.loop.rag.VectorizationException;
 import com.agenttrail.loop.rag.FileVectorizationService;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.time.Clock;
 import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
- * 文件问答的核心编排：上传时解析+落库（issue #21），超过阈值的大文件额外分块入库到向量库
- * （issue #26）；取内容时按阈值分流——阈值以内直接返回 Tika 解析出的全量文本，
- * 超过阈值走 RAG 检索管线，用检索到的片段而不是整份原文回答。
+ * 文件问答的核心编排：按文件类型三路分发（issue #27）——
+ * <ul>
+ *   <li>{@link FileKind#IMAGE}：不解析、不进 RAG，懒加载调多模态模型描述，结果写回缓存
+ *   <li>{@link FileKind#TEXT} 阈值以内：Tika 解析全文直接作为内容（issue #21）
+ *   <li>{@link FileKind#TEXT} 超过阈值：额外分块入库到向量库，取内容时走 RAG 检索（issue #26）
+ * </ul>
  *
  * <p>{@code parsedText} 无论是否超过阈值都整份存进 {@link FileStore}——阈值只影响
  * {@link #contentFor} 返回什么，不影响持久化的内容。
@@ -34,26 +40,32 @@ public class FileQaService {
     private final FileTextParser parser;
     private final FileVectorizationService vectorizationService;
     private final RagRetrievalService retrievalService;
+    private final ImageDescriptionService imageDescriptionService;
     private final int ragThresholdChars;
     private final Clock clock;
 
     public FileQaService(FileStore fileStore, FileTextParser parser, FileVectorizationService vectorizationService,
-            RagRetrievalService retrievalService, int ragThresholdChars) {
-        this(fileStore, parser, vectorizationService, retrievalService, ragThresholdChars, Clock.systemUTC());
+            RagRetrievalService retrievalService, ImageDescriptionService imageDescriptionService,
+            int ragThresholdChars) {
+        this(fileStore, parser, vectorizationService, retrievalService, imageDescriptionService, ragThresholdChars,
+                Clock.systemUTC());
     }
 
     FileQaService(FileStore fileStore, FileTextParser parser, FileVectorizationService vectorizationService,
-            RagRetrievalService retrievalService, int ragThresholdChars, Clock clock) {
+            RagRetrievalService retrievalService, ImageDescriptionService imageDescriptionService,
+            int ragThresholdChars, Clock clock) {
         this.fileStore = fileStore;
         this.parser = parser;
         this.vectorizationService = vectorizationService;
         this.retrievalService = retrievalService;
+        this.imageDescriptionService = imageDescriptionService;
         this.ragThresholdChars = ragThresholdChars;
         this.clock = clock;
     }
 
     /**
-     * 解析并持久化一个新上传的文件；超过阈值时额外分块入库到向量库。
+     * 按文件类型解析/落库；文本超过阈值时额外分块入库到向量库；图片只存原始字节，
+     * 描述留到第一次被问到再懒加载。
      *
      * @param conversationId 所属会话；跨轮可见，{@code turnId} 要等这一轮结束才回填（issue #28 的范围）
      * @param fileName       原始文件名
@@ -63,29 +75,46 @@ public class FileQaService {
      */
     public IngestedFile ingest(String conversationId, String fileName, String contentType,
             InputStream content, long sizeBytes) {
+        FileKind kind = FileKindDetector.detect(contentType, fileName);
+
+        if (kind == FileKind.IMAGE) {
+            byte[] rawBytes = readAllBytes(content);
+            long id = fileStore.save(new UploadedFile(
+                    null, conversationId, null, fileName, contentType, sizeBytes, FileKind.IMAGE, null, rawBytes,
+                    clock.millis()));
+            return new IngestedFile(id, fileName, kind, sizeBytes, 0, false);
+        }
+
         String parsedText = parser.parse(content, fileName);
         boolean routedToRag = parsedText.length() > ragThresholdChars;
 
         long id = fileStore.save(new UploadedFile(
-                null, conversationId, null, fileName, contentType, sizeBytes, parsedText, clock.millis()));
+                null, conversationId, null, fileName, contentType, sizeBytes, FileKind.TEXT, parsedText, null,
+                clock.millis()));
 
         if (routedToRag) {
             vectorizationService.vectorize(id, parsedText);
         }
 
-        return new IngestedFile(id, fileName, sizeBytes, parsedText.length(), routedToRag);
+        return new IngestedFile(id, fileName, kind, sizeBytes, parsedText.length(), routedToRag);
     }
 
     /**
-     * 按阈值返回"喂给模型的内容"：阈值以内是解析出的全量文本；超过阈值时，没给问题就提示
-     * 需要问题，给了问题就跑 RAG 检索管线，返回检索到的片段拼接。
+     * 按文件类型返回"喂给模型的内容"：图片懒加载多模态描述（首次调用后写回缓存）；
+     * 文本阈值以内直接返回全文；超过阈值时没给问题就提示需要问题，给了问题就跑 RAG 检索。
      *
-     * @param question 大文件走检索问答时用的问题；小文件忽略这个参数
+     * @param question 大文件走检索问答、图片首次识别都不需要这个参数区分——图片描述和问题无关，
+     *                 大文件检索才用得上
      * @throws NoSuchElementException fileId 不存在
      */
     public String contentFor(long fileId, String question) {
         UploadedFile file = fileStore.findById(fileId)
                 .orElseThrow(() -> new NoSuchElementException("未知的文件标识: " + fileId));
+
+        if (file.kind() == FileKind.IMAGE) {
+            return contentForImage(file);
+        }
+
         String parsedText = file.parsedText();
         if (parsedText.length() <= ragThresholdChars) {
             return parsedText;
@@ -98,5 +127,24 @@ public class FileQaService {
             return NO_RESULTS_TEMPLATE;
         }
         return String.join("\n\n---\n\n", retrieved);
+    }
+
+    /** 缓存命中直接返回；未命中才真的调多模态模型，并把结果写回缓存。 */
+    private String contentForImage(UploadedFile file) {
+        String cached = file.parsedText();
+        if (cached != null && !cached.isBlank()) {
+            return cached;
+        }
+        String description = imageDescriptionService.describe(file.rawBytes(), file.fileName());
+        fileStore.updateParsedText(file.id(), description);
+        return description;
+    }
+
+    private static byte[] readAllBytes(InputStream content) {
+        try {
+            return content.readAllBytes();
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
     }
 }

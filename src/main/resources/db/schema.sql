@@ -153,11 +153,20 @@ CREATE TABLE IF NOT EXISTS agent_file
     file_name       VARCHAR(255) NOT NULL COMMENT '原始文件名',
     content_type    VARCHAR(100) NULL COMMENT '上传时的 MIME 类型',
     size_bytes      BIGINT       NOT NULL COMMENT '文件大小（字节）',
-    parsed_text     LONGTEXT     NULL COMMENT 'Tika 解析出的全量文本，超过 RAG 阈值的大文件同样存全量',
+    kind            VARCHAR(10)  NOT NULL DEFAULT 'TEXT' COMMENT '文件路由：TEXT 走 Tika 解析/RAG，IMAGE 走多模态懒加载识别（issue #27）',
+    parsed_text     LONGTEXT     NULL COMMENT 'TEXT：Tika 解析全文，超 RAG 阈值同样存全量；IMAGE：多模态描述的懒缓存，未识别前为 NULL',
+    raw_bytes       LONGBLOB     NULL COMMENT '图片原始字节，仅 IMAGE 类型使用，供懒加载识别时读取（issue #27）',
     created_at      BIGINT       NOT NULL COMMENT '上传时刻（epoch millis）',
     PRIMARY KEY (id),
     -- 按会话查全部附件（历史回放、issue #28 的分组渲染）走这个索引
     KEY idx_file_conversation (conversation_id)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_general_ci COMMENT '文件问答：上传文件的元数据 + Tika 解析文本';
+  COLLATE = utf8mb4_general_ci COMMENT '文件问答：上传文件的元数据 + 正文（Tika 解析文本或图片识别描述）';
+
+-- 注意：CREATE TABLE IF NOT EXISTS 只在表不存在时生效——issue #21/#26 阶段已经建好的
+-- agent_file 老表不会因为这次改了列定义就自动加上 kind/raw_bytes。MySQL（不同于 Postgres）
+-- 不支持 ALTER TABLE ... ADD COLUMN IF NOT EXISTS 语法，没有一条能在这里直接照抄的幂等语句；
+-- 这个项目目前还没有真实生产数据，issue #27 上线时手动 DROP TABLE agent_file 一次即可让它
+-- 用新列定义重建。真的有生产数据需要保留时，要么手写"先查 information_schema 再决定要不要
+-- ALTER"的存储过程，要么引入 Flyway/Liquibase 这类迁移工具——这两者都不是这一票的范围。

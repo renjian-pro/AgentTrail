@@ -15,21 +15,25 @@ public class JdbcFileStore implements FileStore {
 
     private static final String INSERT_SQL = """
             INSERT INTO agent_file
-                (conversation_id, turn_id, file_name, content_type, size_bytes, parsed_text, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String SELECT_BY_ID_SQL = """
-            SELECT id, conversation_id, turn_id, file_name, content_type, size_bytes, parsed_text, created_at
+            SELECT id, conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at
             FROM agent_file
             WHERE id = ?
             """;
 
     private static final String SELECT_BY_CONVERSATION_SQL = """
-            SELECT id, conversation_id, turn_id, file_name, content_type, size_bytes, parsed_text, created_at
+            SELECT id, conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at
             FROM agent_file
             WHERE conversation_id = ?
             ORDER BY id ASC
+            """;
+
+    private static final String UPDATE_PARSED_TEXT_SQL = """
+            UPDATE agent_file SET parsed_text = ? WHERE id = ?
             """;
 
     private final JdbcClient jdbcClient;
@@ -47,7 +51,9 @@ public class JdbcFileStore implements FileStore {
                 .param(file.fileName())
                 .param(file.contentType())
                 .param(file.sizeBytes())
+                .param(file.kind().name())
                 .param(file.parsedText())
+                .param(file.rawBytes())
                 .param(file.createdAtMillis())
                 .update(keyHolder);
         return keyHolder.getKey().longValue();
@@ -69,6 +75,14 @@ public class JdbcFileStore implements FileStore {
                 .list();
     }
 
+    @Override
+    public void updateParsedText(long id, String parsedText) {
+        jdbcClient.sql(UPDATE_PARSED_TEXT_SQL)
+                .param(parsedText)
+                .param(id)
+                .update();
+    }
+
     private static UploadedFile mapRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
         // wasNull() 只反映"最近一次读的那一列"，必须紧跟在 getLong("turn_id") 之后调用，
         // 不能等构造器里其它列都读完了再查——那时 wasNull() 早就变成反映最后一列的结果了
@@ -81,7 +95,9 @@ public class JdbcFileStore implements FileStore {
                 rs.getString("file_name"),
                 rs.getString("content_type"),
                 rs.getLong("size_bytes"),
+                FileKind.valueOf(rs.getString("kind")),
                 rs.getString("parsed_text"),
+                rs.getBytes("raw_bytes"),
                 rs.getLong("created_at"));
     }
 }

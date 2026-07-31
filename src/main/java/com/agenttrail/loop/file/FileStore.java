@@ -20,4 +20,10 @@ public interface FileStore {
 
     /** 按会话查找全部文件，按上传顺序返回。 */
     List<UploadedFile> findByConversationId(String conversationId);
+
+    /**
+     * 更新已保存文件的 {@code parsedText}（issue #27）：图片首次被问到才调多模态模型，
+     * 结果写回这里做懒缓存，下次直接命中，不重复调用。
+     */
+    void updateParsedText(long id, String parsedText);
 }
