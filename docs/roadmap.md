@@ -21,22 +21,28 @@
 
 哪些机制已经在验证原型上跑通过设计、哪些还只是纸面设计，实现本项目时按这个状态决定"直接照设计写"还是"设计和实现一起做"：
 
+> **2026-07-31 更新**：issue #1-#14 已全部关闭，Phase 0 + Phase 1（"引擎"层）按下面"阶段间的
+> 依赖关系"一节的定义已经整体完工，可以开始任何 Capability Pack 了。下面表格已同步；每行的
+> issue 号可以在 `gh issue view <n> --json state,body` 里查到验收标准和实现笔记。
+
 | 阶段 | 机制 | 状态 |
 |---|---|---|
-| 0.1 | 流式 tool_call 分片重组、round 状态机、maxRounds 强制收尾 | ✅ 已验证 |
-| 0.1 | 参数校验失败降级、`RunnableParams` 双通道 | ✅ 已验证 |
-| 0.2 | Thinking 模式三分支、`ThinkTagParser` | ✅ 已验证 |
-| 0.3 | 两层上下文压缩（micro/auto） | ✅ 已验证 |
-| 0.4 | 任务管理（内存版：单飞注册、`Disposable` 每轮重注册、原子 stopTask） | ✅ 已验证 |
+| 0.1 | 流式 tool_call 分片重组、round 状态机、maxRounds 强制收尾 | ✅ 已验证（issue #1） |
+| 0.1 | 参数校验失败降级、`RunnableParams` 双通道 | ✅ 已验证（issue #1） |
+| 0.2 | Thinking 模式三分支、`ThinkTagParser` | ✅ 已验证（issue #3） |
+| 0.2 | DeepSeek `reasoning_content` 装饰器（#5a 两个类型坑） | ✅ 已实现（issue #2/#3），流式行为待拿真实 key 补一次实测（`DeepSeekLlmClientLiveIT`） |
+| 0.3 | 两层上下文压缩（micro/auto） | ✅ 已验证（issue #4） |
+| 0.4 | 任务管理（内存版：单飞注册、`Disposable` 每轮重注册、原子 stopTask） | ✅ 已验证（issue #1），跨实例生产化见下方 Phase 1 行 |
 | — | Runtime 门面（对外 builder 装配入口） | ✅ 已验证 |
-| 0.5 | 会话持久化（`TurnPersistenceHook` 接口） | ◐ 接口已定义，JDBC 实现待写 |
-| 0.6 | ToolSearch 延迟工具发现 | ❌ 仅有雏形，HYBRID 关键词+LLM 兜底待验证 |
-| 0.7 | Skills 渐进式披露（单 mega-tool） | ❌ 未实现 |
-| 0.8 | TodoWrite | ◐ 事件模型（`TodoItem`/`TodoProgress`）已定义，工具本身未写 |
-| 0.9 | FileSystem/Bash/Grep 内置工具 | ❌ 未实现 |
-| 0.2 | DeepSeek `reasoning_content` 在目标 Spring AI 版本上的行为 | ◐ 已静态验证：2.0.0 部分修复，装饰器仍要写（踩坑点 #5a），流式行为待实测 |
-| 1 | Redis 分布式任务锁 / Pub-Sub 跨实例中断 | ❌ 未实现 |
-| 1 | 断点续传 / HITL 暂停恢复 | ❌ 未实现 |
+| 0.5 | 会话持久化（`TurnPersistenceHook` + JDBC 实现） | ✅ 已完成（issue #5） |
+| 0.6 | ToolSearch 延迟工具发现 | ✅ 已完成（issue #6） |
+| 0.7 | Skills 渐进式披露（单 mega-tool） | ✅ 已完成（issue #7） |
+| 0.8 | TodoWrite | ✅ 已完成（issue #8） |
+| 0.9 | FileSystem/Bash/Grep 内置工具 | ✅ 已完成（issue #9） |
+| 0.10 | Reactor 流式工程加固（有界背压、TTFT/idle 分阶段超时、工具执行独立调度器、MDC 跨线程传播） | ✅ 已完成（issue #10） |
+| 1 | Redis 分布式任务锁 / Pub-Sub 跨实例中断 | ✅ 已完成（issue #11/#12）。已知缺口：`AgentTaskManager` 不会定时续期已持有的锁，长会话要么调用方把 TTL 设够长，要么后续加一个定时续期调度器（见 `AgentTaskManager` javadoc） |
+| 1 | 断点续传 / HITL 暂停恢复 | ✅ 核心机制已完成（issue #13）：`PauseState` 快照 + 两条恢复分支都有测试覆盖。`PauseStateStore` 目前只有内存实现，JDBC/Redis 持久化留作后续（接口已按不排斥后续实现的方式设计） |
+| 14 | 幂等工具模板 | ✅ 已完成（issue #14） |
 | 3 | 分层记忆（短期/画像/语义） | ❌ 未实现 |
 | 3 | 分阶段输出 / Timeline | ❌ 未实现 |
 | 3 | TraceAudit 追踪审计 | ❌ 未实现 |
@@ -255,6 +261,9 @@
 
 ## 阶段间的依赖关系（谁先谁后有硬约束，谁先谁后没硬约束可以自己插队）
 
+> **状态**：Phase 0 + Phase 1 已经整体做完（issue #1-#14 全部关闭），下面这条硬性依赖已经
+> 清空——Phase 2/4/5 三个 Capability Pack 现在都可以开始，选哪个不再有前置阻塞。
+
 **核心排序原则**：Phase 0 + Phase 1 是"引擎"——通用、不含任何业务知识，对应 spring-ai-agentx
 框架本身的能力集，**必须完整做完才能开始任何 Capability Pack**。这不是任意排的先后顺序，
 是 `loop/` 分包原则（不知道 SQL、不知道 PPT）在构建顺序上的延伸：业务代码不应该在引擎接口
@@ -308,6 +317,19 @@ Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版
 
 ## 下一步
 
-原来的第一步（确认 DeepSeek `reasoning_content` 在 Spring AI 2.0 上的行为）已经调研完，结论是**部分修复、装饰器仍要写**，详见踩坑点 #5a——这一项不再阻塞动工。
+Phase 0（Runtime 核心）+ Phase 1（Redis 生产化）已经整体做完——issue #1-#14 全部关闭，`mvn test`
+全绿（含真实 MySQL/Redis 的 Testcontainers 集成测试）。"引擎必须先完整做完才能开始任何
+Capability Pack"这条硬约束已经清空。
 
-接下来：按已验证的设计在 `com.agenttrail.loop` 里实现 Phase 0，其中接 DeepSeek 那一步连带把 #5a 列的装饰器和两个类型坑一起解决掉；拿到真实 key 之后再按 #5a 第 ④ 段补一次实测确认。之后哪个 Capability Pack 先做、要不要跳过某个 Phase，按实际进度自己定。
+已知的、故意留到后续的缺口（不阻塞下一步，但动到对应机制时要记得补上）：
+- `AgentTaskManager` 不会定时续期已持有的 Redis 锁，长会话要么调用方把 TTL 设够长，
+  要么后续加一个定时续期调度器
+- `PauseStateStore` 只有内存实现，重启会丢暂停中的会话；JDBC/Redis 实现待写
+- DeepSeek `reasoning_content` 的流式行为还没拿真实 key 实测过（`DeepSeekLlmClientLiveIT` 已经
+  搭好，缺一次真实调用去跑它）
+- `AgentRuntimeConfig`（`web/`）还没有把手写的 `AgentLoopExecutor` 接到 REST 入口上——现在
+  `AgentController` 走的还是 V0 的 `AgentScopeRuntime`
+
+接下来按依赖关系图，Phase 2（SQL 数据分析）/ Phase 4（文件问答 RAG）/ Phase 5（联网搜索+图表）
+三个 Capability Pack 都已经解锁、互相之间也没有依赖，选哪个先做、要不要先把 Runtime 接上
+REST 入口，按实际进度自己定。
