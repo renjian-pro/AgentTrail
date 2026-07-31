@@ -1,11 +1,12 @@
 package com.agenttrail.web;
 
-import com.agenttrail.runtime.AgentRuntime;
-import com.agenttrail.runtime.agentscope.AgentScopeRuntime;
+import com.agenttrail.legacy.V0.AgentRuntime;
+import com.agenttrail.legacy.V0.AgentScopeRuntime;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+/** 装配 V0（{@code AgentScopeRuntime}）供 {@link AgentController} 使用；V1 的装配见 {@link AgentLoopExecutorConfig}。 */
 @Configuration
 public class AgentRuntimeConfig {
 

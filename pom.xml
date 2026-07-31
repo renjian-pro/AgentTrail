@@ -121,11 +121,12 @@
 			<scope>test</scope>
 		</dependency>
 
-		<!-- 仅测试范围：用真实 DeepSeekChatOptions 验证 LlmInvoker 不会丢失厂商具体类型（#5a） -->
+		<!-- V1 生产环境的 ChatModel 供应方——自动装配 DeepSeekChatModel Bean（spring.ai.deepseek.*
+		     配置项），替代之前只在 test scope 声明的 spring-ai-deepseek（该依赖已被这个 starter
+		     以 compile scope 传递引入，测试代码里用到的 DeepSeekChatOptions 不受影响） -->
 		<dependency>
 			<groupId>org.springframework.ai</groupId>
-			<artifactId>spring-ai-deepseek</artifactId>
-			<scope>test</scope>
+			<artifactId>spring-ai-starter-model-deepseek</artifactId>
 		</dependency>
 
 		<!-- Redis 分布式锁的集成测试用（issue #11），版本交给 spring-boot-dependencies BOM 管理。

@@ -9,7 +9,7 @@
 - **模型接入直调 `ChatModel.stream(Prompt)`，不经过 `ChatClient`/Advisor 链**——`internalToolExecutionEnabled` 只存在于 ChatClient 这一层，绕开它就不需要关心 Spring AI 1.1.0/2.0 的差异，两个版本行为一致。**结论：上 Spring AI 2.0 GA**（原生匹配 Boot 4.1.0）。
 - **版本映射提醒**：研读的参考框架源码基于 **Spring AI 1.1.0 + Boot 3.5.6**，本项目是 **Spring AI 2.0 GA + Boot 4.1.x**——研读时对 ChatClient/Advisor/Tool 注册相关的 API 要做版本映射笔记（1.x 的 `internalToolExecutionEnabled` → 2.0 的 `ToolCallingAdvisor`；Function Bean → 显式 `ToolCallback` Bean；`spring.ai.*.chat.options.*` 配置扁平化），面试被追问"2.0 和 1.x 区别"时这本身就是答案素材。
 - **SQL 场景库用 sakila**（MySQL 官方 DVD 租赁库，通用示例数据集）。
-- **不删除**已有的 `com.agenttrail.loop.AgentLoop`（V0）/ `AgentScopeRuntime`/`agentscope-bom` 依赖，作为"V0 对比参考"和"V2 候补"保留。
+- **不删除** V0（`AgentLoop`/`AgentScopeRuntime` 两条早期路径），但收敛进单一文件 `com.agenttrail.legacy.V0`，作为决策演进的对比参考保留，不再演进；`agentscope-bom` 依赖同理保留。
 
 ---
 
@@ -347,5 +347,6 @@ Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版
 - `TraceStore`/`MemoryStore` 同样只有内存实现（issue #17/#19 接口设计已不排斥后续换 JDBC/Redis）
 - DeepSeek `reasoning_content` 的流式行为还没拿真实 key 实测过（`DeepSeekLlmClientLiveIT` 已经
   搭好，缺一次真实调用去跑它）
-- `AgentRuntimeConfig`（`web/`）还没有把手写的 `AgentLoopExecutor` 接到 REST 入口上——现在
-  `AgentController` 走的还是 V0 的 `AgentScopeRuntime`
+- V1 的 HTTP 入口（`AgentLoopExecutorConfig` + `AgentLoopController`，`POST /agent/v1/chat`）目前
+  只接了裸引擎——没工具、没暂停恢复、没追踪审计、没分层记忆，也还是同步 `call()` 不是 SSE 流式；
+  V0 的旧入口（`AgentController`，`/agent/chat`）保留不动，两者互不影响

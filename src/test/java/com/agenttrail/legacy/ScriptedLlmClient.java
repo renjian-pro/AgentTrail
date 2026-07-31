@@ -1,9 +1,9 @@
-package com.agenttrail.loop.support;
+package com.agenttrail.legacy;
 
-import com.agenttrail.loop.ChatMessage;
-import com.agenttrail.loop.LlmClient;
-import com.agenttrail.loop.LlmResponse;
-import com.agenttrail.loop.ToolSpec;
+import com.agenttrail.legacy.V0.ChatMessage;
+import com.agenttrail.legacy.V0.LlmClient;
+import com.agenttrail.legacy.V0.LlmResponse;
+import com.agenttrail.legacy.V0.ToolSpec;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -14,12 +14,12 @@ import java.util.List;
  * Test double for LlmClient: returns pre-scripted responses in order, one per call.
  * Records every call's messages/tools so tests can assert on what the loop sent.
  */
-public class ScriptedLlmClient implements LlmClient {
+class ScriptedLlmClient implements LlmClient {
 
     private final Deque<LlmResponse> scriptedResponses;
     private final List<List<ChatMessage>> recordedCalls = new ArrayList<>();
 
-    public ScriptedLlmClient(List<LlmResponse> scriptedResponses) {
+    ScriptedLlmClient(List<LlmResponse> scriptedResponses) {
         this.scriptedResponses = new ArrayDeque<>(scriptedResponses);
     }
 
@@ -32,11 +32,11 @@ public class ScriptedLlmClient implements LlmClient {
         return scriptedResponses.poll();
     }
 
-    public int callCount() {
+    int callCount() {
         return recordedCalls.size();
     }
 
-    public List<ChatMessage> messagesAtCall(int index) {
+    List<ChatMessage> messagesAtCall(int index) {
         return recordedCalls.get(index);
     }
 }

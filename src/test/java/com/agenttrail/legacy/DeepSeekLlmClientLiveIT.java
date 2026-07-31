@@ -1,6 +1,7 @@
-package com.agenttrail.loop.deepseek;
+package com.agenttrail.legacy;
 
-import com.agenttrail.loop.AgentLoop;
+import com.agenttrail.legacy.V0.AgentLoop;
+import com.agenttrail.legacy.V0.DeepSeekLlmClient;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

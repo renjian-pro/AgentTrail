@@ -1,9 +1,10 @@
-package com.agenttrail.loop.deepseek;
+package com.agenttrail.legacy;
 
-import com.agenttrail.loop.ChatMessage;
-import com.agenttrail.loop.LlmResponse;
-import com.agenttrail.loop.Role;
-import com.agenttrail.loop.ToolSpec;
+import com.agenttrail.legacy.V0.ChatMessage;
+import com.agenttrail.legacy.V0.DeepSeekLlmClient;
+import com.agenttrail.legacy.V0.LlmResponse;
+import com.agenttrail.legacy.V0.Role;
+import com.agenttrail.legacy.V0.ToolSpec;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;

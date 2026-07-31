@@ -3,19 +3,19 @@
 > 术语沿用 `CONTEXT.md` 已定义的词汇表（Runtime / Capability Pack / Tool / Skill / Hook / LlmClient / Gateway），不引入新概念。
 > 对应决策见 `adr/0001`（Runtime 定位）、`adr/0002`（手写 loop 为 V1 主线）；对应机制细节见 `roadmap.md`（Phase 0-11）与 `engineering-pitfalls-and-highlights.md`（踩坑点，部分机制在下文用 `#N` 标出）。issue 号（`#15`-`#19` 这类）指 GitHub issue，可用 `gh issue view <n> --json state,body` 查验收标准。
 >
-> **这一版对齐的是 2026-07-31 的实际代码状态**（issue #1-#19 已关闭），不是规划态——`capability/`、`governance/`、`distributed/`、`mcp/` 这些包目前都还不存在，规划内容见 `roadmap.md` Phase 2 起。
+> **这一版对齐的是 2026-07-31（V0 收敛 + V1 接线之后）的实际代码状态**（issue #1-#19 已关闭），不是规划态——`capability/`、`governance/`、`distributed/`、`mcp/` 这些包目前都还不存在，规划内容见 `roadmap.md` Phase 2 起。
 
 ---
 
-## 〇、当前最重要的一件事：V1 引擎已完整，但还没接上 HTTP 入口
+## 〇、当前最重要的一件事：V0/V1 现在各有一个独立的 HTTP 入口，互不影响
 
 这是理解这份文档时最容易搞反的一点，先单独说清楚：
 
-- **`com.agenttrail.loop.core.AgentLoopExecutor`（V1）**：手写 ReAct 引擎，issue #1-#19 全部完成，`mvn test` 372/372 绿（含真实 MySQL/Redis 的 Testcontainers 集成测试）。功能上是完整的，但**目前只被测试代码实例化和调用**——`web/` 下没有任何 `@Configuration` 把它装配成 Spring Bean。
-- **`com.agenttrail.runtime.agentscope.AgentScopeRuntime`（V0）**：`AgentController` 的 `/agent/chat` 接口实际调用的是这一个，内部走 `loop.AgentLoop`（V0 的最小实现）+ `loop.deepseek.DeepSeekLlmClient`（手写 HTTP 客户端，不是 Spring AI 的 `ChatModel`）。
-- 附带一个更具体的事实：`spring-ai-deepseek` 依赖当前是 **`test` scope**（见 `pom.xml`），意味着就算现在写一个 `AgentRuntimeConfig` 去装配 `AgentLoopExecutor`，也还没有一个 production scope 的 `ChatModel` Bean 可用——这是接线时第一件要处理的事，不只是"写个 `@Bean` 方法"那么简单。
+- **`com.agenttrail.legacy.V0`（V0）**：项目最早期的两条探索性路径——手写的极简 `AgentLoop` 原型和基于 AgentScope Java 2.0 框架的 `AgentScopeRuntime`——已经收敛进这一个文件，不再演进，纯粹作为"决策是怎么一步步演进过来的"这段历史保留（不删除）。`AgentController`（`POST /agent/chat`）仍然装配它、仍然能跑，只是不再是开发重点。
+- **`com.agenttrail.loop.core.AgentLoopExecutor`（V1）**：手写 ReAct 引擎，issue #1-#19 全部完成，`mvn test` 372/372 绿。现在已经有独立的 HTTP 入口：`AgentLoopExecutorConfig` 装配一个只带裸引擎（无工具/暂停恢复/追踪审计/分层记忆）的 `AgentLoopExecutor` Bean，`AgentLoopController`（`POST /agent/v1/chat`）通过同步的 `call()` 暴露出去——先用同步接口把装配跑通，流式 SSE 是这之上很小的一步（换返回类型即可，见该类 javadoc）。
+- 能接上的前提是解决了 `ChatModel` 从哪来的问题：`spring-ai-deepseek` 原来只在 `test` scope 声明，已经换成 `spring-ai-starter-model-deepseek`（Spring AI 官方 starter，正常 scope），由 `spring.ai.deepseek.*` 配置项（`application.properties`）自动装配出生产可用的 `DeepSeekChatModel` Bean，不用手写代码去 `new` 它。
 
-这不是疏漏，是刻意的开发顺序：ADR-0002 定的策略是"先在测试里把手写 loop 的每个机制验证扎实，再接线上"，`docs/roadmap.md` 的"已知缺口"一直如实记着这一条。**读下面所有关于 V1 的图和代码，都要记住：这是"已经造好、还没装上车的引擎"，不是"正在跑的服务"。**
+两个入口的关系是"并存"，不是"新的替换旧的"：`/agent/chat` 继续走 V0，`/agent/v1/chat` 走 V1，各自独立装配，谁都不依赖谁。
 
 ---
 
@@ -27,19 +27,21 @@ graph TB
         CURL["curl / Postman"]
     end
 
-    subgraph Web["web/ —— 目前唯一挂在 HTTP 上的路径"]
+    subgraph Web["web/ —— 两个独立入口，互不依赖"]
         AC["AgentController<br/>POST /agent/chat"]
         ARC["AgentRuntimeConfig<br/>@Bean AgentRuntime"]
+        ALC["AgentLoopController<br/>POST /agent/v1/chat"]
+        ALEC["AgentLoopExecutorConfig<br/>@Bean AgentLoopExecutor"]
     end
 
-    subgraph V0["V0：runtime/ + loop 根包 —— 当前真实在跑的实现"]
-        RTI["AgentRuntime 接口<br/>(runtime/)"]
-        ASR["AgentScopeRuntime<br/>(runtime/agentscope/)"]
-        AGENTLOOP["loop.AgentLoop（V0 最小 loop）"]
-        DSLC["loop.deepseek.DeepSeekLlmClient<br/>手写 HTTP 客户端，非 Spring AI ChatModel"]
+    subgraph V0["V0：legacy.V0（单文件）—— 不再演进，仅保留对照"]
+        RTI["V0.AgentRuntime 接口"]
+        ASR["V0.AgentScopeRuntime"]
+        AGENTLOOP["V0.AgentLoop（极简原型）"]
+        DSLC["V0.DeepSeekLlmClient<br/>手写 HTTP 客户端，非 Spring AI ChatModel"]
     end
 
-    subgraph V1["V1：loop.core.* —— 手写 ReAct 引擎，issue #1-#19 已完成，未接线"]
+    subgraph V1["V1：loop.core.* —— 手写 ReAct 引擎，issue #1-#19 已完成，已接线"]
         ALE["AgentLoopExecutor<br/>round 状态机 + 编排"]
         LLMI["LlmInvoker<br/>直调 ChatModel.stream，绕开 ChatClient/Advisor"]
         TCE["ToolCallExecutor"]
@@ -77,13 +79,15 @@ graph TB
     end
 
     CURL --> AC
+    CURL --> ALC
     AC --> ARC
-    ARC -->|"当前真实装配"| RTI
+    ARC -->|"真实装配"| RTI
     RTI -.实现.-> ASR
     ASR --> AGENTLOOP
     AGENTLOOP --> DSLC
 
-    ARC -.-|"待接线：new AgentLoopExecutor.builder(...)"| ALE
+    ALC --> ALEC
+    ALEC -->|"AgentLoopExecutor.builder(chatModel, List.of(), 10).build()"| ALE
 
     ALE --> LLMI
     ALE --> TCE
@@ -107,7 +111,8 @@ graph TB
 ```
 
 **读图要点**：
-- 实线箭头 = 当前真实存在的调用关系；虚线 = 规划中/待接线。
+- 实线箭头 = 当前真实存在的调用关系；虚线 = 规划中（`CapPacks`）。
+- `AgentLoopExecutorConfig` 目前只把裸引擎接上——`ALE -.按需注入.-> V1Opt/V1Tools` 那两条虚线是"机制存在、可以传，但当前生产装配没传"，不是"还没实现"。
 - `V1Opt` 那一层全部是**同一种模式**："这个参数传 null，行为和没有这个机制时完全一致"——不是"未实现的占位符"，是刻意设计成可插拔。第四节详细讲这个模式怎么用。
 - `CapPacks` 目前是纯规划，代码里连包目录都没建。
 
@@ -115,11 +120,11 @@ graph TB
 
 ## 二、V1 引擎一次完整请求的调用链路（`AgentLoopExecutor.stream()`）
 
-这是"设计已验证但未接线"的那个引擎内部真实发生的事，来自 `AgentLoopExecutor.java` 当前代码，不是规划：
+这是引擎内部真实发生的事，来自 `AgentLoopExecutor.java` 当前代码，不是规划——但要注意：这是 `stream()` 的完整能力面，`AgentLoopController` 当前走的是同步的 `call()`（内部就是阻塞收集 `stream()`），且生产装配没开任何可选机制，所以下图里标"可选"的那几个参与者在当前生产环境里实际上都不生效，只有测试代码会真的配上它们：
 
 ```mermaid
 sequenceDiagram
-    participant Caller as 调用方（当前=测试代码）
+    participant Caller as 调用方（生产=AgentLoopController，测试=各测试类）
     participant ALE as AgentLoopExecutor
     participant MEM as MemoryStore（可选）
     participant CC as ContextCompactor（可选）
@@ -172,18 +177,13 @@ sequenceDiagram
 com.agenttrail
 ├── AgentTrailApplication.java
 │
-├── runtime/                                  # V0 门面：领域边界接口
-│   ├── AgentRuntime.java                     # 接口——签名里不能出现框架类型
-│   └── agentscope/AgentScopeRuntime.java     # 当前唯一实现，AgentController 真实调用它
+├── legacy/
+│   └── V0.java                                # V0 两条早期路径全部收敛在这一个文件里，不再演进
+│                                               # （AgentLoop/LlmClient/DeepSeekLlmClient/AgentRuntime/AgentScopeRuntime
+│                                               #  全部作为 public static 嵌套类型，对外仍以 V0.Xxx 引用）
 │
-├── loop/                                      # 根包下是 V0 的最小手写 loop（对照/保留，见 ADR-0002）
-│   ├── AgentLoop.java / AgentLoopException.java
-│   ├── ChatMessage.java / LlmResponse.java / Role.java
-│   ├── LlmClient.java                        # V0 的模型接入接口（非 Spring AI ChatModel）
-│   ├── Tool.java / ToolCallRequest.java / ToolSpec.java
-│   ├── deepseek/DeepSeekLlmClient.java        # V0 用的手写 HTTP 客户端
-│   │
-│   ├── core/                                 # ★ V1 主线：手写 ReAct 引擎本体
+├── loop/                                      # loop 根包下现在只有子包，没有散落的顶层文件
+│   ├── core/                                  # ★ V1 主线：手写 ReAct 引擎本体
 │   │   ├── AgentLoopExecutor.java            # 编排入口：stream()/call()/resume()，唯一的公开门面
 │   │   ├── AgentLoopExecutor.Builder         # 装配用 builder（见第四节），和既有构造函数并存
 │   │   ├── RunContext.java / RoundState.java / RoundMode.java   # 单次请求 / 单轮的状态
@@ -261,9 +261,11 @@ com.agenttrail
 ├── capability/                                 # Phase 2 起——当前不存在，规划见 roadmap.md
 │
 └── web/
-    ├── AgentController.java                    # POST /agent/chat —— 目前调用 V0 AgentRuntime
-    ├── AgentRuntimeConfig.java                  # @Bean 装配 AgentScopeRuntime（V1 待接线）
-    ├── AgentChatRequest.java / AgentChatResponse.java
+    ├── AgentController.java                    # V0 入口：POST /agent/chat
+    ├── AgentRuntimeConfig.java                  # @Bean 装配 V0.AgentScopeRuntime
+    ├── AgentLoopController.java                 # V1 入口：POST /agent/v1/chat（同步 call()）
+    ├── AgentLoopExecutorConfig.java              # @Bean 装配 AgentLoopExecutor（裸引擎，无可选机制）
+    └── AgentChatRequest.java / AgentChatResponse.java   # 两个入口共用同一套请求/响应 DTO
 ```
 
 **分包原则（不变）**：
@@ -312,7 +314,8 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 
 ## 六、已知缺口（不阻塞现状，但用到对应机制时要记得处理）
 
-- **V1 未接线**：`web/` 没有把 `AgentLoopExecutor` 装配成 Bean；`spring-ai-deepseek` 目前是 `test` scope，接线时第一步是先解决 production 的 `ChatModel` 从哪来。
+- **V1 只接了裸引擎**：`AgentLoopExecutorConfig` 没开工具/暂停恢复/追踪审计/分层记忆任何一个可选机制，也没有会话持久化（每次请求都是全新 conversationId，没有多轮记忆）；`AgentLoopController` 用的是同步 `call()`，不是 SSE 流式——这两点都是"先跑通装配"的最小切片，不是最终形态，第四节的扩展模式随时可以往上叠。
+- **换模型供应商**：只要额外的模型（OpenAI/智谱等）也有 Spring AI starter 且和 DeepSeek 的 starter 不同时存在于 classpath，`AgentLoopExecutorConfig` 不用改一行代码——它认的是通用 `ChatModel` 接口。同时装多个供应商的 starter 时会有多个 `ChatModel` Bean，需要按 Spring 标准做法用 `@Qualifier`/`@Primary` 挑一个默认的。
 - `TraceStore`/`MemoryStore`/`PauseStateStore` 都只有内存实现，进程重启会丢数据；接口设计上都不排斥换 JDBC/Redis。
 - `AgentTaskManager` 不会定时续期已持有的 Redis 锁。
 - `MemoryExtractor.extractAndSave` 同步阻塞（见第五节），有明确的延迟代价，是否改异步是个待决策的取舍点，不是 bug。
@@ -324,10 +327,10 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 
 | CONTEXT.md 术语 | 代码位置（当前实际） |
 |---|---|
-| Runtime | `loop.core` + `loop.context`/`stage`/`stageoutput`/`trace`/`structured`/`memory`/`persistence`/`pause`/`task`/`tools`/`skills`/`model`（V1，未接线）；`runtime/` + `loop` 根包（V0，当前真实在跑） |
+| Runtime | `loop.core` + `loop.context`/`stage`/`stageoutput`/`trace`/`structured`/`memory`/`persistence`/`pause`/`task`/`tools`/`skills`/`model`（V1，已接线，`/agent/v1/chat`）；`legacy.V0`（V0，`/agent/chat`，不再演进） |
 | Capability Pack | 规划中，`capability/*`，当前不存在 |
 | Tool | `loop.tools.*`（FileSystem/Bash/Grep/TodoWrite 是 Runtime 内置 Tool），未来 Capability Pack 各自的 tools 子包 |
 | Skill | `loop.skills.*` |
 | Hook | 规划中（`governance/`），当前 V1 里最接近的是 `StageOutputProvider`（生命周期钩子，但语义是"产出附加内容"不是"治理拦截"） |
-| LlmClient | V0：`loop.LlmClient` + `loop.deepseek.DeepSeekLlmClient`；V1：直接用 Spring AI `ChatModel`，没有额外抽象层 |
+| LlmClient | V0：`legacy.V0.LlmClient` + `legacy.V0.DeepSeekLlmClient`；V1：直接用 Spring AI `ChatModel`，没有额外抽象层 |
 | Gateway | 未来独立部署服务，不在本仓库范围内 |

@@ -1,7 +1,9 @@
-package com.agenttrail.loop;
+package com.agenttrail.legacy;
 
-import com.agenttrail.loop.support.RecordingTool;
-import com.agenttrail.loop.support.ScriptedLlmClient;
+import com.agenttrail.legacy.V0.AgentLoop;
+import com.agenttrail.legacy.V0.AgentLoopException;
+import com.agenttrail.legacy.V0.LlmResponse;
+import com.agenttrail.legacy.V0.ToolCallRequest;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

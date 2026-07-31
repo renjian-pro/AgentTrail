@@ -1,6 +1,6 @@
 package com.agenttrail.web;
 
-import com.agenttrail.runtime.AgentRuntime;
+import com.agenttrail.legacy.V0.AgentRuntime;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
