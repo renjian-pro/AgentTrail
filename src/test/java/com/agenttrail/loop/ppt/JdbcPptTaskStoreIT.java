@@ -1,0 +1,83 @@
+package com.agenttrail.loop.ppt;
+
+import com.agenttrail.support.SharedMySql;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
+
+import javax.sql.DataSource;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** 跑真实 MySQL（见 {@link SharedMySql}），不用 H2——和这个项目其它 {@code Jdbc*StoreIT} 同一条规矩。 */
+class JdbcPptTaskStoreIT {
+
+    private static DataSource dataSource;
+    private JdbcPptTaskStore store;
+
+    @BeforeAll
+    static void createSchema() {
+        DriverManagerDataSource source = new DriverManagerDataSource(
+                SharedMySql.jdbcUrl(), SharedMySql.username(), SharedMySql.password());
+        source.setDriverClassName("com.mysql.cj.jdbc.Driver");
+        new ResourceDatabasePopulator(new ClassPathResource("db/schema.sql")).execute(source);
+        dataSource = source;
+    }
+
+    @BeforeEach
+    void resetTable() {
+        JdbcClient.create(dataSource).sql("TRUNCATE TABLE ppt_generation_task").update();
+        store = new JdbcPptTaskStore(dataSource);
+    }
+
+    @Test
+    void createsATaskWithInitStatusAndReturnsAGeneratedId() {
+        long id = store.create("conv-1", PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT"));
+
+        PptTask task = store.findById(id).orElseThrow();
+        assertThat(task.status()).isEqualTo(PptState.INIT);
+        assertThat(task.errorMsg()).isNull();
+        assertThat(task.conversationId()).isEqualTo("conv-1");
+        assertThat(task.createdAtMillis()).isPositive();
+    }
+
+    @Test
+    void returnsEmptyForAnUnknownId() {
+        assertThat(store.findById(999_999L)).isEmpty();
+    }
+
+    @Test
+    void advancePersistsTheNewStateAndContextAndClearsAnyPriorError() {
+        long id = store.create("conv-1", PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT"));
+        store.markFailed(id, PptState.REQUIREMENT, "之前失败过");
+
+        PptGenerationContext withRequirement = PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT")
+                .withRequirement(new PptRequirement("标题", "主题", "受众", 3, "专业简洁"));
+        store.advance(id, PptState.SEARCH, withRequirement);
+
+        PptTask task = store.findById(id).orElseThrow();
+        assertThat(task.status()).isEqualTo(PptState.SEARCH);
+        assertThat(task.errorMsg()).as("成功推进要清空上一次失败的痕迹").isNull();
+        PptGenerationContext restored = PptContextJson.fromJson(task.contextJson());
+        assertThat(restored.requirement().title()).isEqualTo("标题");
+    }
+
+    @Test
+    void markFailedKeepsStatusOnTheFailingStateAndRecordsTheErrorWithoutTouchingContext() {
+        PptGenerationContext initialContext = PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT")
+                .withSearchMaterials(List.of("素材"));
+        long id = store.create("conv-1", initialContext);
+
+        store.markFailed(id, PptState.OUTLINE, "模型输出不是合法 JSON");
+
+        PptTask task = store.findById(id).orElseThrow();
+        assertThat(task.status()).isEqualTo(PptState.OUTLINE);
+        assertThat(task.errorMsg()).isEqualTo("模型输出不是合法 JSON");
+        assertThat(PptContextJson.fromJson(task.contextJson()).searchMaterials()).containsExactly("素材");
+    }
+}

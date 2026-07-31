@@ -170,3 +170,29 @@ CREATE TABLE IF NOT EXISTS agent_file
 -- 这个项目目前还没有真实生产数据，issue #27 上线时手动 DROP TABLE agent_file 一次即可让它
 -- 用新列定义重建。真的有生产数据需要保留时，要么手写"先查 information_schema 再决定要不要
 -- ALTER"的存储过程，要么引入 Flyway/Liquibase 这类迁移工具——这两者都不是这一票的范围。
+
+-- PPT 生成状态机（issue #24）：这一行就是断点续传的 checkpoint 本体，按状态粒度
+-- （不是子步骤粒度，踩坑点 #44）——status/error_msg 记录"跑到哪一步、上一次失败没有"，
+-- context_json 记录"跑到这一步为止，已经产出的全部数据"，两者合起来才能真正从断点继续，
+-- 只有 status 没有 context_json 的话，恢复时会丢失前面几个状态已经生成的 requirement/
+-- outline/schema，等于又要重新调一遍模型。
+--
+-- context_json 整体存一段 JSON 而不是拆列，原因和 agent_pause_state 表一样：PptGenerationContext
+-- 是一份逐步累积的嵌套快照（结构化的 requirement/outline/schema），不是天然扁平的记录，
+-- 拆列存储没有额外的查询收益。
+
+CREATE TABLE IF NOT EXISTS ppt_generation_task
+(
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键，单个 PPT 生成任务的标识',
+    conversation_id VARCHAR(100) NOT NULL COMMENT '发起这个任务的会话标识',
+    status          VARCHAR(20)  NOT NULL COMMENT '当前状态（PptState 枚举名），即断点续传的 checkpoint',
+    error_msg       LONGTEXT     NULL COMMENT 'status 对应状态上一次执行失败的错误信息；成功推进到这个状态时为 NULL',
+    context_json    LONGTEXT     NOT NULL COMMENT 'PptGenerationContext 完整快照 JSON，恢复时从这里重建上下文',
+    created_at      BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
+    updated_at      BIGINT       NOT NULL COMMENT '最近一次状态推进/失败记录的时刻（epoch millis）',
+    PRIMARY KEY (id),
+    -- 运维排查"某个会话发起过哪些 PPT 任务"走这个索引；恢复流程本身永远按主键 id 查找
+    KEY idx_ppt_task_conversation (conversation_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT 'PPT 生成状态机任务：status/error_msg 是按状态粒度的断点续传 checkpoint';
