@@ -5,6 +5,12 @@ import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
+import com.agenttrail.loop.pause.PauseConfig;
+import com.agenttrail.loop.pause.PauseReason;
+import com.agenttrail.loop.pause.PauseState;
+import com.agenttrail.loop.pause.PendingToolCall;
+import com.agenttrail.loop.pause.ResumeInstruction;
+import com.agenttrail.loop.pause.SafePoint;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;
 import com.agenttrail.loop.task.AgentTaskManager;
@@ -53,10 +59,11 @@ public class AgentLoopExecutor {
     private final TurnPersistenceHook persistenceHook;
     private final List<ToolCallback> tools;
     private final ToolCatalog toolCatalog;
+    private final PauseConfig pauseConfig;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
-        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null);
+        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null);
     }
 
     /**
@@ -69,7 +76,7 @@ public class AgentLoopExecutor {
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
                              AgentTaskManager taskManager, ContextPolicy contextPolicy,
                              ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook, null);
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook, null, null);
     }
 
     /**
@@ -82,6 +89,19 @@ public class AgentLoopExecutor {
                              AgentTaskManager taskManager, ContextPolicy contextPolicy,
                              ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
                              ToolCatalog toolCatalog) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook, toolCatalog, null);
+    }
+
+    /**
+     * @param pauseConfig 暂停/恢复机制（issue #13）；传 null 表示完全不启用，行为与没有它时一致。
+     *                    命中 {@code pauseConfig} 审批名单的工具调用不会被执行，循环改为落一份
+     *                    {@link PauseState} 快照、发 {@link AgentStreamEvent.Paused} 事件后结束，
+     *                    之后只能通过 {@link #resume} 恢复，而不是靠再调一次 {@link #stream}
+     */
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                             ToolCatalog toolCatalog, PauseConfig pauseConfig) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
@@ -90,6 +110,7 @@ public class AgentLoopExecutor {
         this.persistenceHook = persistenceHook;
         this.tools = tools;
         this.toolCatalog = toolCatalog;
+        this.pauseConfig = pauseConfig;
         this.maxRounds = maxRounds;
     }
 
@@ -214,6 +235,11 @@ public class AgentLoopExecutor {
         // 先把带 tool_calls 的助手消息落进历史，再落工具结果——顺序颠倒模型侧会解析失败
         context.messages().add(buildAssistantMessage(state, toolCalls));
 
+        if (requiresApproval(toolCalls)) {
+            pauseForApproval(toolCalls, context);
+            return;
+        }
+
         ToolParamInjector paramInjector = new ToolParamInjector(context.params().toolParams());
         ToolCallback sessionScopedTool = (context.toolSearchSession() == null)
                 ? null : context.toolSearchSession().toolSearchCallback();
@@ -222,6 +248,106 @@ public class AgentLoopExecutor {
         context.messages().add(ToolResponseMessage.builder().responses(responses).build());
 
         scheduleRound(context);
+    }
+
+    private boolean requiresApproval(List<AssistantMessage.ToolCall> toolCalls) {
+        return pauseConfig != null && toolCalls.stream().anyMatch(call -> pauseConfig.requiresApproval(call.name()));
+    }
+
+    /**
+     * 命中审批名单：**整轮**的工具调用都先挂起，不做"名单内的暂停、名单外的照常执行"这种
+     * 按调用粒度拆分的处理——一轮里往往有先后依赖，名单外的调用先执行完，审批被拒时那部分
+     * 副作用已经无法撤销，模型也很难理解"这轮结果一半生效一半没生效"。落一份完整快照，
+     * 简单、可预测，代价只是一次不必要的等待（审批通常也不追求极致的执行效率）。
+     */
+    private void pauseForApproval(List<AssistantMessage.ToolCall> toolCalls, RunContext context) {
+        List<PendingToolCall> pending = toolCalls.stream()
+                .map(call -> new PendingToolCall(call.id(), call.name(), call.arguments()))
+                .toList();
+        PauseState pauseState = new PauseState(context.conversationId(), context.messages(), pending,
+                PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION, context.question(),
+                context.params(), System.currentTimeMillis());
+        pauseConfig.store().save(pauseState);
+
+        context.emit(new AgentStreamEvent.Paused(context.conversationId(), PauseReason.HITL_APPROVAL));
+        context.emitComplete();
+        // 暂停期间不算"在跑"——占着单飞位只会挡住 resume 走自己的注册流程
+        taskManager.removeTask(context.conversationId());
+    }
+
+    /**
+     * 从一次暂停恢复——{@link #stream} 的姊妹入口，不是它的重载：{@code stream} 从头开始一轮新对话，
+     * 本方法接续一个已经存在的 {@link PauseState}，历史、挂起的工具调用、原始运行时参数全部
+     * 来自快照，调用方不需要（也不应该）重新提供这些。
+     *
+     * @param conversationId 要恢复的会话；必须此前调用过 {@link #pauseForApproval} 落过快照
+     * @param instruction    按暂停原因决定：{@link ResumeInstruction.ApprovalDecision} 用于 HITL 审批，
+     *                       {@link ResumeInstruction.NewInstruction} 用于用户带新指令的中断恢复
+     * @throws IllegalStateException    没有配置 {@link PauseConfig}
+     * @throws IllegalArgumentException 这个会话没有可恢复的暂停状态
+     */
+    public Flux<AgentStreamEvent> resume(String conversationId, ResumeInstruction instruction) {
+        if (pauseConfig == null) {
+            throw new IllegalStateException("未配置 PauseConfig，这个 Runtime 实例不支持暂停/恢复");
+        }
+        PauseState paused = pauseConfig.store().find(conversationId)
+                .orElseThrow(() -> new IllegalArgumentException("会话 " + conversationId + " 没有可恢复的暂停状态"));
+
+        Sinks.Many<AgentStreamEvent> sink = EventSinks.bounded();
+        if (!taskManager.registerTask(conversationId, sink)) {
+            EventSinks.emit(sink, new AgentStreamEvent.Error("CONCURRENT_EXECUTION", "该会话正在执行中，请稍后再试"));
+            sink.tryEmitComplete();
+            return sink.asFlux();
+        }
+
+        List<Message> messages = new ArrayList<>(paused.messages());
+        List<ToolResponseMessage.ToolResponse> responses = resolvePendingToolResponses(paused, instruction, sink);
+        if (!responses.isEmpty()) {
+            messages.add(ToolResponseMessage.builder().responses(responses).build());
+        }
+        if (instruction instanceof ResumeInstruction.NewInstruction newInstruction) {
+            messages.add(new UserMessage(newInstruction.message()));
+        }
+        // 快照已经消费完毕，不删的话一次异常重复恢复会用一份过期的历史覆盖掉新产生的对话
+        pauseConfig.store().delete(conversationId);
+
+        RunContext context = new RunContext(paused.question(), paused.params(), messages, sink,
+                new AtomicInteger(0), System.currentTimeMillis(), null, MDC.getCopyOfContextMap());
+        scheduleRound(context);
+        return sink.asFlux();
+    }
+
+    /**
+     * 按恢复方式决定挂起的工具调用该怎么处理：审批通过就真正执行（走和正常轮次一样的
+     * {@link ToolCallExecutor}，保留调度器隔离、参数注入这些既有机制）；审批拒绝或者用户
+     * 带着新指令中断，都不执行，只是喂回去的占位文本不同——前者说明"为什么没做"，
+     * 后者说明"用户换主意了，这个调用不再相关"。
+     */
+    private List<ToolResponseMessage.ToolResponse> resolvePendingToolResponses(
+            PauseState paused, ResumeInstruction instruction, Sinks.Many<AgentStreamEvent> sink) {
+        if (paused.pendingToolCalls().isEmpty()) {
+            return List.of();
+        }
+        if (instruction instanceof ResumeInstruction.NewInstruction) {
+            return paused.pendingToolCalls().stream()
+                    .map(pending -> new ToolResponseMessage.ToolResponse(pending.id(), pending.name(),
+                            "该调用因用户中断并给出新指令而被跳过，未执行"))
+                    .toList();
+        }
+        ResumeInstruction.ApprovalDecision decision = (ResumeInstruction.ApprovalDecision) instruction;
+        if (!decision.approved()) {
+            String reason = (decision.rejectionReason() == null) ? "" : "：" + decision.rejectionReason();
+            return paused.pendingToolCalls().stream()
+                    .map(pending -> new ToolResponseMessage.ToolResponse(pending.id(), pending.name(),
+                            "Error: 用户拒绝执行该工具" + reason))
+                    .toList();
+        }
+
+        List<AssistantMessage.ToolCall> approvedCalls = paused.pendingToolCalls().stream()
+                .map(pending -> new AssistantMessage.ToolCall(pending.id(), "function", pending.name(), pending.arguments()))
+                .toList();
+        ToolParamInjector paramInjector = new ToolParamInjector(paused.params().toolParams());
+        return toolCallExecutor.execute(approvedCalls, sink, paramInjector);
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.agenttrail.loop.model;
 
+import com.agenttrail.loop.pause.PauseReason;
+
 import java.util.List;
 
 /**
@@ -36,6 +38,13 @@ public sealed interface AgentStreamEvent {
      * 两者独立解析同一份 JSON，工具内部实现改动不会悄悄影响这里的内容。
      */
     record TodoProgress(List<TodoItem> items) implements AgentStreamEvent {
+    }
+
+    /**
+     * 循环暂停，等待外部处理（HITL 审批或用户中断）后再通过单独的 resume 入口恢复。
+     * 流随即关闭——这不是错误，也不是正常完成，是第三种终局。
+     */
+    record Paused(String conversationId, PauseReason reason) implements AgentStreamEvent {
     }
 
     /** 可恢复或不可恢复的错误。{@code code} 供前端做分类处理，不是给人看的。 */
