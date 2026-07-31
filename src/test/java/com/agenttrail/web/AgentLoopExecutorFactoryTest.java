@@ -1,13 +1,17 @@
 package com.agenttrail.web;
 
 import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.tools.chart.ChartToolCallback;
+import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilyWebSearchResultParser;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.tool.ToolCallback;
 
 import java.time.Duration;
 import java.util.List;
@@ -28,6 +32,22 @@ class AgentLoopExecutorFactoryTest {
     private static TavilySearchToolProvider degradedSearchProvider() {
         return new TavilySearchToolProvider("https://mcp.tavily.com/mcp/", "", Duration.ofSeconds(1), 1,
                 new TavilyWebSearchResultParser());
+    }
+
+    /** 指向一个本机大概率没有监听的端口，短超时 + 单次尝试，快速失败走降级路径，不需要真的连 mcp-echarts。 */
+    private static ChartToolProvider degradedChartProvider() {
+        return new ChartToolProvider("http://localhost:1/mcp", Duration.ofMillis(200), 1);
+    }
+
+    /** 不连真实 mcp-echarts，直接返回一个固定的假图表工具——用于验证工厂层面的挂载/保护逻辑。 */
+    private static ChartToolProvider fakeChartProvider(String toolName) {
+        return new ChartToolProvider("unused", Duration.ofMillis(1), 1) {
+            @Override
+            public List<ToolCallback> toolCallbacks() {
+                return List.of(new ChartToolCallback(
+                        new RecordingToolCallback(toolName, "生成一张假图表", "http://localhost:9000/agenttrail-charts/fake.png")));
+            }
+        };
     }
 
     @Test
@@ -140,5 +160,44 @@ class AgentLoopExecutorFactoryTest {
         String answer = factory.forModel("qwen-plus", true).call("hi", new RunnableParams("conv-1", "user-1"));
 
         assertThat(answer).isEqualTo("from qwen");
+    }
+
+    @Test
+    void forModelWithChartsDegradesToThePlainExecutorWhenNoChartProviderIsConfigured() {
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(), null, null);
+
+        AgentLoopExecutor withCharts = factory.forModelWithCharts("qwen-plus", false);
+
+        assertThat(withCharts).isSameAs(factory.forModel("qwen-plus"));
+    }
+
+    @Test
+    void forModelWithChartsDegradesGracefullyWhenMcpEchartsIsUnavailable() {
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(), null,
+                degradedChartProvider());
+
+        String answer = factory.forModelWithCharts("qwen-plus", false)
+                .call("hi", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(answer).isEqualTo("from qwen");
+    }
+
+    @Test
+    void forModelWithChartsMountsTheChartToolAndCachesTheResult() {
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(), null,
+                fakeChartProvider("generate_bar_chart"));
+
+        AgentLoopExecutor withCharts = factory.forModelWithCharts("qwen-plus", false);
+
+        assertThat(withCharts).as("图表工具真的挂上了，不应该退化成不带工具的执行器")
+                .isNotSameAs(factory.forModel("qwen-plus"));
+        assertThat(withCharts).as("第二次调用应该命中缓存")
+                .isSameAs(factory.forModelWithCharts("qwen-plus", false));
     }
 }

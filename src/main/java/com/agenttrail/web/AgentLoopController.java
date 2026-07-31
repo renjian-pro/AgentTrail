@@ -42,7 +42,7 @@ public class AgentLoopController {
     public AgentChatResponse chat(@RequestBody AgentChatRequest request) {
         RunnableParams params = new RunnableParams(UUID.randomUUID().toString(), "anonymous");
         try {
-            String answer = executorFactory.forModel(request.modelId(), request.webSearchEnabled())
+            String answer = executorFactory.forModelWithCharts(request.modelId(), request.webSearchEnabled())
                     .call(request.message(), params);
             return new AgentChatResponse(answer);
         } catch (AgentCallException failure) {

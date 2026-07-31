@@ -202,6 +202,16 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!-- 图表生成（issue #23）：MinIO 上传本身由 mcp-echarts（独立 Node 进程）内置完成，
+		     不需要 Java 生产代码再实现一次；这个 SDK 只用来在集成测试里独立验证渲染出的图片
+		     真的落进了 MinIO bucket，不能只信任工具返回的 URL 字符串本身 -->
+		<dependency>
+			<groupId>io.minio</groupId>
+			<artifactId>minio</artifactId>
+			<version>8.5.17</version>
+			<scope>test</scope>
+		</dependency>
+
 	</dependencies>
 
 	<!--
