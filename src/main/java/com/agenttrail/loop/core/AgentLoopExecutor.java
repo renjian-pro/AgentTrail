@@ -3,6 +3,9 @@ package com.agenttrail.loop.core;
 import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.context.MessageRendering;
+import com.agenttrail.loop.memory.MemoryExtractor;
+import com.agenttrail.loop.memory.MemoryPromptFormatter;
+import com.agenttrail.loop.memory.MemoryStore;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
@@ -25,6 +28,7 @@ import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchSession;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -71,6 +75,8 @@ public class AgentLoopExecutor {
     private final PauseConfig pauseConfig;
     private final StageOutputManager stageOutputManager;
     private final TraceStore traceStore;
+    private final MemoryStore memoryStore;
+    private final MemoryExtractor memoryExtractor;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
@@ -140,6 +146,22 @@ public class AgentLoopExecutor {
                              ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
                              ToolCatalog toolCatalog, PauseConfig pauseConfig,
                              StageOutputManager stageOutputManager, TraceStore traceStore) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, null);
+    }
+
+    /**
+     * @param memoryStore 分层记忆体系的中间层存储（issue #19：画像/偏好/指令/事实）；传 null 表示
+     *                    不启用——既不在 {@link #stream} 里读取注入，也不在收尾时提取，行为与没有
+     *                    这个机制时完全一致。短期历史层由 {@code persistenceHook} 负责；跨会话语义
+     *                    摘要层依赖向量库，留给 Phase 4，不是这个参数管的范围
+     */
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                             StageOutputManager stageOutputManager, TraceStore traceStore,
+                             MemoryStore memoryStore) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
@@ -151,6 +173,8 @@ public class AgentLoopExecutor {
         this.pauseConfig = pauseConfig;
         this.stageOutputManager = (stageOutputManager == null) ? StageOutputManager.EMPTY : stageOutputManager;
         this.traceStore = traceStore;
+        this.memoryStore = memoryStore;
+        this.memoryExtractor = (memoryStore == null) ? null : new MemoryExtractor(chatModel, memoryStore);
         this.maxRounds = maxRounds;
     }
 
@@ -182,6 +206,13 @@ public class AgentLoopExecutor {
         }
 
         List<Message> messages = new ArrayList<>();
+        String memorySection = buildMemorySection(params.userId());
+        if (!memorySection.isEmpty()) {
+            // 放在最前面，定位是"背景信息"而不是这一轮问答本身——不跟 UserMessage 混在一起，
+            // 也不需要为这一个机制单独引入"系统提示词构建器"（issue #18 的格式指令就没这么做，
+            // 那是追加在问题后面；这里的内容性质不同，适合放在历史最前）
+            messages.add(new SystemMessage(memorySection));
+        }
         if (persistenceHook != null) {
             messages.addAll(persistenceHook.loadHistory(params.conversationId(), HISTORY_TOKEN_BUDGET));
         }
@@ -470,6 +501,14 @@ public class AgentLoopExecutor {
         return question + "\n" + converter.getFormat();
     }
 
+    /** 未启用（{@link #memoryStore} 为 null）或用户未知时返回空串——调用方直接据此判断要不要插入。 */
+    private String buildMemorySection(String userId) {
+        if (memoryStore == null || userId == null) {
+            return "";
+        }
+        return MemoryPromptFormatter.formatSection(memoryStore.findByUserId(userId));
+    }
+
     /**
      * content 必须显式给空串而非留 null——部分厂商的 createRequest 对 assistant 消息做了
      * Assert.state(text != null)（#5a⑤）。思考内容写进 reasoning_content metadata 保留下来，
@@ -498,6 +537,12 @@ public class AgentLoopExecutor {
         Long turnId = persistenceHook == null ? null : persistenceHook.onTurnComplete(new TurnRecord(
                 context.conversationId(), context.params().userId(), context.question(),
                 state.text(), think, null, null, context.elapsedMillis()));
+
+        // 和落库一样必须在 emitComplete 之前同步做完；提取本身失败会被 MemoryExtractor 内部吞掉，
+        // 不会因为这一步把整轮对话搞崩
+        if (memoryExtractor != null) {
+            memoryExtractor.extractAndSave(context.params().userId(), context.question(), state.text());
+        }
 
         // 答案已经确定，Complete 之前留给 provider 一次机会插引用链接/推荐问题这类收尾输出
         stageOutputManager.beforeComplete(
