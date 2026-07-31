@@ -26,6 +26,13 @@ class RoundState {
     /** 跨 chunk 的 think 标签解析状态，一轮一份。 */
     private final ThinkTagParser thinkTagParser = new ThinkTagParser();
 
+    /** 本轮发起时刻，供 TraceAudit（issue #17）计算本轮耗时用。 */
+    private final long startMillis = System.currentTimeMillis();
+
+    /** Token 消耗，取模型响应 metadata 里的 usage；模型未报告时保持 -1，不能悄悄当 0 记录进审计。 */
+    private long promptTokens = -1;
+    private long completionTokens = -1;
+
     private RoundMode mode = RoundMode.TEXT;
 
     void appendText(String text) {
@@ -51,8 +58,26 @@ class RoundState {
         toolCalls.accept(toolCall);
     }
 
+    /** 模型响应 metadata 里带了 usage 的 chunk 到达时更新——有些厂商只在最后一个 chunk 里给。 */
+    void acceptUsage(long promptTokens, long completionTokens) {
+        this.promptTokens = promptTokens;
+        this.completionTokens = completionTokens;
+    }
+
     RoundMode mode() {
         return mode;
+    }
+
+    long startMillis() {
+        return startMillis;
+    }
+
+    long promptTokens() {
+        return promptTokens;
+    }
+
+    long completionTokens() {
+        return completionTokens;
     }
 
     String text() {

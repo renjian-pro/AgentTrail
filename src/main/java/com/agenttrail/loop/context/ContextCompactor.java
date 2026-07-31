@@ -195,33 +195,7 @@ public class ContextCompactor {
      * （踩坑点 #8，真实生产 bug）。
      */
     private String renderConversation(List<Message> messages) {
-        StringBuilder rendered = new StringBuilder();
-        for (Message message : messages) {
-            rendered.append('[').append(message.getMessageType()).append("] ")
-                    .append(textOf(message)).append("\n\n");
-        }
-        return rendered.toString();
-    }
-
-    private String textOf(Message message) {
-        if (message instanceof AssistantMessage assistant) {
-            StringBuilder text = new StringBuilder(nullToEmpty(assistant.getText()));
-            if (assistant.getToolCalls() != null) {
-                for (AssistantMessage.ToolCall toolCall : assistant.getToolCalls()) {
-                    text.append("\n[调用工具 ").append(toolCall.name())
-                            .append(" 参数=").append(toolCall.arguments()).append(']');
-                }
-            }
-            return text.toString();
-        }
-        if (message instanceof ToolResponseMessage toolResponses) {
-            StringBuilder text = new StringBuilder();
-            for (ToolResponseMessage.ToolResponse response : toolResponses.getResponses()) {
-                text.append(nullToEmpty(response.responseData()));
-            }
-            return text.toString();
-        }
-        return nullToEmpty(message.getText());
+        return MessageRendering.render(messages);
     }
 
     // ==================== 通用辅助 ====================
@@ -249,9 +223,5 @@ public class ContextCompactor {
     private String placeholder(String toolName, int originalLength, String message) {
         return "{\"compacted\":true,\"tool\":\"%s\",\"originalLength\":%d,\"message\":\"%s\"}"
                 .formatted(toolName, originalLength, message);
-    }
-
-    private String nullToEmpty(String value) {
-        return (value != null) ? value : "";
     }
 }

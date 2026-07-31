@@ -2,6 +2,7 @@ package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.ContextPolicy;
+import com.agenttrail.loop.context.MessageRendering;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
@@ -16,6 +17,8 @@ import com.agenttrail.loop.persistence.TurnRecord;
 import com.agenttrail.loop.stageoutput.StageContext;
 import com.agenttrail.loop.stageoutput.StageOutputManager;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.trace.TraceRecord;
+import com.agenttrail.loop.trace.TraceStore;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchSession;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -64,6 +67,7 @@ public class AgentLoopExecutor {
     private final ToolCatalog toolCatalog;
     private final PauseConfig pauseConfig;
     private final StageOutputManager stageOutputManager;
+    private final TraceStore traceStore;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
@@ -119,6 +123,20 @@ public class AgentLoopExecutor {
                              ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
                              ToolCatalog toolCatalog, PauseConfig pauseConfig,
                              StageOutputManager stageOutputManager) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, null);
+    }
+
+    /**
+     * @param traceStore 追踪审计存储（issue #17）；传 null 表示不启用——不记录任何一轮，
+     *                   也不做消息渲染这类额外开销，行为与没有这个机制时完全一致。这个参数本身
+     *                   就是"显式开关"：要启用就必须主动传一个实现进来
+     */
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                             StageOutputManager stageOutputManager, TraceStore traceStore) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
@@ -129,6 +147,7 @@ public class AgentLoopExecutor {
         this.toolCatalog = toolCatalog;
         this.pauseConfig = pauseConfig;
         this.stageOutputManager = (stageOutputManager == null) ? StageOutputManager.EMPTY : stageOutputManager;
+        this.traceStore = traceStore;
         this.maxRounds = maxRounds;
     }
 
@@ -240,10 +259,12 @@ public class AgentLoopExecutor {
         }
 
         RoundState state = new RoundState();
+        // 在发起请求前拍下快照——这轮的历史随后会被 finishRound 原地追加助手消息，晚拍就不是"发出去的那份"了
+        String requestSnapshot = (traceStore == null) ? null : MessageRendering.render(context.messages());
         Disposable subscription = llmInvoker.streamRound(context.messages(), roundTools)
                 .doOnNext(chunk -> processChunk(chunk, state, context))
-                .doOnComplete(() -> finishRound(state, context))
-                .doOnError(error -> failRun(error, context))
+                .doOnComplete(() -> finishRound(state, context, requestSnapshot))
+                .doOnError(error -> failRun(error, context, state, requestSnapshot))
                 .subscribe();
 
         // 每轮都要重新登记，否则停止请求作用在上一轮早已结束的订阅上（踩坑点 #9）
@@ -269,6 +290,12 @@ public class AgentLoopExecutor {
 
     /** 处理单个流式 chunk：工具调用分片、正文文本、独立字段里的思考内容，三者都可能出现。 */
     private void processChunk(ChatResponse chunk, RoundState state, RunContext context) {
+        // usage 常常搭在最后一个只报统计信息、result 为空的 chunk 上，所以要在下面的空检查之前处理
+        if (chunk.getMetadata() != null && chunk.getMetadata().getUsage() != null) {
+            var usage = chunk.getMetadata().getUsage();
+            state.acceptUsage(usage.getPromptTokens(), usage.getCompletionTokens());
+        }
+
         if (chunk.getResult() == null || chunk.getResult().getOutput() == null) {
             return;
         }
@@ -285,11 +312,12 @@ public class AgentLoopExecutor {
     }
 
     /** 一轮流结束后的分支：无工具调用即终局；有工具调用则执行、拼回消息、递归下一轮。 */
-    private void finishRound(RoundState state, RunContext context) {
+    private void finishRound(RoundState state, RunContext context, String requestSnapshot) {
         // 先让标签解析器把攒住的尾巴吐出来，否则最后几个字会丢
         thinkingModeProcessor.finishRound(state, context.sink());
 
         if (state.mode() == RoundMode.TEXT) {
+            recordTrace(context, state, requestSnapshot, state.text(), true, null);
             completeRun(state, context);
             return;
         }
@@ -297,6 +325,8 @@ public class AgentLoopExecutor {
         List<AssistantMessage.ToolCall> toolCalls = state.toolCalls();
         // 先把带 tool_calls 的助手消息落进历史，再落工具结果——顺序颠倒模型侧会解析失败
         context.messages().add(buildAssistantMessage(state, toolCalls));
+        // 只记这轮"模型要调什么工具"，不记工具执行结果——结果会随下一轮历史出现在下一条记录的输入里
+        recordTrace(context, state, requestSnapshot, renderToolCalls(toolCalls), true, null);
 
         if (requiresApproval(toolCalls)) {
             pauseForApproval(toolCalls, context);
@@ -461,9 +491,33 @@ public class AgentLoopExecutor {
         taskManager.removeTask(context.conversationId());
     }
 
-    private void failRun(Throwable error, RunContext context) {
+    private void failRun(Throwable error, RunContext context, RoundState state, String requestSnapshot) {
+        recordTrace(context, state, requestSnapshot, null, false, error.getMessage());
         context.emit(new AgentStreamEvent.Error("LLM_CALL_FAILED", error.getMessage()));
         context.emitComplete();
         taskManager.removeTask(context.conversationId());
+    }
+
+    /** 工具调用列表渲染成审计可读文本，和 {@link MessageRendering} 里助手消息分支的呈现方式保持一致。 */
+    private static String renderToolCalls(List<AssistantMessage.ToolCall> toolCalls) {
+        StringBuilder rendered = new StringBuilder();
+        for (AssistantMessage.ToolCall toolCall : toolCalls) {
+            rendered.append("[调用工具 ").append(toolCall.name())
+                    .append(" 参数=").append(toolCall.arguments()).append(']').append('\n');
+        }
+        return rendered.toString();
+    }
+
+    /** 未配置 {@link #traceStore} 时是纯粹的空操作——调用方在此之前已经决定好是否要渲染快照。 */
+    private void recordTrace(RunContext context, RoundState state, String requestSnapshot,
+                             String outputData, boolean success, String errorMessage) {
+        if (traceStore == null) {
+            return;
+        }
+        String think = state.reasoning().isEmpty() ? null : state.reasoning();
+        long durationMillis = System.currentTimeMillis() - state.startMillis();
+        traceStore.save(new TraceRecord(context.conversationId(), context.roundCounter().get(),
+                requestSnapshot, outputData, think, state.promptTokens(), state.completionTokens(),
+                durationMillis, success, errorMessage, System.currentTimeMillis()));
     }
 }

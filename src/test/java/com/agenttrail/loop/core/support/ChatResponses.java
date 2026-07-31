@@ -1,6 +1,8 @@
 package com.agenttrail.loop.core.support;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 
@@ -31,6 +33,12 @@ public final class ChatResponses {
     public static ChatResponse toolCalls(AssistantMessage.ToolCall... calls) {
         AssistantMessage message = AssistantMessage.builder().toolCalls(List.of(calls)).build();
         return new ChatResponse(List.of(new Generation(message)));
+    }
+
+    /** 只带 usage 统计、没有正文/工具调用的 chunk——部分厂商把 token 统计单独放在流的最后一个 chunk 里。 */
+    public static ChatResponse usage(int promptTokens, int completionTokens) {
+        var usage = new DefaultUsage(promptTokens, completionTokens, promptTokens + completionTokens, null);
+        return new ChatResponse(List.of(), ChatResponseMetadata.builder().usage(usage).build());
     }
 
     public static AssistantMessage.ToolCall call(String id, String name, String arguments) {
