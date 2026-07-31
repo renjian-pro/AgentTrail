@@ -30,6 +30,7 @@
 		<java.version>21</java.version>
 		<agentscope.version>2.0.0</agentscope.version>
 		<spring-ai.version>2.0.0</spring-ai.version>
+		<jsonschema-generator.version>5.0.0</jsonschema-generator.version>
 		<sonar.organization>renjian-pro</sonar.organization>
 		<sonar.host.url>https://sonarcloud.io</sonar.host.url>
 		<sonar.projectKey>renjian-pro_AgentTrail</sonar.projectKey>
@@ -68,6 +69,19 @@
 		<dependency>
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>
+		</dependency>
+
+		<!-- BeanOutputConverter（issue #18 结构化输出）生成 JSON Schema 靠这个库；spring-ai-bom
+		     只把它声明成 optional，不显式加的话运行时才会在第一次调用时炸 NoClassDefFoundError -->
+		<dependency>
+			<groupId>com.github.victools</groupId>
+			<artifactId>jsonschema-generator</artifactId>
+			<version>${jsonschema-generator.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>com.github.victools</groupId>
+			<artifactId>jsonschema-module-jackson</artifactId>
+			<version>${jsonschema-generator.version}</version>
 		</dependency>
 
 		<dependency>

@@ -4,6 +4,7 @@ import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.context.MessageRendering;
 import com.agenttrail.loop.model.AgentStreamEvent;
+import com.agenttrail.loop.model.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.pause.PauseConfig;
@@ -19,6 +20,7 @@ import com.agenttrail.loop.stageoutput.StageOutputManager;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.trace.TraceRecord;
 import com.agenttrail.loop.trace.TraceStore;
+import com.agenttrail.loop.structured.JsonRepair;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchSession;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -28,6 +30,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.slf4j.MDC;
+import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -182,7 +185,7 @@ public class AgentLoopExecutor {
         if (persistenceHook != null) {
             messages.addAll(persistenceHook.loadHistory(params.conversationId(), HISTORY_TOKEN_BUDGET));
         }
-        messages.add(new UserMessage(question));
+        messages.add(new UserMessage(withFormatInstruction(question, params.outputType())));
 
         // 每次对话请求各自开一个全新会话——发现的工具互相隔离，不会泄漏给并发的其他会话
         ToolSearchSession toolSearchSession = (toolCatalog == null) ? null : toolCatalog.newSession();
@@ -239,7 +242,9 @@ public class AgentLoopExecutor {
         if (failure.get() != null) {
             throw failure.get();
         }
-        return answer.toString();
+        // 结构化输出场景下，流式返回的原始文本可能不是合法 JSON——这里做最后一次修复兜底，
+        // 而不是在 stream() 里改：那边的 Text 事件已经边生成边推给调用方了，没法事后再改一遍
+        return (params.outputType() == null) ? answer.toString() : JsonRepair.fixJson(answer.toString());
     }
 
     /**
@@ -450,6 +455,19 @@ public class AgentLoopExecutor {
                 .toList();
         ToolParamInjector paramInjector = new ToolParamInjector(paused.params().toolParams());
         return toolCallExecutor.execute(approvedCalls, sink, paramInjector);
+    }
+
+    /**
+     * 声明了 {@link OutputType} 时（issue #18），把 JSON Schema 格式指令追加到用户提问后面，
+     * 只影响真正发给模型的这条 {@link UserMessage}——{@code question} 本身保持原样，
+     * 落库、压缩摘要、StageContext 这些消费方看到的还是用户的原始提问，不会混入格式指令噪音。
+     */
+    private static String withFormatInstruction(String question, OutputType outputType) {
+        if (outputType == null) {
+            return question;
+        }
+        BeanOutputConverter<?> converter = new BeanOutputConverter<>(outputType.toTypeReference());
+        return question + "\n" + converter.getFormat();
     }
 
     /**

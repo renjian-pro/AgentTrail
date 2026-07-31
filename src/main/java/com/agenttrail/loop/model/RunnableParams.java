@@ -18,15 +18,23 @@ import java.util.Map;
  * @param conversationId 会话标识，跨轮可见
  * @param userId         当前用户，权限判定的主体
  * @param toolParams     模型不可见、执行前强制注入的系统级参数
+ * @param outputType     期望的结构化输出类型（issue #18）；为 null 表示不启用，
+ *                       循环既不注入格式指令也不做 JSON 修复，行为和没有这个机制时完全一致
  */
-public record RunnableParams(String conversationId, String userId, Map<String, Object> toolParams) {
+public record RunnableParams(String conversationId, String userId, Map<String, Object> toolParams,
+                             OutputType outputType) {
 
     public RunnableParams {
         toolParams = (toolParams == null) ? Map.of() : Map.copyOf(toolParams);
     }
 
-    /** 不需要注入任何系统级参数时的简写。 */
+    /** 不需要注入任何系统级参数、也不需要结构化输出时的简写。 */
     public RunnableParams(String conversationId, String userId) {
-        this(conversationId, userId, Map.of());
+        this(conversationId, userId, Map.of(), null);
+    }
+
+    /** 需要系统级参数、但不需要结构化输出时的简写。 */
+    public RunnableParams(String conversationId, String userId, Map<String, Object> toolParams) {
+        this(conversationId, userId, toolParams, null);
     }
 }
