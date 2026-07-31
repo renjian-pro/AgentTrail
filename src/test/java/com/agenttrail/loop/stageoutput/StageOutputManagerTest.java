@@ -22,13 +22,16 @@ class StageOutputManagerTest {
         StageOutputManager.EMPTY.beforeComplete(CONTEXT, emitted::add);
 
         assertThat(emitted).isEmpty();
-        assertThat(StageOutputManager.EMPTY.isEmpty()).isTrue();
     }
 
     @Test
-    void constructingWithAnEmptyOrNullListIsAlsoEmpty() {
-        assertThat(new StageOutputManager(List.of()).isEmpty()).isTrue();
-        assertThat(new StageOutputManager(null).isEmpty()).isTrue();
+    void constructingWithAnEmptyOrNullListIsAlsoANoOp() {
+        List<AgentStreamEvent> emitted = new ArrayList<>();
+
+        new StageOutputManager(List.of()).afterStart(CONTEXT, emitted::add);
+        new StageOutputManager(null).afterStart(CONTEXT, emitted::add);
+
+        assertThat(emitted).isEmpty();
     }
 
     @Test

@@ -5,8 +5,6 @@ import com.agenttrail.loop.memory.InMemoryMemoryStore;
 import com.agenttrail.loop.memory.MemoryItem;
 import com.agenttrail.loop.memory.MemoryType;
 import com.agenttrail.loop.model.RunnableParams;
-import com.agenttrail.loop.model.ThinkingMode;
-import com.agenttrail.loop.task.AgentTaskManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -33,8 +31,9 @@ class AgentLoopExecutorMemoryTest {
         InMemoryMemoryStore store = new InMemoryMemoryStore();
         store.save(new MemoryItem("user-1", MemoryType.PROFILE, "产品经理", 1L));
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("你好")));
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, null, null, store);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .memoryStore(store)
+                .build();
 
         executor.stream("你好", new RunnableParams("conv-1", "user-1")).collectList().block(Duration.ofSeconds(5));
 
@@ -47,8 +46,9 @@ class AgentLoopExecutorMemoryTest {
     void doesNotInjectASystemMessageWhenThereIsNoExistingMemory() {
         InMemoryMemoryStore store = new InMemoryMemoryStore();
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("你好")));
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, null, null, store);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .memoryStore(store)
+                .build();
 
         executor.stream("你好", new RunnableParams("conv-1", "user-1")).collectList().block(Duration.ofSeconds(5));
 
@@ -71,8 +71,9 @@ class AgentLoopExecutorMemoryTest {
                 return Flux.just(text("好的，记住了"));
             }
         };
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, null, null, store);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .memoryStore(store)
+                .build();
 
         executor.stream("我是产品经理", new RunnableParams("conv-1", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));

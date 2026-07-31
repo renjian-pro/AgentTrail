@@ -30,10 +30,7 @@ public final class MessageRendering {
         if (message instanceof AssistantMessage assistant) {
             StringBuilder text = new StringBuilder(nullToEmpty(assistant.getText()));
             if (assistant.getToolCalls() != null) {
-                for (AssistantMessage.ToolCall toolCall : assistant.getToolCalls()) {
-                    text.append("\n[调用工具 ").append(toolCall.name())
-                            .append(" 参数=").append(toolCall.arguments()).append(']');
-                }
+                text.append(renderToolCalls(assistant.getToolCalls()));
             }
             return text.toString();
         }
@@ -45,6 +42,19 @@ public final class MessageRendering {
             return text.toString();
         }
         return nullToEmpty(message.getText());
+    }
+
+    /**
+     * 工具调用列表渲染成人类可读文本，一行一个——{@link com.agenttrail.loop.core.AgentLoopExecutor}
+     * 的 TraceAudit（issue #17）记工具调用轮的产出时复用这个方法，避免两处各写一份同样的格式化。
+     */
+    public static String renderToolCalls(List<AssistantMessage.ToolCall> toolCalls) {
+        StringBuilder rendered = new StringBuilder();
+        for (AssistantMessage.ToolCall toolCall : toolCalls) {
+            rendered.append("[调用工具 ").append(toolCall.name())
+                    .append(" 参数=").append(toolCall.arguments()).append(']').append('\n');
+        }
+        return rendered.toString();
     }
 
     private static String nullToEmpty(String value) {

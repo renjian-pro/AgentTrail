@@ -3,8 +3,6 @@ package com.agenttrail.loop.core;
 import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
 import com.agenttrail.loop.model.RunnableParams;
-import com.agenttrail.loop.model.ThinkingMode;
-import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.trace.InMemoryTraceStore;
 import com.agenttrail.loop.trace.TraceRecord;
 import org.junit.jupiter.api.Test;
@@ -27,8 +25,9 @@ class AgentLoopExecutorTraceTest {
     void recordsOneSuccessfulTraceForATextOnlyRound() {
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("done"), usage(12, 4)));
         InMemoryTraceStore traceStore = new InMemoryTraceStore();
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, null, traceStore);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .traceStore(traceStore)
+                .build();
 
         executor.stream("hi", new RunnableParams("conv-1", "user-1")).collectList().block(Duration.ofSeconds(5));
 
@@ -52,8 +51,9 @@ class AgentLoopExecutorTraceTest {
                 List.of(toolCall("call-1", "echo", "{}")),
                 List.of(text("final answer")));
         InMemoryTraceStore traceStore = new InMemoryTraceStore();
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(echoTool), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, null, traceStore);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(echoTool), 5)
+                .traceStore(traceStore)
+                .build();
 
         executor.stream("echo something", new RunnableParams("conv-2", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
@@ -71,8 +71,9 @@ class AgentLoopExecutorTraceTest {
     void recordsAFailedTraceWhenTheModelCallErrors() {
         ChatModelFailure failure = new ChatModelFailure();
         InMemoryTraceStore traceStore = new InMemoryTraceStore();
-        AgentLoopExecutor executor = new AgentLoopExecutor(failure, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, null, traceStore);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(failure, List.of(), 5)
+                .traceStore(traceStore)
+                .build();
 
         executor.stream("hi", new RunnableParams("conv-3", "user-1")).collectList().block(Duration.ofSeconds(5));
 

@@ -45,10 +45,6 @@ public class StageOutputManager {
         invoke(StageTiming.BEFORE_COMPLETE, context, emitter);
     }
 
-    public boolean isEmpty() {
-        return providersByTiming.isEmpty();
-    }
-
     /**
      * 一个 provider 出异常不该拖垮其它 provider、更不该拖垮整个循环——记日志、跳过，
      * 剩下的 provider 照常跑，就像工具调用失败不会中断整轮对话一样。

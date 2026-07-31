@@ -4,12 +4,10 @@ import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
-import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.stageoutput.StageContext;
 import com.agenttrail.loop.stageoutput.StageOutputManager;
 import com.agenttrail.loop.stageoutput.StageOutputProvider;
 import com.agenttrail.loop.stageoutput.StageTiming;
-import com.agenttrail.loop.task.AgentTaskManager;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -54,8 +52,9 @@ class AgentLoopExecutorStageOutputTest {
                     return "refs";
                 })));
 
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(echoTool), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, manager);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(echoTool), 5)
+                .stageOutputManager(manager)
+                .build();
 
         List<AgentStreamEvent> events = executor.stream("echo something", new RunnableParams("conv-1", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
@@ -81,8 +80,9 @@ class AgentLoopExecutorStageOutputTest {
                     firedHooks.add("AFTER_TOOL_END");
                     return "should not appear";
                 })));
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, manager);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .stageOutputManager(manager)
+                .build();
 
         executor.stream("你好", new RunnableParams("conv-1", "user-1")).collectList().block(Duration.ofSeconds(5));
 

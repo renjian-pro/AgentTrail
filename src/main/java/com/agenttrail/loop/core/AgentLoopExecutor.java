@@ -34,7 +34,6 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.slf4j.MDC;
-import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -176,6 +175,88 @@ public class AgentLoopExecutor {
         this.memoryStore = memoryStore;
         this.memoryExtractor = (memoryStore == null) ? null : new MemoryExtractor(chatModel, memoryStore);
         this.maxRounds = maxRounds;
+    }
+
+    /**
+     * 起一个 builder：{@code chatModel}/{@code tools}/{@code maxRounds} 是唯一必填项，其余可选机制
+     * 通过命名方法设置。比起继续在telescoping 构造函数链上叠新重载——每加一个可选机制就多一个
+     * 只为它而生的重载，调用方为了设最后一个参数得排一串 {@code null} 占位——这里改用命名方法，
+     * 加错顺序或漏传一个不会被编译器悄悄放过。不影响、不替换现有构造函数，两种装配方式并存。
+     */
+    public static Builder builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
+        return new Builder(chatModel, tools, maxRounds);
+    }
+
+    public static final class Builder {
+
+        private final ChatModel chatModel;
+        private final List<ToolCallback> tools;
+        private final int maxRounds;
+        private AgentTaskManager taskManager = new AgentTaskManager();
+        private ContextPolicy contextPolicy;
+        private ThinkingMode thinkingMode = ThinkingMode.DISABLED;
+        private TurnPersistenceHook persistenceHook;
+        private ToolCatalog toolCatalog;
+        private PauseConfig pauseConfig;
+        private StageOutputManager stageOutputManager;
+        private TraceStore traceStore;
+        private MemoryStore memoryStore;
+
+        private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
+            this.chatModel = chatModel;
+            this.tools = tools;
+            this.maxRounds = maxRounds;
+        }
+
+        public Builder taskManager(AgentTaskManager taskManager) {
+            this.taskManager = taskManager;
+            return this;
+        }
+
+        public Builder contextPolicy(ContextPolicy contextPolicy) {
+            this.contextPolicy = contextPolicy;
+            return this;
+        }
+
+        public Builder thinkingMode(ThinkingMode thinkingMode) {
+            this.thinkingMode = thinkingMode;
+            return this;
+        }
+
+        public Builder persistenceHook(TurnPersistenceHook persistenceHook) {
+            this.persistenceHook = persistenceHook;
+            return this;
+        }
+
+        public Builder toolCatalog(ToolCatalog toolCatalog) {
+            this.toolCatalog = toolCatalog;
+            return this;
+        }
+
+        public Builder pauseConfig(PauseConfig pauseConfig) {
+            this.pauseConfig = pauseConfig;
+            return this;
+        }
+
+        public Builder stageOutputManager(StageOutputManager stageOutputManager) {
+            this.stageOutputManager = stageOutputManager;
+            return this;
+        }
+
+        public Builder traceStore(TraceStore traceStore) {
+            this.traceStore = traceStore;
+            return this;
+        }
+
+        public Builder memoryStore(MemoryStore memoryStore) {
+            this.memoryStore = memoryStore;
+            return this;
+        }
+
+        public AgentLoopExecutor build() {
+            return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
+                    persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore);
+        }
     }
 
     private static List<ToolCallback> withDeferredPool(List<ToolCallback> tools, ToolCatalog toolCatalog) {
@@ -362,7 +443,7 @@ public class AgentLoopExecutor {
         // 先把带 tool_calls 的助手消息落进历史，再落工具结果——顺序颠倒模型侧会解析失败
         context.messages().add(buildAssistantMessage(state, toolCalls));
         // 只记这轮"模型要调什么工具"，不记工具执行结果——结果会随下一轮历史出现在下一条记录的输入里
-        recordTrace(context, state, requestSnapshot, renderToolCalls(toolCalls), true, null);
+        recordTrace(context, state, requestSnapshot, MessageRendering.renderToolCalls(toolCalls), true, null);
 
         if (requiresApproval(toolCalls)) {
             pauseForApproval(toolCalls, context);
@@ -497,8 +578,7 @@ public class AgentLoopExecutor {
         if (outputType == null) {
             return question;
         }
-        BeanOutputConverter<?> converter = new BeanOutputConverter<>(outputType.toTypeReference());
-        return question + "\n" + converter.getFormat();
+        return question + "\n" + outputType.formatInstruction();
     }
 
     /** 未启用（{@link #memoryStore} 为 null）或用户未知时返回空串——调用方直接据此判断要不要插入。 */
@@ -559,16 +639,6 @@ public class AgentLoopExecutor {
         context.emit(new AgentStreamEvent.Error("LLM_CALL_FAILED", error.getMessage()));
         context.emitComplete();
         taskManager.removeTask(context.conversationId());
-    }
-
-    /** 工具调用列表渲染成审计可读文本，和 {@link MessageRendering} 里助手消息分支的呈现方式保持一致。 */
-    private static String renderToolCalls(List<AssistantMessage.ToolCall> toolCalls) {
-        StringBuilder rendered = new StringBuilder();
-        for (AssistantMessage.ToolCall toolCall : toolCalls) {
-            rendered.append("[调用工具 ").append(toolCall.name())
-                    .append(" 参数=").append(toolCall.arguments()).append(']').append('\n');
-        }
-        return rendered.toString();
     }
 
     /** 未配置 {@link #traceStore} 时是纯粹的空操作——调用方在此之前已经决定好是否要渲染快照。 */
