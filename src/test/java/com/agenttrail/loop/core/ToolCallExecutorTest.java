@@ -2,10 +2,13 @@ package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.model.AgentStreamEvent;
+import com.agenttrail.loop.model.TodoItem;
+import com.agenttrail.loop.tools.TodoWriteTool;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
 import reactor.core.publisher.Sinks;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -109,6 +112,38 @@ class ToolCallExecutorTest {
         long elapsed = System.currentTimeMillis() - startedAt;
 
         assertThat(elapsed).isLessThan(250);
+    }
+
+    /**
+     * 核心约束（issue #8）：TodoProgress 事件的内容来自重新解析原始参数，不依赖工具的返回值——
+     * 这里让工具故意返回一段和任务清单毫无关系的文本，事件内容仍必须精确反映提交的参数。
+     */
+    @Test
+    void emitsTodoProgressFromReparsedArgumentsIndependentlyOfTheToolsReturnValue() {
+        RecordingToolCallback todoWrite = new RecordingToolCallback(
+                TodoWriteTool.TOOL_NAME, "todo tool", arguments -> "TOTALLY UNRELATED RETURN VALUE");
+        ToolCallExecutor executor = new ToolCallExecutor(List.of(todoWrite));
+        String todosJson = "{\"todos\":[{\"content\":\"c1\",\"activeForm\":\"doing c1\",\"status\":\"in_progress\"}]}";
+
+        executor.execute(List.of(call("call-1", TodoWriteTool.TOOL_NAME, todosJson)), sink, NO_INJECTION);
+        sink.tryEmitComplete();
+
+        List<AgentStreamEvent> events = sink.asFlux().collectList().block(Duration.ofSeconds(2));
+        assertThat(events).filteredOn(AgentStreamEvent.TodoProgress.class::isInstance).singleElement()
+                .isEqualTo(new AgentStreamEvent.TodoProgress(
+                        List.of(new TodoItem("c1", "doing c1", TodoItem.Status.IN_PROGRESS))));
+    }
+
+    @Test
+    void doesNotEmitTodoProgressForOtherTools() {
+        RecordingToolCallback echo = new RecordingToolCallback("echo", "echoes", "pong");
+        ToolCallExecutor executor = new ToolCallExecutor(List.of(echo));
+
+        executor.execute(List.of(call("call-1", "echo", "{}")), sink, NO_INJECTION);
+        sink.tryEmitComplete();
+
+        List<AgentStreamEvent> events = sink.asFlux().collectList().block(Duration.ofSeconds(2));
+        assertThat(events).noneMatch(AgentStreamEvent.TodoProgress.class::isInstance);
     }
 
     private static void sleep(long millis) {

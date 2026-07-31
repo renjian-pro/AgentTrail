@@ -1,6 +1,7 @@
 package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.model.AgentStreamEvent;
+import com.agenttrail.loop.tools.TodoWriteTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.messages.AssistantMessage.ToolCall;
 import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
@@ -98,7 +99,22 @@ class ToolCallExecutor {
         String result = tool.call(arguments);
 
         sink.tryEmitNext(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
+        emitTodoProgressIfApplicable(toolCall.name(), arguments, sink);
         return new ToolResponse(toolCall.id(), toolCall.name(), result);
+    }
+
+    /**
+     * {@code TodoWrite} 是唯一需要在工具执行之外额外广播一个事件的工具：进度快照必须来自
+     * 重新解析的原始参数，不能依赖 {@code result}（工具的返回文本）——两者各自独立解析同一份
+     * JSON，这样 {@link TodoWriteTool} 内部实现的任何改动都不会悄悄影响前端看到的进度。
+     * 解析失败（结构不合法）就静默跳过，不影响这一轮工具调用本身的结果。
+     */
+    private void emitTodoProgressIfApplicable(String toolName, String arguments, Sinks.Many<AgentStreamEvent> sink) {
+        if (!TodoWriteTool.TOOL_NAME.equals(toolName)) {
+            return;
+        }
+        TodoWriteTool.parseSnapshot(arguments)
+                .ifPresent(items -> sink.tryEmitNext(new AgentStreamEvent.TodoProgress(items)));
     }
 
     /** 先查固定表，查不到再看是不是这次会话专属的那一个（按名字比对，不假设调用方传对了）。 */

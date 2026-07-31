@@ -1,5 +1,7 @@
 package com.agenttrail.loop.model;
 
+import java.util.List;
+
 /**
  * 手写 ReAct 循环对外输出的统一流式事件协议，一个事件对应 SSE 的一个 {@code data:} 帧。
  *
@@ -25,6 +27,15 @@ public sealed interface AgentStreamEvent {
 
     /** 某个工具执行完毕，携带原始返回内容。 */
     record ToolEnd(String toolName, String toolCallId, String result) implements AgentStreamEvent {
+    }
+
+    /**
+     * 待办清单的最新快照，{@code TodoWrite} 工具每次被调用后发一次。
+     *
+     * <p>{@code items} 来自重新解析那次调用的原始参数，不是从工具的返回文本里提取——
+     * 两者独立解析同一份 JSON，工具内部实现改动不会悄悄影响这里的内容。
+     */
+    record TodoProgress(List<TodoItem> items) implements AgentStreamEvent {
     }
 
     /** 可恢复或不可恢复的错误。{@code code} 供前端做分类处理，不是给人看的。 */
