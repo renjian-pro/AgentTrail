@@ -96,7 +96,7 @@ class RedisTaskLockIT {
         RedisTaskLock shortLivedLock = new RedisTaskLock(redisson, "instance-crashed", Duration.ofSeconds(1));
         shortLivedLock.tryAcquire(conversationId);
         // 持有者"崩溃"：不调用 release，也不再续期——等过 TTL，靠 Redis 自己到期删 key
-        sleep(Duration.ofMillis(1_200));
+        Timing.sleep(Duration.ofMillis(1_200));
 
         assertThat(lockAsInstanceB.tryAcquire(conversationId)).isTrue();
     }
@@ -149,14 +149,5 @@ class RedisTaskLockIT {
 
     private static String uniqueConversationId() {
         return "conv-" + UUID.randomUUID();
-    }
-
-    private static void sleep(Duration duration) {
-        try {
-            Thread.sleep(duration.toMillis());
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException(interrupted);
-        }
     }
 }

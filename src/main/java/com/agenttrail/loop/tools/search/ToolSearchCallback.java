@@ -15,11 +15,9 @@ import org.springframework.ai.tool.definition.ToolDefinition;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -69,15 +67,16 @@ final class ToolSearchCallback implements ToolCallback {
     private final ToolDefinition definition;
 
     /**
-     * @param tools 未被用到——发现之后"能不能调用"由 {@link ToolSearchSession} 按名字回查这份表，
-     *              本类只做发现，参数留着是为了让调用方（{@link ToolSearchSession}）的构造语义保持对称
+     * @param indexByName 按名字查表用，来自 {@link ToolCatalog}——跨对话请求共享、只建一次；
+     *                     本类不重新扫一遍 index 列表建表，避免每次新会话都重复这份工作。
+     *                     "发现之后能不能调用"由 {@link ToolSearchSession} 按名字回查工具表，
+     *                     不是本类的职责
      */
-    ToolSearchCallback(ToolSearchConfig config, Map<String, ToolCallback> tools, List<ToolIndexEntry> index,
+    ToolSearchCallback(ToolSearchConfig config, List<ToolIndexEntry> index, Map<String, ToolIndexEntry> indexByName,
                        ChatModel chatModel, Set<String> discoveredNames) {
         this.config = config;
         this.index = index;
-        this.indexByName = index.stream().collect(Collectors.toMap(
-                ToolIndexEntry::name, Function.identity(), (first, duplicate) -> first, LinkedHashMap::new));
+        this.indexByName = indexByName;
         this.chatModel = chatModel;
         this.discoveredNames = discoveredNames;
         this.definition = ToolDefinition.builder()

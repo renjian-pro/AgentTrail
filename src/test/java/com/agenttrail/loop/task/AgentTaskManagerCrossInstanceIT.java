@@ -85,7 +85,7 @@ class AgentTaskManagerCrossInstanceIT {
 
         assertThat(stoppedLocallyOnB).as("B 自己没有这个任务，不能谎称停掉了").isFalse();
         // Pub/Sub 跨网络投递，等它真正生效——不是本地方法调用那种立刻可见
-        waitUntil(Duration.ofSeconds(5), () -> subscriptionOnA.isDisposed());
+        Timing.waitUntil(Duration.ofSeconds(5), () -> subscriptionOnA.isDisposed());
         assertThat(instanceA.hasRunningTask(conversationId))
                 .as("A 收到广播后必须把自己手上的任务真正清理掉").isFalse();
     }
@@ -120,7 +120,7 @@ class AgentTaskManagerCrossInstanceIT {
 
         assertThat(stoppedOnB).isFalse();
         // 给广播一点时间飞过去，确认 A 也确实什么都没发生（不是恰好还没到而已）
-        sleep(Duration.ofMillis(500));
+        Timing.sleep(Duration.ofMillis(500));
         assertThat(instanceA.hasRunningTask(conversationId)).isFalse();
     }
 
@@ -129,25 +129,5 @@ class AgentTaskManagerCrossInstanceIT {
         config.useSingleServer().setAddress(
                 "redis://%s:%d".formatted(REDIS.getHost(), REDIS.getFirstMappedPort()));
         return Redisson.create(config);
-    }
-
-    private static void waitUntil(Duration timeout, java.util.function.BooleanSupplier condition) {
-        long deadline = System.nanoTime() + timeout.toNanos();
-        while (System.nanoTime() < deadline) {
-            if (condition.getAsBoolean()) {
-                return;
-            }
-            sleep(Duration.ofMillis(50));
-        }
-        throw new AssertionError("条件在 " + timeout + " 内始终没有满足");
-    }
-
-    private static void sleep(Duration duration) {
-        try {
-            Thread.sleep(duration.toMillis());
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException(interrupted);
-        }
     }
 }

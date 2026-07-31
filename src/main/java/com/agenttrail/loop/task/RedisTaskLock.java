@@ -9,9 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -87,7 +85,7 @@ public class RedisTaskLock {
 
     /** @return true 表示确实是本实例持有该锁且续期成功；false 表示锁已不在本实例手上（被抢占或已经过期） */
     public boolean renew(String conversationId) {
-        boolean renewed = evalOwnershipScript(RENEW_SCRIPT, conversationId, String.valueOf(ttl.toMillis()));
+        boolean renewed = evalOwnershipScript(RENEW_SCRIPT, conversationId, instanceId, String.valueOf(ttl.toMillis()));
         if (!renewed) {
             heldConversationIds.remove(conversationId);
         }
@@ -96,7 +94,7 @@ public class RedisTaskLock {
 
     /** @return true 表示确实由本实例释放了持有的锁；false 表示本来就不是本实例持有（已提前失去所有权） */
     public boolean release(String conversationId) {
-        boolean released = evalOwnershipScript(RELEASE_SCRIPT, conversationId);
+        boolean released = evalOwnershipScript(RELEASE_SCRIPT, conversationId, instanceId);
         heldConversationIds.remove(conversationId);
         return released;
     }
@@ -114,13 +112,11 @@ public class RedisTaskLock {
         }
     }
 
-    private boolean evalOwnershipScript(String script, String conversationId, String... extraArgs) {
-        List<Object> args = new ArrayList<>();
-        args.add(instanceId);
-        Collections.addAll(args, extraArgs);
+    /** @param args ARGV，按脚本里引用的顺序传（RENEW 是 [instanceId, ttlMillis]，RELEASE 是 [instanceId]） */
+    private boolean evalOwnershipScript(String script, String conversationId, Object... args) {
         Long result = redisson.getScript(StringCodec.INSTANCE).eval(
                 RScript.Mode.READ_WRITE, script, RScript.ReturnType.INTEGER,
-                Collections.singletonList(key(conversationId)), args.toArray());
+                Collections.singletonList(key(conversationId)), args);
         return result != null && result == 1L;
     }
 

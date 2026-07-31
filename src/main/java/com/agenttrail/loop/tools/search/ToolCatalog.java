@@ -19,6 +19,7 @@ public final class ToolCatalog {
 
     private final Map<String, ToolCallback> tools;
     private final List<ToolIndexEntry> index;
+    private final Map<String, ToolIndexEntry> indexByName;
     private final ToolSearchConfig config;
     private final ChatModel chatModel;
 
@@ -26,6 +27,7 @@ public final class ToolCatalog {
                         ToolSearchConfig config, ChatModel chatModel) {
         this.tools = tools;
         this.index = index;
+        this.indexByName = ToolIndexEntry.indexByName(index);
         this.config = config;
         this.chatModel = chatModel;
     }
@@ -40,7 +42,7 @@ public final class ToolCatalog {
     }
 
     public ToolSearchSession newSession() {
-        return new ToolSearchSession(tools, index, config, chatModel);
+        return new ToolSearchSession(tools, index, indexByName, config, chatModel);
     }
 
     /** 全部延迟工具，不管有没有被发现——执行层要按这份找到工具，可见性限制只在 LLM 那一侧。 */

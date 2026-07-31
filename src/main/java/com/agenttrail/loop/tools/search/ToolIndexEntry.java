@@ -3,10 +3,13 @@ package com.agenttrail.loop.tools.search;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 一个延迟工具的检索索引：名称按 camelCase/snake_case 拆词，描述按词边界拆词，供关键词打分用。
@@ -27,6 +30,13 @@ record ToolIndexEntry(String name, String description, List<String> nameTokens, 
             index.add(new ToolIndexEntry(name, description, tokenizeName(name), tokenize(description)));
         }
         return List.copyOf(index);
+    }
+
+    /** 按名字查表用，供 {@link ToolSearchCallback} 校验 LLM 检索结果——和 {@link #buildIndex} 一样
+     *  只在装配 {@link ToolCatalog} 时建一次，不是每次对话请求都重新扫一遍 index 列表。 */
+    static Map<String, ToolIndexEntry> indexByName(List<ToolIndexEntry> index) {
+        return index.stream().collect(Collectors.toMap(
+                ToolIndexEntry::name, Function.identity(), (first, duplicate) -> first, LinkedHashMap::new));
     }
 
     private static List<String> tokenizeName(String name) {

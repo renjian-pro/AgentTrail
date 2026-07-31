@@ -32,7 +32,7 @@ class ToolSearchCallbackTest {
         Map<String, ToolCallback> byName = List.of(tools).stream()
                 .collect(java.util.stream.Collectors.toMap(t -> t.getToolDefinition().name(), t -> t));
         List<ToolIndexEntry> index = ToolIndexEntry.buildIndex(byName);
-        return new ToolSearchCallback(config, byName, index, chatModel, discovered);
+        return new ToolSearchCallback(config, index, ToolIndexEntry.indexByName(index), chatModel, discovered);
     }
 
     @Test

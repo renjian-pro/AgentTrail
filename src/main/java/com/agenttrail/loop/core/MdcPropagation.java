@@ -23,20 +23,6 @@ final class MdcPropagation {
     private MdcPropagation() {
     }
 
-    static void run(Map<String, String> snapshot, Runnable action) {
-        if (snapshot == null) {
-            action.run();
-            return;
-        }
-        Map<String, String> previous = MDC.getCopyOfContextMap();
-        MDC.setContextMap(snapshot);
-        try {
-            action.run();
-        } finally {
-            restore(previous);
-        }
-    }
-
     static <T> T call(Map<String, String> snapshot, Callable<T> action) throws Exception {
         if (snapshot == null) {
             return action.call();

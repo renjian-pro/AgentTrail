@@ -20,9 +20,9 @@ public final class ToolSearchSession {
     private final ToolCallback toolSearchCallback;
 
     ToolSearchSession(Map<String, ToolCallback> tools, List<ToolIndexEntry> index,
-                      ToolSearchConfig config, ChatModel chatModel) {
+                      Map<String, ToolIndexEntry> indexByName, ToolSearchConfig config, ChatModel chatModel) {
         this.tools = tools;
-        this.toolSearchCallback = new ToolSearchCallback(config, tools, index, chatModel, discoveredNames);
+        this.toolSearchCallback = new ToolSearchCallback(config, index, indexByName, chatModel, discoveredNames);
     }
 
     /** 本轮该暴露给模型的、已经被搜到的延迟工具；没搜到的对模型不可见。 */

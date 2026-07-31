@@ -63,7 +63,7 @@ public class AgentLoopExecutor {
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
-        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null);
+        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
     }
 
     /**
@@ -328,21 +328,26 @@ public class AgentLoopExecutor {
         if (paused.pendingToolCalls().isEmpty()) {
             return List.of();
         }
-        if (instruction instanceof ResumeInstruction.NewInstruction) {
-            return paused.pendingToolCalls().stream()
-                    .map(pending -> new ToolResponseMessage.ToolResponse(pending.id(), pending.name(),
-                            "该调用因用户中断并给出新指令而被跳过，未执行"))
-                    .toList();
-        }
-        ResumeInstruction.ApprovalDecision decision = (ResumeInstruction.ApprovalDecision) instruction;
-        if (!decision.approved()) {
-            String reason = (decision.rejectionReason() == null) ? "" : "：" + decision.rejectionReason();
-            return paused.pendingToolCalls().stream()
-                    .map(pending -> new ToolResponseMessage.ToolResponse(pending.id(), pending.name(),
-                            "Error: 用户拒绝执行该工具" + reason))
-                    .toList();
-        }
+        // sealed 接口 + 穷尽 switch：将来 ResumeInstruction 再加一种分支，编译器会在这里直接报错，
+        // 不会像 instanceof 链那样悄悄漏掉一种情况
+        return switch (instruction) {
+            case ResumeInstruction.NewInstruction ignored ->
+                    skipPendingToolCalls(paused, "该调用因用户中断并给出新指令而被跳过，未执行");
+            case ResumeInstruction.ApprovalDecision decision when !decision.approved() ->
+                    skipPendingToolCalls(paused, "Error: 用户拒绝执行该工具"
+                            + (decision.rejectionReason() == null ? "" : "：" + decision.rejectionReason()));
+            case ResumeInstruction.ApprovalDecision approved -> executePendingToolCalls(paused, sink);
+        };
+    }
 
+    private List<ToolResponseMessage.ToolResponse> skipPendingToolCalls(PauseState paused, String message) {
+        return paused.pendingToolCalls().stream()
+                .map(pending -> new ToolResponseMessage.ToolResponse(pending.id(), pending.name(), message))
+                .toList();
+    }
+
+    private List<ToolResponseMessage.ToolResponse> executePendingToolCalls(
+            PauseState paused, Sinks.Many<AgentStreamEvent> sink) {
         List<AssistantMessage.ToolCall> approvedCalls = paused.pendingToolCalls().stream()
                 .map(pending -> new AssistantMessage.ToolCall(pending.id(), "function", pending.name(), pending.arguments()))
                 .toList();
