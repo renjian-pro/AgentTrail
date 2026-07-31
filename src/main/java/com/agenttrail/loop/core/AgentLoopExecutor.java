@@ -13,6 +13,8 @@ import com.agenttrail.loop.pause.ResumeInstruction;
 import com.agenttrail.loop.pause.SafePoint;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;
+import com.agenttrail.loop.stageoutput.StageContext;
+import com.agenttrail.loop.stageoutput.StageOutputManager;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchSession;
@@ -61,6 +63,7 @@ public class AgentLoopExecutor {
     private final List<ToolCallback> tools;
     private final ToolCatalog toolCatalog;
     private final PauseConfig pauseConfig;
+    private final StageOutputManager stageOutputManager;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
@@ -103,6 +106,19 @@ public class AgentLoopExecutor {
                              AgentTaskManager taskManager, ContextPolicy contextPolicy,
                              ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
                              ToolCatalog toolCatalog, PauseConfig pauseConfig) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, null);
+    }
+
+    /**
+     * @param stageOutputManager 分阶段输出机制（issue #16）；传 null 等价于 {@link StageOutputManager#EMPTY}，
+     *                           三个生命周期钩子都是空操作，行为和没有这个机制时完全一致
+     */
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                             StageOutputManager stageOutputManager) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
@@ -112,6 +128,7 @@ public class AgentLoopExecutor {
         this.tools = tools;
         this.toolCatalog = toolCatalog;
         this.pauseConfig = pauseConfig;
+        this.stageOutputManager = (stageOutputManager == null) ? StageOutputManager.EMPTY : stageOutputManager;
         this.maxRounds = maxRounds;
     }
 
@@ -157,6 +174,7 @@ public class AgentLoopExecutor {
 
         RunContext context = new RunContext(question, params, messages, sink, new AtomicInteger(0),
                 System.currentTimeMillis(), toolSearchSession, mdcSnapshot);
+        stageOutputManager.afterStart(new StageContext(question, null, params), context::emit);
         scheduleRound(context);
         return sink.asFlux();
     }
@@ -291,6 +309,9 @@ public class AgentLoopExecutor {
         List<ToolResponseMessage.ToolResponse> responses = toolCallExecutor.execute(
                 toolCalls, context.sink(), paramInjector, sessionScopedTool, context.mdcSnapshot());
         context.messages().add(ToolResponseMessage.builder().responses(responses).build());
+
+        // 这一批工具调用（一轮可能并发跑多个）跑完了——不是每个工具单独触发一次，见 StageTiming.AFTER_TOOL_END
+        stageOutputManager.afterToolEnd(new StageContext(context.question(), null, context.params()), context::emit);
 
         scheduleRound(context);
     }
@@ -429,6 +450,10 @@ public class AgentLoopExecutor {
         Long turnId = persistenceHook == null ? null : persistenceHook.onTurnComplete(new TurnRecord(
                 context.conversationId(), context.params().userId(), context.question(),
                 state.text(), think, null, null, context.elapsedMillis()));
+
+        // 答案已经确定，Complete 之前留给 provider 一次机会插引用链接/推荐问题这类收尾输出
+        stageOutputManager.beforeComplete(
+                new StageContext(context.question(), state.text(), context.params()), context::emit);
 
         context.emit(new AgentStreamEvent.Complete(context.conversationId(), turnId));
         context.emitComplete();

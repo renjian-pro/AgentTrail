@@ -32,6 +32,16 @@ public sealed interface AgentStreamEvent {
     }
 
     /**
+     * 一个 {@code StageOutputProvider} 在某个生命周期钩子点产出的额外输出（issue #16），
+     * 比如引用链接、推荐问题——和模型正文是两回事，前端按需单独渲染。
+     *
+     * @param stage 产出它的 provider 名字，供前端区分来源
+     * @param data  provider 自己定义的数据，本类不关心具体形状
+     */
+    record StageOutput(String stage, Object data) implements AgentStreamEvent {
+    }
+
+    /**
      * 待办清单的最新快照，{@code TodoWrite} 工具每次被调用后发一次。
      *
      * <p>{@code items} 来自重新解析那次调用的原始参数，不是从工具的返回文本里提取——
