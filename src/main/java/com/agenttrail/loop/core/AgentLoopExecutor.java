@@ -40,6 +40,7 @@ import org.springframework.ai.tool.ToolCallback;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -413,6 +414,13 @@ public class AgentLoopExecutor {
         // 在发起请求前拍下快照——这轮的历史随后会被 finishRound 原地追加助手消息，晚拍就不是"发出去的那份"了
         String requestSnapshot = (traceStore == null) ? null : MessageRendering.render(context.messages());
         Disposable subscription = llmInvoker.streamRound(context.messages(), roundTools)
+                // 真实的 HTTP ChatModel（Reactor Netty 实现）在自己的 I/O 线程上信号 onComplete——
+                // finishRound 出现工具调用时会走到 ToolCallExecutor.execute() 内部的 .block()，
+                // 直接卡在 I/O 线程上会被 Reactor 的非阻塞线程检查拒绝
+                // （IllegalStateException: block()... not supported in thread reactor-http-nio-*）。
+                // 挂 ScriptedChatModel 的测试从没触发过这条检查——它不是真的 Reactor Netty 实现，
+                // 这个坑只有接真实模型 + 真实工具调用同时发生才会暴露。
+                .publishOn(Schedulers.boundedElastic())
                 .doOnNext(chunk -> processChunk(chunk, state, context))
                 .doOnComplete(() -> finishRound(state, context, requestSnapshot))
                 .doOnError(error -> failRun(error, context, state, requestSnapshot))

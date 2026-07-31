@@ -173,6 +173,21 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<!-- 联网搜索（issue #22）：Tavily 走 MCP streamable-HTTP -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-starter-mcp-client</artifactId>
+		</dependency>
+		<!-- spring-ai-mcp:2.0.0 是照着 mcp SDK 2.0.0 编的（McpSchema.Tool.inputSchema() 这类方法
+		     只在 2.0.0 里有），但 agentscope-core 传递依赖了更旧的 0.17.0，声明顺序上 Maven
+		     "最近优先"选中了旧版本——不显式钉住版本，第一次真正调用 MCP 工具就是
+		     NoSuchMethodError，而不是编译期就能发现的问题 -->
+		<dependency>
+			<groupId>io.modelcontextprotocol.sdk</groupId>
+			<artifactId>mcp</artifactId>
+			<version>2.0.0</version>
+		</dependency>
+
 		<!-- Redis 分布式锁的集成测试用（issue #11），版本交给 spring-boot-dependencies BOM 管理。
 		     Testcontainers 2.x 把 JUnit5 扩展模块从 org.testcontainers:junit-jupiter 改名成了
 		     org.testcontainers:testcontainers-junit-jupiter，旧坐标在这个大版本下已经没有对应发布 -->

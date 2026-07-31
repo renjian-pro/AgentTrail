@@ -5,8 +5,11 @@ import com.agenttrail.loop.core.support.ScriptedChatModel;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
+import com.agenttrail.loop.tools.websearch.TavilyWebSearchResultParser;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 
 import static com.agenttrail.loop.core.support.ChatResponses.text;
@@ -21,12 +24,18 @@ class AgentLoopExecutorFactoryTest {
                 new RegisteredModel("qwen-plus", qwen, ThinkingMode.DISABLED));
     }
 
+    /** 空 key 时 {@code toolCallbacks()} 不发网络请求，直接返回空列表——不需要真的连 Tavily 就能测降级路径。 */
+    private static TavilySearchToolProvider degradedSearchProvider() {
+        return new TavilySearchToolProvider("https://mcp.tavily.com/mcp/", "", Duration.ofSeconds(1), 1,
+                new TavilyWebSearchResultParser());
+    }
+
     @Test
     void fallsBackToTheDefaultModelWhenNoModelIdIsGiven() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager());
+                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null);
 
         String answer = factory.forModel(null).call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -39,7 +48,7 @@ class AgentLoopExecutorFactoryTest {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager());
+                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null);
 
         String answer = factory.forModel("  ").call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -51,7 +60,7 @@ class AgentLoopExecutorFactoryTest {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager());
+                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null);
 
         String answer = factory.forModel("deepseek-chat").call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -63,7 +72,7 @@ class AgentLoopExecutorFactoryTest {
     void rejectsAnUnknownModelId() {
         AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
                 twoModels(new ScriptedChatModel(List.of()), new ScriptedChatModel(List.of())),
-                "qwen-plus", new AgentTaskManager());
+                "qwen-plus", new AgentTaskManager(), null);
 
         assertThatThrownBy(() -> factory.forModel("gpt-5"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -75,7 +84,7 @@ class AgentLoopExecutorFactoryTest {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", new ScriptedChatModel(List.of()), ThinkingMode.REASONING_CONTENT));
 
-        assertThatThrownBy(() -> new AgentLoopExecutorFactory(models, "qwen-plus", new AgentTaskManager()))
+        assertThatThrownBy(() -> new AgentLoopExecutorFactory(models, "qwen-plus", new AgentTaskManager(), null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("qwen-plus");
     }
@@ -86,7 +95,7 @@ class AgentLoopExecutorFactoryTest {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", sharedTaskManager);
+                twoModels(deepSeek, qwen), "qwen-plus", sharedTaskManager, null);
 
         AgentLoopExecutor deepSeekExecutor = factory.forModel("deepseek-chat");
         AgentLoopExecutor qwenExecutor = factory.forModel("qwen-plus");
@@ -96,5 +105,40 @@ class AgentLoopExecutorFactoryTest {
         RunnableParams params = new RunnableParams("conv-shared", "user-1");
         assertThat(deepSeekExecutor.call("hi", params)).isEqualTo("from deepseek");
         assertThat(qwenExecutor.call("hi", params)).isEqualTo("from qwen");
+    }
+
+    @Test
+    void webSearchEnabledFalseNeverConsultsTheSearchProviderEvenIfOneIsConfigured() {
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(),
+                degradedSearchProvider());
+
+        AgentLoopExecutor plain = factory.forModel("qwen-plus", false);
+
+        assertThat(plain).isSameAs(factory.forModel("qwen-plus"));
+    }
+
+    @Test
+    void webSearchEnabledDegradesToThePlainExecutorWhenNoSearchProviderIsConfigured() {
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(), null);
+
+        AgentLoopExecutor withSearch = factory.forModel("qwen-plus", true);
+
+        assertThat(withSearch).isSameAs(factory.forModel("qwen-plus"));
+    }
+
+    @Test
+    void webSearchEnabledDegradesGracefullyWhenTheProviderHasNoUsableKey() {
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(),
+                degradedSearchProvider());
+
+        String answer = factory.forModel("qwen-plus", true).call("hi", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(answer).isEqualTo("from qwen");
     }
 }

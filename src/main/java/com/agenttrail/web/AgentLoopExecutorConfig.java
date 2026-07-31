@@ -2,11 +2,16 @@ package com.agenttrail.web;
 
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
+import com.agenttrail.loop.tools.websearch.TavilyWebSearchResultParser;
+import com.agenttrail.loop.tools.websearch.WebSearchResultParser;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -17,7 +22,9 @@ import java.util.List;
  * {@code deepseek-chat} 作为第二个可选模型保留（{@code spring-ai-starter-model-deepseek}
  * 装配的 bean 名为 {@code deepSeekChatModel}）。
  *
- * <p>这里仍然只接了裸引擎——没工具/暂停恢复/追踪审计/分层记忆，见
+ * <p>issue #22 起额外挂了一个可选的联网搜索工具（Tavily，条件挂载）。
+ *
+ * <p>这里仍然只接了裸引擎——没暂停恢复/追踪审计/分层记忆/文件问答，见
  * {@code docs/architecture.md} 第四节的扩展模式。
  */
 @Configuration
@@ -30,14 +37,35 @@ public class AgentLoopExecutorConfig {
     }
 
     @Bean
+    public WebSearchResultParser webSearchResultParser() {
+        return new TavilyWebSearchResultParser();
+    }
+
+    /**
+     * 构造这个 Bean 本身不发一次网络请求——{@code toolCallbacks()} 懒加载，第一次真正
+     * 有对话要用联网搜索时才建连 MCP 客户端，不能在这里同步 {@code initialize()}，
+     * 否则一次 Tavily 抖动就会拖慢应用启动（issue #22 明确要避免的参考实现的问题）。
+     */
+    @Bean
+    public TavilySearchToolProvider tavilySearchToolProvider(WebSearchResultParser webSearchResultParser,
+            @Value("${tavily.api-key:}") String apiKey,
+            @Value("${tavily.mcp-url:https://mcp.tavily.com/mcp/}") String mcpUrl,
+            @Value("${tavily.timeout-seconds:10}") long timeoutSeconds,
+            @Value("${tavily.max-attempts:2}") int maxAttempts) {
+        return new TavilySearchToolProvider(mcpUrl, apiKey, Duration.ofSeconds(timeoutSeconds), maxAttempts,
+                webSearchResultParser);
+    }
+
+    @Bean
     public AgentLoopExecutorFactory agentLoopExecutorFactory(
             @Qualifier("deepSeekChatModel") ChatModel deepSeekChatModel,
             @Qualifier("openAiChatModel") ChatModel qwenChatModel,
-            AgentTaskManager agentTaskManager) {
+            AgentTaskManager agentTaskManager,
+            TavilySearchToolProvider tavilySearchToolProvider) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DASHSCOPE_API_KEY 到位后要实测校正
                 new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
-        return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager);
+        return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider);
     }
 }

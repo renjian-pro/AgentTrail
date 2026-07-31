@@ -42,7 +42,8 @@ public class AgentLoopController {
     public AgentChatResponse chat(@RequestBody AgentChatRequest request) {
         RunnableParams params = new RunnableParams(UUID.randomUUID().toString(), "anonymous");
         try {
-            String answer = executorFactory.forModel(request.modelId()).call(request.message(), params);
+            String answer = executorFactory.forModel(request.modelId(), request.webSearchEnabled())
+                    .call(request.message(), params);
             return new AgentChatResponse(answer);
         } catch (AgentCallException failure) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, failure.getMessage(), failure);

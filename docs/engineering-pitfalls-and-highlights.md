@@ -484,6 +484,16 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **解法**：①锁的生命周期管理不能靠"设一个够长的固定 TTL 然后祈祷"——要么用 Redisson 默认的 watchdog（不显式传 leaseTime，代价是不能精确控制过期时间），要么自己起一个调度器周期性对当前持有的锁做"校验归属 + 续期"（必须是一次原子操作，Lua 脚本或 Redisson 原生 API，参见 #30，不能拆成两条命令）。②给"返回值是 `Flux`/`Mono` 的响应式方法"加锁时，声明式的"AOP 环绕通知 + 方法返回即释放"这套模式直接不成立，正确做法是不用注解+AOP，在真正对应异步生命周期的节点上手动、显式地加锁/解锁——锁应该在"任务登记"时获取，在"任务真正完成"（不是"发起调用的那个方法返回"）时释放，这正是 `AgentTaskManager.registerTask`/`stopTask`/`removeTask` 这几个方法存在的意义，而不是把加锁做成一个装饰性的注解。
 - **Java/分布式角度**：这条把两个经常被分开讨论的话题接在一起——"分布式锁续期的正确性"（Redisson watchdog 原理、TTL vs 心跳的取舍，呼应 #30/#31）和"响应式编程里方法返回值不代表工作完成"这个更基础的 Reactor 心智模型问题。很多人知道"锁要续期"，但不知道"声明式 AOP 加锁在响应式代码里天然不可靠"这一层；能同时讲清楚这两点，说明真正理解了"锁保护的是状态的生命周期，不是一次方法调用的生命周期"这个本质区别。
 
+### 78. 真实流式 ChatModel + 工具调用组合，才会暴露"响应式链里藏了一个同步 block()"
+- **坑**：`ToolCallExecutor.execute()` 把并发工具调用 `subscribeOn` 到独立调度器后，最外层用 `.block()` 收敛结果——这行代码本身没错，错在**调用它的线程是谁**。`AgentLoopExecutor.scheduleRound()` 订阅 `llmInvoker.streamRound(...)` 时没有主动切换调度器，`doOnComplete(() -> finishRound(...))` 就在**上游 Flux 的信号线程**上执行；如果上游是真实的 Reactor Netty 实现（`OpenAiChatModel` 走 `openai-java` SDK + Netty），信号线程就是 `reactor-http-nio-*`——Reactor 显式禁止在这类"不可阻塞"线程上调 `.block()`，命中就是 `IllegalStateException: block()/blockFirst()/blockLast() are blocking, which is not supported in thread reactor-http-nio-N`。这个 bug 在本项目里潜伏了整整一个 Phase（issue #17-#28 全部用 `ScriptedChatModel`——一个直接 `Flux.fromIterable` 返回、根本不会调度到 Netty 线程的测试替身），直到 issue #22 第一次把"真实 HTTP 流式模型"和"真实工具调用"同时接在一起跑集成测试才炸出来。
+- **解法**：在 `llmInvoker.streamRound(...)` 之后、`doOnNext`/`doOnComplete` 之前插一次 `.publishOn(Schedulers.boundedElastic())`，把后续所有下游操作符（包括会触发 `finishRound` → `ToolCallExecutor.execute()` → `.block()` 的那条路径）都搬到允许阻塞的调度器上执行。`subscribeOn` 管的是"upstream 源头在哪个线程订阅"，`publishOn` 管的是"downstream 操作符在哪个线程执行"——这里要控制的是后者，两个操作符职责不同，选错了不会报错，只会在真正对接真实网络实现时才失效。
+- **Java/Reactor 角度**：这条和 #62/#63/#64 一起构成"响应式编程线程模型"的完整案例集，但这条最典型地展示了"测试替身跑得通不代表生产实现跑得通"——`ScriptedChatModel` 在这里不是"简化了业务逻辑"，而是**悄悄抹掉了一个只有真实 I/O 实现才会暴露的调度器语义**。面试可以直接点破：Mock/Stub 测试替身的选型，不能只看"返回值对不对"，还要看它有没有忠实复现被替换对象的**执行模型**（同步 vs 异步、哪个线程发信号）——这正是很多"单测全绿、联调必炸"的根因。
+
+### 78a.（同一次排查的次要发现，未在本项目内修复）Spring AI 2.0 `OpenAiChatModel` 合并流式 tool_call chunk 时对 DashScope 不完全兼容
+- **现象**：接 `qwen-plus`（DashScope OpenAI 兼容模式）时，一旦某一轮触发工具调用，`OpenAiChatModel$ChunkMerger.chunkToChatCompletion` 内部一个 `Optional.get()` 会抛 `NoSuchElementException: No value present`；同样的调用链换成 `deepseek-chat` 完全正常。定位到是 `spring-ai-openai:2.0.0` 合并 tool_call 分片 chunk 时，假设了某个字段（很可能是分片延续 chunk 上的 `id`/`index`）一定存在，而 DashScope 的流式分片形状和 OpenAI 官方在这个细节上不完全一致。
+- **处置**：这是第三方库（`spring-ai-openai`）内部实现的兼容性问题，不是本项目代码可以修的范围；暂时的规避方式是"挂了 Web 搜索这类工具的对话默认路由到 `deepseek-chat`，`qwen-plus` 保留给纯对话场景"。真要修，路径是升级 `spring-ai` 版本看是否已修复，或向上游报告这个兼容性 bug。
+- **面试角度**：和 #78 放在一起讲是一条完整的"真实联调排查"叙事——同一次真机测试里连续挖出两个平时被 Mock 掩盖的问题，一个是自己代码的线程模型 bug（能修、已修），一个是第三方库的厂商兼容性 bug（不能改源码、只能规避+报告）。能清楚区分"这个坑归谁修"本身就是排查能力的一部分。
+
 ## 二十、Java 八股文关联索引（反向查表：面试考点 → 项目里的具体场景）
 
 按标准 Java 面试八股分类整理，每个考点后面跟着能支撑它的踩坑点编号 + 一句"这道题在项目里对应哪个场景"的桥接语。面试被问到某个八股知识点时，直接从这张表找对应编号展开，而不是从头背定义——这张表是"从场景讲起"这套叙事方法论的索引层，和 `interview-narrative.md` 的三条主线互补（那边是按故事线组织，这里是按考点组织，两种导航方式）。
