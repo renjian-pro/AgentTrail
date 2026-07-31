@@ -16,6 +16,7 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.slf4j.MDC;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -111,10 +112,10 @@ public class AgentLoopExecutor {
      * @param params   运行时参数（会话 id、用户 id、系统级工具参数）
      */
     public Flux<AgentStreamEvent> stream(String question, RunnableParams params) {
-        Sinks.Many<AgentStreamEvent> sink = Sinks.many().unicast().onBackpressureBuffer();
+        Sinks.Many<AgentStreamEvent> sink = EventSinks.bounded();
 
         if (!taskManager.registerTask(params.conversationId(), sink)) {
-            sink.tryEmitNext(new AgentStreamEvent.Error("CONCURRENT_EXECUTION", "该会话正在执行中，请稍后再试"));
+            EventSinks.emit(sink, new AgentStreamEvent.Error("CONCURRENT_EXECUTION", "该会话正在执行中，请稍后再试"));
             sink.tryEmitComplete();
             return sink.asFlux();
         }
@@ -128,8 +129,12 @@ public class AgentLoopExecutor {
         // 每次对话请求各自开一个全新会话——发现的工具互相隔离，不会泄漏给并发的其他会话
         ToolSearchSession toolSearchSession = (toolCatalog == null) ? null : toolCatalog.newSession();
 
+        // 工具执行会跳到独立调度器的线程上（见 ToolCallExecutor），MDC 这种 ThreadLocal 状态
+        // 过了线程边界就读不到了；这里在还没跳线程之前，把发起这次请求的线程的 MDC 拍下来
+        Map<String, String> mdcSnapshot = MDC.getCopyOfContextMap();
+
         RunContext context = new RunContext(question, params, messages, sink, new AtomicInteger(0),
-                System.currentTimeMillis(), toolSearchSession);
+                System.currentTimeMillis(), toolSearchSession, mdcSnapshot);
         scheduleRound(context);
         return sink.asFlux();
     }
@@ -212,8 +217,8 @@ public class AgentLoopExecutor {
         ToolParamInjector paramInjector = new ToolParamInjector(context.params().toolParams());
         ToolCallback sessionScopedTool = (context.toolSearchSession() == null)
                 ? null : context.toolSearchSession().toolSearchCallback();
-        List<ToolResponseMessage.ToolResponse> responses =
-                toolCallExecutor.execute(toolCalls, context.sink(), paramInjector, sessionScopedTool);
+        List<ToolResponseMessage.ToolResponse> responses = toolCallExecutor.execute(
+                toolCalls, context.sink(), paramInjector, sessionScopedTool, context.mdcSnapshot());
         context.messages().add(ToolResponseMessage.builder().responses(responses).build());
 
         scheduleRound(context);
@@ -225,7 +230,7 @@ public class AgentLoopExecutor {
      * 转回具体厂商消息类型的工作交给该厂商的 ChatModel 装饰器，本类不关心对接的是哪家模型。
      */
     private static AssistantMessage buildAssistantMessage(RoundState state, List<AssistantMessage.ToolCall> toolCalls) {
-        AssistantMessage.Builder builder = AssistantMessage.builder()
+        var builder = AssistantMessage.builder()
                 .content(state.text())
                 .toolCalls(toolCalls);
         String reasoning = state.reasoning();

@@ -9,6 +9,7 @@ import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
@@ -37,6 +38,17 @@ class ToolCallExecutor {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    /**
+     * 工具执行专用的调度器，和 Reactor 默认的全局 {@code Schedulers.boundedElastic()} 是两个
+     * 独立实例（issue #10 / 踩坑点 #62）：默认的那个是整个 JVM 里所有"随手 subscribeOn 一下"的
+     * 阻塞代码共用的池子，高并发下工具执行会和应用里其它任何用到默认池的地方互相排队阻塞。
+     * 单独开一个命名池，容量和默认值保持一致（够用且和默认行为对齐），只是不再共享。
+     */
+    private static final Scheduler TOOL_EXECUTION_SCHEDULER = Schedulers.newBoundedElastic(
+            Schedulers.DEFAULT_BOUNDED_ELASTIC_SIZE,
+            Schedulers.DEFAULT_BOUNDED_ELASTIC_QUEUESIZE,
+            "agent-tool-exec");
+
     private final Map<String, ToolCallback> toolsByName;
 
     ToolCallExecutor(List<ToolCallback> tools) {
@@ -46,24 +58,9 @@ class ToolCallExecutor {
                 (first, duplicate) -> first));
     }
 
-    /**
-     * 并发执行本轮全部工具调用，但结果按模型请求的原始顺序回填。
-     *
-     * <p>用 {@code flatMapSequential} 而不是 {@code flatMap}：两者都并发订阅，
-     * 但前者按**源顺序**输出、后者按**完成顺序**输出。这里必须是源顺序——OpenAI 形状的协议
-     * 要求 tool 响应与 tool_call 一一对应，顺序错了模型侧会错位关联。
-     *
-     * <p>工具调用是阻塞式的（{@link ToolCallback#call} 是同步接口），所以放到
-     * {@code boundedElastic} 上跑，避免占住事件循环线程。
-     * TODO(#10)：工具池要和流式聚合池隔离开，现在共用 boundedElastic，高并发下会互相阻塞（踩坑点 #62）。
-     *
-     * @param toolCalls 已重组完成的工具调用
-     * @param sink      事件流，用于实时推送 ToolStart / ToolEnd
-     * @return 与 {@code toolCalls} 一一对应、顺序一致的工具响应
-     */
     List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
                                ToolParamInjector paramInjector) {
-        return execute(toolCalls, sink, paramInjector, null);
+        return execute(toolCalls, sink, paramInjector, null, null);
     }
 
     /**
@@ -73,10 +70,35 @@ class ToolCallExecutor {
      */
     List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
                                ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
+        return execute(toolCalls, sink, paramInjector, sessionScopedTool, null);
+    }
+
+    /**
+     * 并发执行本轮全部工具调用，但结果按模型请求的原始顺序回填。
+     *
+     * <p>用 {@code flatMapSequential} 而不是 {@code flatMap}：两者都并发订阅，
+     * 但前者按**源顺序**输出、后者按**完成顺序**输出。这里必须是源顺序——OpenAI 形状的协议
+     * 要求 tool 响应与 tool_call 一一对应，顺序错了模型侧会错位关联。
+     *
+     * <p>工具调用是阻塞式的（{@link ToolCallback#call} 是同步接口），所以放到独立的
+     * {@link #TOOL_EXECUTION_SCHEDULER} 上跑，避免占住事件循环线程，也避免和默认调度器上
+     * 的其它工作互相阻塞。
+     *
+     * @param toolCalls    已重组完成的工具调用
+     * @param sink         事件流，用于实时推送 ToolStart / ToolEnd
+     * @param mdcSnapshot  发起本次对话请求的线程的 MDC 快照；跳到 {@link #TOOL_EXECUTION_SCHEDULER}
+     *                     的线程之前先还原一次，工具执行期间的日志才带得上 conversationId 这类字段
+     *                     （见 {@link MdcPropagation}）。传 null 等价于不做任何还原
+     * @return 与 {@code toolCalls} 一一对应、顺序一致的工具响应
+     */
+    List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
+                               ToolParamInjector paramInjector, ToolCallback sessionScopedTool,
+                               Map<String, String> mdcSnapshot) {
         return Flux.fromIterable(toolCalls)
                 .flatMapSequential(toolCall -> Mono
-                        .fromCallable(() -> executeOne(toolCall, sink, paramInjector, sessionScopedTool))
-                        .subscribeOn(Schedulers.boundedElastic()))
+                        .fromCallable(() -> MdcPropagation.call(mdcSnapshot,
+                                () -> executeOne(toolCall, sink, paramInjector, sessionScopedTool)))
+                        .subscribeOn(TOOL_EXECUTION_SCHEDULER))
                 .collectList()
                 .block();
     }
@@ -86,19 +108,19 @@ class ToolCallExecutor {
         ToolCallback tool = resolve(toolCall.name(), sessionScopedTool);
         if (tool == null) {
             // 模型幻觉出的工具：连参数都不必处理，直接把错误当结果喂回去
-            sink.tryEmitNext(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), toolCall.arguments()));
+            EventSinks.emit(sink, new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), toolCall.arguments()));
             String result = errorPayload("unknown tool: " + toolCall.name());
-            sink.tryEmitNext(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
+            EventSinks.emit(sink, new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
             return new ToolResponse(toolCall.id(), toolCall.name(), result);
         }
 
         // 先兜底参数合法性，再注入系统级参数——注入依赖参数是可解析的 JSON 对象
         String arguments = paramInjector.inject(sanitizeArguments(toolCall), tool.getToolDefinition());
-        sink.tryEmitNext(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), arguments));
+        EventSinks.emit(sink, new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), arguments));
 
         String result = tool.call(arguments);
 
-        sink.tryEmitNext(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
+        EventSinks.emit(sink, new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
         emitTodoProgressIfApplicable(toolCall.name(), arguments, sink);
         return new ToolResponse(toolCall.id(), toolCall.name(), result);
     }
@@ -114,7 +136,7 @@ class ToolCallExecutor {
             return;
         }
         TodoWriteTool.parseSnapshot(arguments)
-                .ifPresent(items -> sink.tryEmitNext(new AgentStreamEvent.TodoProgress(items)));
+                .ifPresent(items -> EventSinks.emit(sink, new AgentStreamEvent.TodoProgress(items)));
     }
 
     /** 先查固定表，查不到再看是不是这次会话专属的那一个（按名字比对，不假设调用方传对了）。 */

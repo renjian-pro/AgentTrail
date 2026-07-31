@@ -7,6 +7,7 @@ import org.springframework.ai.chat.messages.Message;
 import reactor.core.publisher.Sinks;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -22,6 +23,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @param roundCounter  已发起的轮次数
  * @param startTimeMillis 本轮问答开始时刻，落库时用来算总耗时
  * @param toolSearchSession 本次对话专属的延迟工具发现状态；未启用 ToolSearch 时为 null
+ * @param mdcSnapshot   发起这次请求的线程的 MDC 快照；工具执行会跳到独立调度器的线程上，
+ *                      跳之前拿这份快照还原一次，日志里的 conversationId 等字段才不会断线（见 MdcPropagation）
  */
 record RunContext(
         String question,
@@ -30,7 +33,8 @@ record RunContext(
         Sinks.Many<AgentStreamEvent> sink,
         AtomicInteger roundCounter,
         long startTimeMillis,
-        ToolSearchSession toolSearchSession) {
+        ToolSearchSession toolSearchSession,
+        Map<String, String> mdcSnapshot) {
 
     String conversationId() {
         return params.conversationId();
@@ -46,7 +50,7 @@ record RunContext(
     }
 
     void emit(AgentStreamEvent event) {
-        sink.tryEmitNext(event);
+        EventSinks.emit(sink, event);
     }
 
     void emitComplete() {

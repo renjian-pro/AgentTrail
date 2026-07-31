@@ -5,12 +5,14 @@ import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.TodoItem;
 import com.agenttrail.loop.tools.TodoWriteTool;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
 import reactor.core.publisher.Sinks;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static com.agenttrail.loop.core.support.ChatResponses.call;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -144,6 +146,63 @@ class ToolCallExecutorTest {
 
         List<AgentStreamEvent> events = sink.asFlux().collectList().block(Duration.ofSeconds(2));
         assertThat(events).noneMatch(AgentStreamEvent.TodoProgress.class::isInstance);
+    }
+
+    /**
+     * issue #10：工具执行要用独立的调度器，不能共用 Reactor 默认的全局 {@code boundedElastic}——
+     * 那个池子被应用里任何随手 subscribeOn 的阻塞代码共用，高并发下会互相排队阻塞（踩坑点 #62）。
+     */
+    @Test
+    void executesToolsOnADedicatedSchedulerNamedAgentToolExecNotTheDefaultSharedOne() {
+        List<String> observedThreadNames = new CopyOnWriteArrayList<>();
+        RecordingToolCallback probe = new RecordingToolCallback("probe", "records its thread", arguments -> {
+            observedThreadNames.add(Thread.currentThread().getName());
+            return "ok";
+        });
+        ToolCallExecutor executor = new ToolCallExecutor(List.of(probe));
+
+        executor.execute(List.of(call("call-1", "probe", "{}")), sink, NO_INJECTION);
+
+        assertThat(observedThreadNames).singleElement().asString()
+                .as("必须跑在专属的 agent-tool-exec 池上，既不是调用方线程也不是默认的 boundedElastic")
+                .startsWith("agent-tool-exec")
+                .isNotEqualTo(Thread.currentThread().getName());
+    }
+
+    /**
+     * issue #10：MDC 是 ThreadLocal，工具执行跳到独立调度器的线程之后默认读不到——
+     * 这里验证发起调用线程的 MDC 快照被正确还原到了执行工具的那个线程上。
+     */
+    @Test
+    void toolExecutionCanReadTheCallingThreadsMdcAfterHoppingToTheDedicatedScheduler() {
+        MDC.put("conversationId", "conv-42");
+        try {
+            List<String> observedValues = new CopyOnWriteArrayList<>();
+            RecordingToolCallback probe = new RecordingToolCallback("probe", "reads MDC", arguments -> {
+                observedValues.add(MDC.get("conversationId"));
+                return "ok";
+            });
+            ToolCallExecutor executor = new ToolCallExecutor(List.of(probe));
+
+            executor.execute(List.of(call("call-1", "probe", "{}")), sink, NO_INJECTION,
+                    null, MDC.getCopyOfContextMap());
+
+            assertThat(observedValues).containsExactly("conv-42");
+        } finally {
+            MDC.clear();
+        }
+    }
+
+    /** 不传快照（null）时必须是完全的空操作，不能因为没有 MDC 就报错或者行为跑偏。 */
+    @Test
+    void toolExecutionWorksNormallyWhenNoMdcSnapshotIsProvided() {
+        RecordingToolCallback echo = new RecordingToolCallback("echo", "echoes", "pong");
+        ToolCallExecutor executor = new ToolCallExecutor(List.of(echo));
+
+        List<ToolResponse> responses = executor.execute(
+                List.of(call("call-1", "echo", "{}")), sink, NO_INJECTION, null, null);
+
+        assertThat(responses).singleElement().extracting(ToolResponse::responseData).isEqualTo("pong");
     }
 
     private static void sleep(long millis) {
