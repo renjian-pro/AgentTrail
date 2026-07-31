@@ -24,21 +24,25 @@ import java.util.UUID;
  * <p>这里没有落库、没有会话历史（{@link AgentLoopExecutorConfig} 没配 {@code persistenceHook}），
  * 所以每次请求各生成一个新的 conversationId 即可，不影响任何行为——多轮会话记忆是后续要接的机制，
  * 不是这个最小入口的范围。
+ *
+ * <p>请求体的 {@code modelId} 是可选的模型标识（issue #20），不传时 {@link AgentLoopExecutorFactory}
+ * 落到默认模型（{@code qwen-plus}）。不支持同一会话中途换模型——调用方要在同一个会话里
+ * 保持用同一个模型标识。
  */
 @RestController
 public class AgentLoopController {
 
-    private final AgentLoopExecutor executor;
+    private final AgentLoopExecutorFactory executorFactory;
 
-    public AgentLoopController(AgentLoopExecutor executor) {
-        this.executor = executor;
+    public AgentLoopController(AgentLoopExecutorFactory executorFactory) {
+        this.executorFactory = executorFactory;
     }
 
     @PostMapping("/agent/v1/chat")
     public AgentChatResponse chat(@RequestBody AgentChatRequest request) {
         RunnableParams params = new RunnableParams(UUID.randomUUID().toString(), "anonymous");
         try {
-            String answer = executor.call(request.message(), params);
+            String answer = executorFactory.forModel(request.modelId()).call(request.message(), params);
             return new AgentChatResponse(answer);
         } catch (AgentCallException failure) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, failure.getMessage(), failure);

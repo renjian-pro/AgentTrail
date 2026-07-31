@@ -31,6 +31,7 @@
 		<agentscope.version>2.0.0</agentscope.version>
 		<spring-ai.version>2.0.0</spring-ai.version>
 		<jsonschema-generator.version>5.0.0</jsonschema-generator.version>
+		<tika.version>2.9.2</tika.version>
 		<sonar.organization>renjian-pro</sonar.organization>
 		<sonar.host.url>https://sonarcloud.io</sonar.host.url>
 		<sonar.projectKey>renjian-pro_AgentTrail</sonar.projectKey>
@@ -127,6 +128,34 @@
 		<dependency>
 			<groupId>org.springframework.ai</groupId>
 			<artifactId>spring-ai-starter-model-deepseek</artifactId>
+		</dependency>
+
+		<!-- 多模型路由（issue #20）：Qwen（qwen-plus）走 OpenAI 兼容模式接入 DashScope，
+		     不是独立的厂商模块——DashScope 本身提供 OpenAI 兼容端点，直接复用 openai starter -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-starter-model-openai</artifactId>
+		</dependency>
+
+		<!-- 文件问答（issue #21）：统一解析 PDF/Office/HTML/纯文本，不手写 PDFBox+POI 各自的分支——
+		     版本对齐参考实现（dodo-agentx）已验证可用的 2.9.2 -->
+		<dependency>
+			<groupId>org.apache.tika</groupId>
+			<artifactId>tika-core</artifactId>
+			<version>${tika.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.tika</groupId>
+			<artifactId>tika-parsers-standard-package</artifactId>
+			<version>${tika.version}</version>
+		</dependency>
+		<!-- tika-core 2.9.2 的 zip 容器探测代码用到了 ChecksumInputStream（commons-io 2.16.0 才有），
+		     但它自己声明的传递依赖却是更旧的 2.15.1——不显式提升版本，连 .txt 都解析不了，
+		     一上来就是 NoClassDefFoundError -->
+		<dependency>
+			<groupId>commons-io</groupId>
+			<artifactId>commons-io</artifactId>
+			<version>2.18.0</version>
 		</dependency>
 
 		<!-- Redis 分布式锁的集成测试用（issue #11），版本交给 spring-boot-dependencies BOM 管理。

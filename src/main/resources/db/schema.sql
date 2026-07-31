@@ -133,3 +133,31 @@ CREATE TABLE IF NOT EXISTS agent_pause_state
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT 'HITL 暂停快照，同一会话只保留最新一份';
+
+-- 文件问答（issue #21）：上传文件的元数据 + Tika 解析出的全量文本。
+--
+-- 沿用 agent_session 已验证过的双 key 设计（见文件开头的说明和踩坑点 #49）：
+--   conversation_id —— 跨轮可见，上传时立刻知道
+--   turn_id         —— 归属的单轮问答 id（指向 agent_session.id），上传发生在这一轮结束之前，
+--                      所以先是 NULL，等 Complete 事件带回轮次 id 再回填（issue #28 的范围，
+--                      这一票只建表占位，不实现回填）
+--
+-- parsed_text 无论文件是否超过 RAG 阈值都存全量文本：阈值只影响直接喂给模型多少内容
+-- （见 FileQaService#contentFor），超阈值的大文件同样需要全文供后续分片向量化（issue #26）。
+
+CREATE TABLE IF NOT EXISTS agent_file
+(
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键，单个文件的标识',
+    conversation_id VARCHAR(100) NOT NULL COMMENT '会话标识，跨轮可见',
+    turn_id         BIGINT       NULL COMMENT '归属的单轮问答 id（agent_session.id）；上传时为 NULL，等这一轮结束才回填',
+    file_name       VARCHAR(255) NOT NULL COMMENT '原始文件名',
+    content_type    VARCHAR(100) NULL COMMENT '上传时的 MIME 类型',
+    size_bytes      BIGINT       NOT NULL COMMENT '文件大小（字节）',
+    parsed_text     LONGTEXT     NULL COMMENT 'Tika 解析出的全量文本，超过 RAG 阈值的大文件同样存全量',
+    created_at      BIGINT       NOT NULL COMMENT '上传时刻（epoch millis）',
+    PRIMARY KEY (id),
+    -- 按会话查全部附件（历史回放、issue #28 的分组渲染）走这个索引
+    KEY idx_file_conversation (conversation_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT '文件问答：上传文件的元数据 + Tika 解析文本';
