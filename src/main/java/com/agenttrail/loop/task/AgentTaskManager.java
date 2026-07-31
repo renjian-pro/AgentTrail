@@ -19,8 +19,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li><b>关闭下游事件流</b>——否则前端一直挂着等一个永远不会到来的结束信号
  * </ul>
  *
- * <p>本版是纯内存单实例实现。多实例部署下"本地 map 里找不到任务"不等于"任务不存在"，
- * 需要 Redis 广播兜底，见 ticket #12。
+ * <p>多实例部署下"本地 map 里找不到任务"不等于"任务不存在"——那个会话八成正在别的实例上跑。
+ * {@link #stopTask} 先走本地快路径（{@link #stopLocalTask}），本地没命中、又配了
+ * {@link InterruptBroadcaster} 时，才通过 Redis Pub/Sub 广播出去，让真正持有这个会话的
+ * 那个实例的 {@link #stopLocalTask} 被动触发（见 issue #12）。{@code Disposable}/{@code Sinks.Many}
+ * 是进程内对象，永远没法跨实例传递——能广播的只是"请停止 conversationId X"这条消息本身，
+ * 真正的取消动作必须由持有那个订阅的实例自己执行。
  *
  * <p>目前只有 {@code stopTask} 这一种"硬停止"语义（丢弃全部运行时状态）。
  * "先快照再停、之后可恢复"的中断语义属于断点续传，见 ticket #13。
@@ -30,6 +34,23 @@ public class AgentTaskManager {
     private static final Logger log = LoggerFactory.getLogger(AgentTaskManager.class);
 
     private final Map<String, TaskInfo> taskMap = new ConcurrentHashMap<>();
+    private final InterruptBroadcaster broadcaster;
+
+    public AgentTaskManager() {
+        this(null);
+    }
+
+    /**
+     * @param broadcaster 跨实例中断广播；传 null 表示单实例部署，{@code stopTask} 只走本地快路径，
+     *                    行为与没有这个机制时完全一致
+     */
+    public AgentTaskManager(InterruptBroadcaster broadcaster) {
+        this.broadcaster = broadcaster;
+        if (broadcaster != null) {
+            // 把"收到广播之后干什么"注册进去，本类不需要知道广播是怎么传递过来的
+            broadcaster.onInterruptReceived(this::stopLocalTask);
+        }
+    }
 
     /** 一个在跑的任务：事件流出口 + 当前轮次的上游订阅。 */
     private static final class TaskInfo {
@@ -85,14 +106,33 @@ public class AgentTaskManager {
     }
 
     /**
+     * 停止一个会话：先走本地快路径，本地没有才广播给其它实例兜底。
+     *
+     * @return true 表示<b>本实例</b>确实停掉了一个在跑的任务；false 既可能是这个会话哪个实例
+     *         都没在跑，也可能是它正在别的实例上跑、广播已经发出去但结果是异步的——调用方如果
+     *         需要"确实停掉了"的确认，只能通过后续事件流（比如 Complete 事件）判断，不能只看这个返回值
+     */
+    public boolean stopTask(String conversationId) {
+        boolean stoppedLocally = stopLocalTask(conversationId);
+        if (!stoppedLocally && broadcaster != null) {
+            log.debug("会话 {} 本实例没有找到，广播给其它实例尝试停止", conversationId);
+            broadcaster.broadcastStop(conversationId);
+        }
+        return stoppedLocally;
+    }
+
+    /**
      * 硬停止：取消上游订阅 + 关闭下游事件流，丢弃全部运行时状态。
      *
      * <p>用 {@code remove} 的原子返回值判断任务是否存在，而不是"先 get 判断、再 remove"——
      * 后者在两步之间如果有新任务注册进来，会被误删（踩坑点 #10）。
      *
+     * <p>本方法既是 {@link #stopTask} 本地路径的实现，也是收到跨实例广播后的回调——
+     * 两条路径最终都要执行同一套"取消订阅 + 关闭事件流"逻辑，不能有第二份实现。
+     *
      * @return true 表示确实停掉了一个在跑的任务
      */
-    public boolean stopTask(String conversationId) {
+    private boolean stopLocalTask(String conversationId) {
         TaskInfo task = taskMap.remove(conversationId);
         if (task == null) {
             log.warn("会话 {} 没有在跑的任务可停止", conversationId);
