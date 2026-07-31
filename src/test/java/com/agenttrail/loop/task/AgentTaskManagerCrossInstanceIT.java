@@ -124,6 +124,46 @@ class AgentTaskManagerCrossInstanceIT {
         assertThat(instanceA.hasRunningTask(conversationId)).isFalse();
     }
 
+    // ==================== 跨实例单飞注册（issue #11 的锁真正接进了 registerTask） ====================
+
+    /**
+     * 核心场景：A 已经真正抢到了这个会话的跨实例归属，B 完全不知道（B 的本地 map 里没有它），
+     * B 仍然不能注册成功——否则同一个会话会在两台机器上同时跑起来，这正是 RedisTaskLock
+     * 存在的意义，如果 registerTask 不接它就形同虚设。
+     */
+    @Test
+    void registrationOnASecondInstanceIsRejectedWhileTheFirstInstanceHoldsTheConversation() {
+        RedisTaskLock lockA = new RedisTaskLock(redissonForInstanceA, "instance-a", Duration.ofSeconds(30));
+        RedisTaskLock lockB = new RedisTaskLock(redissonForInstanceB, "instance-b", Duration.ofSeconds(30));
+        AgentTaskManager instanceA = new AgentTaskManager(lockA, null);
+        AgentTaskManager instanceB = new AgentTaskManager(lockB, null);
+        String conversationId = "conv-" + UUID.randomUUID();
+
+        boolean registeredOnA = instanceA.registerTask(conversationId, Sinks.many().unicast().onBackpressureBuffer());
+        boolean registeredOnB = instanceB.registerTask(conversationId, Sinks.many().unicast().onBackpressureBuffer());
+
+        assertThat(registeredOnA).isTrue();
+        assertThat(registeredOnB).as("A 已经真正持有这个会话，B 不能注册成功").isFalse();
+        // B 的本地占位必须已经撤回——不能占着位置却又不是真的在跑
+        assertThat(instanceB.hasRunningTask(conversationId)).isFalse();
+    }
+
+    /** A 停止/跑完之后主动释放了跨实例归属，B 应该能立刻抢到，不用等 TTL 过期。 */
+    @Test
+    void afterTheFirstInstanceStopsTheConversationASecondInstanceCanRegisterItImmediately() {
+        RedisTaskLock lockA = new RedisTaskLock(redissonForInstanceA, "instance-a", Duration.ofSeconds(30));
+        RedisTaskLock lockB = new RedisTaskLock(redissonForInstanceB, "instance-b", Duration.ofSeconds(30));
+        AgentTaskManager instanceA = new AgentTaskManager(lockA, null);
+        AgentTaskManager instanceB = new AgentTaskManager(lockB, null);
+        String conversationId = "conv-" + UUID.randomUUID();
+        instanceA.registerTask(conversationId, Sinks.many().unicast().onBackpressureBuffer());
+
+        instanceA.stopTask(conversationId);
+        boolean registeredOnB = instanceB.registerTask(conversationId, Sinks.many().unicast().onBackpressureBuffer());
+
+        assertThat(registeredOnB).as("A 停止时必须主动释放跨实例归属，不能让 B 干等 TTL").isTrue();
+    }
+
     private static RedissonClient newClient() {
         Config config = new Config();
         config.useSingleServer().setAddress(

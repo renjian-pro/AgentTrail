@@ -60,6 +60,6 @@ class InMemoryPauseStateStoreTest {
         return new PauseState(conversationId, List.of(new UserMessage("hi")),
                 List.of(new PendingToolCall("call-1", "charge", "{}")),
                 PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION,
-                "hi", new RunnableParams(conversationId, "user-1"), System.currentTimeMillis());
+                "hi", new RunnableParams(conversationId, "user-1"), 1, System.currentTimeMillis());
     }
 }

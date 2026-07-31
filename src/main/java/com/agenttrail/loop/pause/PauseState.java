@@ -20,6 +20,8 @@ import java.util.List;
  * @param question          触发这一轮的原始用户提问，恢复时如果没有新指令要能继续引用它
  * @param params            原始运行时参数（会话 id、用户 id、系统级工具参数）——恢复执行挂起的
  *                          工具时，系统级参数注入必须用这个人的身份，不能凭空生成一个新的
+ * @param roundAtPause      暂停发生时已经跑到第几轮——恢复必须接着这个数继续数，而不是从 0 重开
+ *                          一个全新的 {@code maxRounds} 预算，否则反复暂停/恢复能绕开轮次上限
  * @param pausedAtMillis    暂停发生的时刻，未来做 TTL 清理时用
  */
 public record PauseState(
@@ -30,6 +32,7 @@ public record PauseState(
         SafePoint safePoint,
         String question,
         RunnableParams params,
+        int roundAtPause,
         long pausedAtMillis) {
 
     public PauseState {

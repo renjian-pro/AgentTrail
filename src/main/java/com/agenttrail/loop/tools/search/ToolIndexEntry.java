@@ -39,7 +39,9 @@ record ToolIndexEntry(String name, String description, List<String> nameTokens, 
                 ToolIndexEntry::name, Function.identity(), (first, duplicate) -> first, LinkedHashMap::new));
     }
 
-    private static List<String> tokenizeName(String name) {
+    /** 按 camelCase/snake_case 拆词。索引名称用它；{@link ToolSearchCallback} 的查询词同样要用它拆一遍，
+     *  否则查询里写成一个词的 "slackMessage" 永远匹配不上按 ["slack","message"] 建索引的名称分词。 */
+    static List<String> tokenizeName(String name) {
         String withSpaces = CAMEL_BOUNDARY.matcher(name).replaceAll("$1 $2").replace('_', ' ');
         return tokenize(withSpaces);
     }

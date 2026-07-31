@@ -116,7 +116,7 @@ final class ToolSearchCallback implements ToolCallback {
     }
 
     private List<ToolIndexEntry> keywordSearch(String query) {
-        List<String> queryTokens = ToolIndexEntry.tokenize(query);
+        List<String> queryTokens = queryTokens(query);
         return index.stream()
                 .map(entry -> Map.entry(entry, entry.score(query, queryTokens)))
                 .filter(scored -> scored.getValue() > 0)
@@ -124,6 +124,18 @@ final class ToolSearchCallback implements ToolCallback {
                 .limit(config.maxResults())
                 .map(Map.Entry::getKey)
                 .toList();
+    }
+
+    /** 普通分词 + camelCase/snake_case 拆词一起用——查询词和索引名称的拆词方式必须对称，
+     *  否则查询里写成一个词的 "slackMessage" 永远匹配不上按 ["slack","message"] 建索引的名称分词。 */
+    private List<String> queryTokens(String query) {
+        List<String> merged = new ArrayList<>(ToolIndexEntry.tokenize(query));
+        for (String token : ToolIndexEntry.tokenizeName(query)) {
+            if (!merged.contains(token)) {
+                merged.add(token);
+            }
+        }
+        return merged;
     }
 
     /** 失败（模型报错、返回不是合法 JSON）一律降级成空结果，不让检索本身的故障打断整轮对话。 */

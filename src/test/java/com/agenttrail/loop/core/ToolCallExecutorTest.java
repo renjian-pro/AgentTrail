@@ -136,6 +136,31 @@ class ToolCallExecutorTest {
                         List.of(new TodoItem("c1", "doing c1", TodoItem.Status.IN_PROGRESS))));
     }
 
+    /**
+     * 更严格的隔离证明：TodoWrite 的 inputSchema 里声明的字段（{@code todos}）本身
+     * 也在系统参数注入的白名单里——如果快照取的是"已注入"的参数而不是模型的原始参数，
+     * 这里就会看到被注入覆盖后的内容，而不是模型真正提交的那份。
+     */
+    @Test
+    void emitsTodoProgressFromTheModelsRawArgumentsNotTheSystemParamInjectedOnes() {
+        RecordingToolCallback todoWrite = new RecordingToolCallback(TodoWriteTool.TOOL_NAME, "todo tool", "ok");
+        ToolCallExecutor executor = new ToolCallExecutor(List.of(todoWrite));
+        String modelSubmittedTodos =
+                "{\"todos\":[{\"content\":\"模型提交的\",\"activeForm\":\"正在处理\",\"status\":\"pending\"}]}";
+        // 系统参数注入白名单按 inputSchema 过滤，todos 恰好也在 TodoWrite 自己的 schema 里——
+        // 如果快照取用了注入之后的参数，这里就会看到这份被覆盖的内容而不是模型原始提交的
+        ToolParamInjector injectingTodos = new ToolParamInjector(
+                Map.of("todos", List.of(Map.of("content", "被注入覆盖的", "activeForm", "?", "status", "completed"))));
+
+        executor.execute(List.of(call("call-1", TodoWriteTool.TOOL_NAME, modelSubmittedTodos)), sink, injectingTodos);
+        sink.tryEmitComplete();
+
+        List<AgentStreamEvent> events = sink.asFlux().collectList().block(Duration.ofSeconds(2));
+        assertThat(events).filteredOn(AgentStreamEvent.TodoProgress.class::isInstance).singleElement()
+                .isEqualTo(new AgentStreamEvent.TodoProgress(
+                        List.of(new TodoItem("模型提交的", "正在处理", TodoItem.Status.PENDING))));
+    }
+
     @Test
     void doesNotEmitTodoProgressForOtherTools() {
         RecordingToolCallback echo = new RecordingToolCallback("echo", "echoes", "pong");

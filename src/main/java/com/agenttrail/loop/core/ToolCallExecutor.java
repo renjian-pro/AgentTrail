@@ -121,14 +121,20 @@ class ToolCallExecutor {
         String result = tool.call(arguments);
 
         EventSinks.emit(sink, new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
-        emitTodoProgressIfApplicable(toolCall.name(), arguments, sink);
+        // 用模型原始的 toolCall.arguments()，不是上面刚注入过系统参数的 arguments——进度快照要和
+        // 执行管道彻底解耦，见下面方法的说明
+        emitTodoProgressIfApplicable(toolCall.name(), toolCall.arguments(), sink);
         return new ToolResponse(toolCall.id(), toolCall.name(), result);
     }
 
     /**
      * {@code TodoWrite} 是唯一需要在工具执行之外额外广播一个事件的工具：进度快照必须来自
-     * 重新解析的原始参数，不能依赖 {@code result}（工具的返回文本）——两者各自独立解析同一份
-     * JSON，这样 {@link TodoWriteTool} 内部实现的任何改动都不会悄悄影响前端看到的进度。
+     * 重新解析的原始参数，不能依赖 {@code result}（工具的返回文本），也不能依赖
+     * {@link #sanitizeArguments}/{@link ToolParamInjector} 处理过的 {@code arguments}——
+     * 传的是 {@code toolCall.arguments()} 本身。今天 TodoWrite 的 inputSchema 只声明了
+     * {@code todos} 一个字段，系统参数注入对它天然是空操作，所以两者暂时看不出差异；
+     * 但这条隔离是设计上的保证，不是"恰好现在没事"——某天 TodoWrite 的字段和某个系统级
+     * 参数撞了名，或者 sanitizeArguments 的兜底逻辑变了，这里都不该跟着悄悄改变快照内容。
      * 解析失败（结构不合法）就静默跳过，不影响这一轮工具调用本身的结果。
      */
     private void emitTodoProgressIfApplicable(String toolName, String arguments, Sinks.Many<AgentStreamEvent> sink) {

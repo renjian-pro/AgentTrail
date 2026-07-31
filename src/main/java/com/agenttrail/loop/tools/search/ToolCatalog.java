@@ -3,6 +3,8 @@ package com.agenttrail.loop.tools.search;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -36,9 +38,12 @@ public final class ToolCatalog {
      * @param chatModel LLM 检索模式用；只用 KEYWORD 模式时可传 null
      */
     public static ToolCatalog of(ToolSearchConfig config, List<ToolCallback> deferredTools, ChatModel chatModel) {
+        // LinkedHashMap 保序，而不是 Map.copyOf——那个方法产出的不可变 map 故意打散迭代顺序
+        // （加盐哈希，每次 JVM 启动都不一样），会让打分并列时的先后顺序在两次运行之间不可复现
         Map<String, ToolCallback> byName = deferredTools.stream().collect(Collectors.toMap(
-                tool -> tool.getToolDefinition().name(), Function.identity(), (first, duplicate) -> first));
-        return new ToolCatalog(Map.copyOf(byName), ToolIndexEntry.buildIndex(byName), config, chatModel);
+                tool -> tool.getToolDefinition().name(), Function.identity(),
+                (first, duplicate) -> first, LinkedHashMap::new));
+        return new ToolCatalog(Collections.unmodifiableMap(byName), ToolIndexEntry.buildIndex(byName), config, chatModel);
     }
 
     public ToolSearchSession newSession() {

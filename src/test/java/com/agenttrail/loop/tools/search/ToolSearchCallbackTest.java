@@ -35,6 +35,27 @@ class ToolSearchCallbackTest {
         return new ToolSearchCallback(config, index, ToolIndexEntry.indexByName(index), chatModel, discovered);
     }
 
+    /**
+     * 查询词也要按 camelCase 拆开，和索引里名称分词的拆词方式对称——查询里写成一整个词的
+     * "sendSlackMessage" 要能匹配上按 ["send","slack","message"] 建索引的名称分词，
+     * 不能因为查询没拆词就白白错过一个关键词层面本该命中的工具。
+     */
+    @Test
+    void camelCaseQueryMatchesToolIndexedByItsSplitNameTokens() {
+        CountingChatModel chatModel = new CountingChatModel(list());
+        Set<String> discovered = ConcurrentHashMap.newKeySet();
+        ToolSearchCallback callback = callbackOf(ToolSearchConfig.defaults(), chatModel, discovered,
+                tool("sendSlackMessage", "向 Slack 频道发送消息"));
+
+        // 故意不是完整工具名（那样精确匹配自己就够了），只是它的一部分、且没有空格分隔——
+        // 必须靠查询词自己被拆成 ["slack","message"] 才能匹配上索引里同样被拆开的名称分词
+        String result = callback.call("{\"query\":\"slackMessage\"}");
+
+        assertThat(chatModel.callCount()).isZero();
+        assertThat(result).contains("sendSlackMessage");
+        assertThat(discovered).containsExactly("sendSlackMessage");
+    }
+
     @Test
     void keywordHitNeverTriggersAnLlmCall() {
         CountingChatModel chatModel = new CountingChatModel(list());

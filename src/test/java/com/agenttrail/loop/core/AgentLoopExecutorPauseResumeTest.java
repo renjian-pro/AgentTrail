@@ -153,6 +153,34 @@ class AgentLoopExecutorPauseResumeTest {
                 .anyMatch(text -> text != null && text.contains("算了，充 50 元就好"));
     }
 
+    /**
+     * 恢复必须接着暂停时的轮次继续数，而不是从 0 重开一份全新的 maxRounds 预算——
+     * 否则反复暂停/恢复能绕开轮次上限，变相无限轮下去。maxRounds=1 时，第 1 轮触发暂停已经
+     * 用掉了唯一的额度，resume 之后调度的那一轮必须已经超过预算、模型看不到任何工具。
+     */
+    @Test
+    void resumeContinuesTheRoundBudgetInsteadOfGrantingAFreshOne() {
+        InMemoryPauseStateStore store = new InMemoryPauseStateStore();
+        RecordingToolCallback chargeTool = new RecordingToolCallback(APPROVAL_REQUIRED_TOOL, "charges a card", "charged");
+        ScriptedChatModel pauseModel = new ScriptedChatModel(
+                List.of(toolCall("call-1", APPROVAL_REQUIRED_TOOL, "{\"amount\":100}")));
+        AgentLoopExecutor pausingExecutor = executorWith(pauseModel, store, chargeTool, 1);
+        pausingExecutor.stream("给我充值 100 元", new RunnableParams("conv-1", "user-1"))
+                .collectList().block(Duration.ofSeconds(5));
+
+        ScriptedChatModel resumeModel = new ScriptedChatModel(List.of(text("充值成功")));
+        AgentLoopExecutor resumingExecutor = executorWith(resumeModel, store, chargeTool, 1);
+
+        resumingExecutor.resume("conv-1", ResumeInstruction.ApprovalDecision.approve())
+                .collectList().block(Duration.ofSeconds(5));
+
+        // 挂起的调用照样要执行——轮次预算耗尽只影响"模型这一轮还能不能再发起新的工具调用"
+        assertThat(chargeTool.recordedArguments()).containsExactly("{\"amount\":100}");
+        assertThat(resumeModel.toolNamesAtRound(0))
+                .as("暂停已经用掉了 maxRounds=1 的唯一额度，resume 后这一轮必须已经超预算、不挂任何工具")
+                .isEmpty();
+    }
+
     // ==================== 边界 ====================
 
     @Test
@@ -176,8 +204,13 @@ class AgentLoopExecutorPauseResumeTest {
 
     private static AgentLoopExecutor executorWith(ScriptedChatModel chatModel, InMemoryPauseStateStore store,
                                                   RecordingToolCallback tool) {
+        return executorWith(chatModel, store, tool, 5);
+    }
+
+    private static AgentLoopExecutor executorWith(ScriptedChatModel chatModel, InMemoryPauseStateStore store,
+                                                  RecordingToolCallback tool, int maxRounds) {
         PauseConfig pauseConfig = new PauseConfig(Set.of(APPROVAL_REQUIRED_TOOL), store);
-        return new AgentLoopExecutor(chatModel, List.of(tool), 5, new AgentTaskManager(), null,
+        return new AgentLoopExecutor(chatModel, List.of(tool), maxRounds, new AgentTaskManager(), null,
                 ThinkingMode.DISABLED, null, null, pauseConfig);
     }
 }

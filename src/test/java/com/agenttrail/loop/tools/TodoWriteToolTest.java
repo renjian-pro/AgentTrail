@@ -79,6 +79,13 @@ class TodoWriteToolTest {
     }
 
     @Test
+    void rejectsAnEmptyTodosArray() {
+        String result = tool.call("{\"todos\":[]}");
+
+        assertThat(result).contains("Error");
+    }
+
+    @Test
     void degradesMalformedJsonToAnErrorResultInsteadOfThrowing() {
         String result = tool.call("{not json");
 

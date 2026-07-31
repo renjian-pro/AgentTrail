@@ -266,7 +266,7 @@ public class AgentLoopExecutor {
                 .toList();
         PauseState pauseState = new PauseState(context.conversationId(), context.messages(), pending,
                 PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION, context.question(),
-                context.params(), System.currentTimeMillis());
+                context.params(), context.roundCounter().get(), System.currentTimeMillis());
         pauseConfig.store().save(pauseState);
 
         context.emit(new AgentStreamEvent.Paused(context.conversationId(), PauseReason.HITL_APPROVAL));
@@ -311,8 +311,9 @@ public class AgentLoopExecutor {
         // 快照已经消费完毕，不删的话一次异常重复恢复会用一份过期的历史覆盖掉新产生的对话
         pauseConfig.store().delete(conversationId);
 
+        // 从暂停时的轮次续数，而不是从 0 重开一整份 maxRounds 预算——否则反复暂停/恢复能绕开轮次上限
         RunContext context = new RunContext(paused.question(), paused.params(), messages, sink,
-                new AtomicInteger(0), System.currentTimeMillis(), null, MDC.getCopyOfContextMap());
+                new AtomicInteger(paused.roundAtPause()), System.currentTimeMillis(), null, MDC.getCopyOfContextMap());
         scheduleRound(context);
         return sink.asFlux();
     }

@@ -26,6 +26,20 @@ import java.util.concurrent.ConcurrentHashMap;
  * 是进程内对象，永远没法跨实例传递——能广播的只是"请停止 conversationId X"这条消息本身，
  * 真正的取消动作必须由持有那个订阅的实例自己执行。
  *
+ * <p><b>单飞注册同样要跨实例生效</b>：只在本地 {@code taskMap} 上 {@code putIfAbsent} 只能防住
+ * "同一个实例收到两个并发请求"，防不住"两个不同实例各自认为自己没有这个任务，各自注册成功，
+ * 同一个会话在两台机器上同时跑了起来"——这正是 {@link RedisTaskLock}（issue #11）存在的意义。
+ * 配了 {@code redisTaskLock} 时，{@link #registerTask} 在本地占位成功之后还要去 Redis 抢真正的
+ * 归属；抢不到就把本地占位撤回去，让请求方看到的还是"这个会话已经在别处跑着"，而不是本地
+ * 占了位却什么都不做的假成功。
+ *
+ * <p><b>已知的、故意留到后续的缺口</b>：本类不会定时续期已持有的 Redis 锁。一次注册的 TTL
+ * 由调用方在构造 {@link RedisTaskLock} 时给定，必须足够覆盖最坏情况下的会话时长，否则一个
+ * 跑得比 TTL 还久的会话，它的 Redis 锁会在还在真实运行的时候到期，被另一个实例抢走——
+ * 这时两个实例会真的同时跑同一个会话。定时续期（对标各类参考实现里常见的"每 N 分钟刷新一次
+ * 本地所有任务的 TTL"的做法）需要一个额外的调度线程和生命周期管理，留作后续 ticket，
+ * 这里不顺手加，以免把这次修复的改动面扩大到没有测试覆盖的角落。
+ *
  * <p>目前只有 {@code stopTask} 这一种"硬停止"语义（丢弃全部运行时状态）。
  * "先快照再停、之后可恢复"的中断语义属于断点续传，见 ticket #13。
  */
@@ -34,10 +48,11 @@ public class AgentTaskManager {
     private static final Logger log = LoggerFactory.getLogger(AgentTaskManager.class);
 
     private final Map<String, TaskInfo> taskMap = new ConcurrentHashMap<>();
+    private final RedisTaskLock redisTaskLock;
     private final InterruptBroadcaster broadcaster;
 
     public AgentTaskManager() {
-        this(null);
+        this(null, null);
     }
 
     /**
@@ -45,6 +60,16 @@ public class AgentTaskManager {
      *                    行为与没有这个机制时完全一致
      */
     public AgentTaskManager(InterruptBroadcaster broadcaster) {
+        this(null, broadcaster);
+    }
+
+    /**
+     * @param redisTaskLock 跨实例单飞归属校验；传 null 表示单实例部署，{@code registerTask} 只看
+     *                      本地 map，行为与没有这个机制时完全一致
+     * @param broadcaster   跨实例中断广播；传 null 表示单实例部署，{@code stopTask} 只走本地快路径
+     */
+    public AgentTaskManager(RedisTaskLock redisTaskLock, InterruptBroadcaster broadcaster) {
+        this.redisTaskLock = redisTaskLock;
         this.broadcaster = broadcaster;
         if (broadcaster != null) {
             // 把"收到广播之后干什么"注册进去，本类不需要知道广播是怎么传递过来的
@@ -72,14 +97,25 @@ public class AgentTaskManager {
      * 写成"先 containsKey 再 put"的话，两个并发请求可能同时查到"没有任务"然后都写入成功，
      * 同一会话就跑起了两个任务，输出交错。
      *
-     * @return true 表示注册成功；false 表示该会话已有任务在跑
+     * <p>配了 {@link RedisTaskLock} 时，本地占位成功之后还要去抢真正的跨实例归属——
+     * 本地 map 只能防住"同一个实例的并发请求"，防不住"另一个实例已经在跑这个会话，
+     * 但本实例的本地 map 里当然看不到"。抢不到就把本地占位撤回去：占着本地位置又什么都不做，
+     * 会让 {@link #hasRunningTask} 在本实例上错误地显示"有任务在跑"。
+     *
+     * @return true 表示注册成功；false 表示该会话已有任务在跑（本实例或者别的实例）
      */
     public boolean registerTask(String conversationId, Sinks.Many<AgentStreamEvent> sink) {
-        boolean admitted = taskMap.putIfAbsent(conversationId, new TaskInfo(sink)) == null;
-        if (!admitted) {
+        boolean admittedLocally = taskMap.putIfAbsent(conversationId, new TaskInfo(sink)) == null;
+        if (!admittedLocally) {
             log.warn("会话 {} 已有任务在执行，拒绝并发注册", conversationId);
+            return false;
         }
-        return admitted;
+        if (redisTaskLock != null && !redisTaskLock.tryAcquire(conversationId)) {
+            taskMap.remove(conversationId);
+            log.warn("会话 {} 已在别的实例上执行，撤回本地占位并拒绝注册", conversationId);
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -140,6 +176,7 @@ public class AgentTaskManager {
         }
         disposeQuietly(task.disposable);
         task.sink.tryEmitComplete();
+        releaseRedisLockQuietly(conversationId);
         log.debug("已停止会话 {} 的任务", conversationId);
         return true;
     }
@@ -147,6 +184,19 @@ public class AgentTaskManager {
     /** 任务正常跑完后的清理，不碰订阅和事件流——那两者此时已经自然结束了。 */
     public void removeTask(String conversationId) {
         taskMap.remove(conversationId);
+        releaseRedisLockQuietly(conversationId);
+    }
+
+    /** 释放跨实例归属，让别的实例不用等 TTL 过期就能立刻接手同名会话；失败不影响任务本身已经收尾这件事。 */
+    private void releaseRedisLockQuietly(String conversationId) {
+        if (redisTaskLock == null) {
+            return;
+        }
+        try {
+            redisTaskLock.release(conversationId);
+        } catch (RuntimeException failure) {
+            log.warn("释放会话 {} 的跨实例锁失败，留给 TTL 自愈兜底: {}", conversationId, failure.getMessage());
+        }
     }
 
     /** dispose 本身的异常不应该影响停止流程——停止是尽力而为的操作。 */

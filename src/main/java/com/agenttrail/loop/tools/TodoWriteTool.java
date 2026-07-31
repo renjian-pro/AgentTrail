@@ -123,6 +123,9 @@ public final class TodoWriteTool implements ToolCallback {
         if (todos == null || !todos.isArray()) {
             return Parsed.error("todos 必须是一个数组");
         }
+        if (todos.isEmpty()) {
+            return Parsed.error("todos 不能为空——没有任务要跟踪时不需要调用本工具");
+        }
 
         List<TodoItem> items = new ArrayList<>();
         for (JsonNode node : todos) {
