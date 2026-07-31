@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 手写 ReAct 循环：一轮 = 一次流式模型调用 +（如果模型要调工具）一批工具执行 + 递归进入下一轮。
@@ -158,6 +159,50 @@ public class AgentLoopExecutor {
                 System.currentTimeMillis(), toolSearchSession, mdcSnapshot);
         scheduleRound(context);
         return sink.asFlux();
+    }
+
+    /**
+     * 同步调用：语义上等价于把 {@link #stream} 阻塞收集成一次性结果，**直接复用**同一个公开的
+     * {@link #stream} 入口，不是另起一套 loop 实现——单飞注册、工具执行、上下文压缩这些机制
+     * 一个都不用重新接一遍（issue #15；参考实现的 {@code callViaStreamForResult} 走的是同一个
+     * "阻塞收集 Text 事件"思路，只是它内部绕开了自己的公开 {@code stream} 入口直接摸轮次调度，
+     * 因而要在 {@code call}/{@code stream} 两处各自重复一遍单飞注册——AgentTrail 的
+     * {@link #stream} 本身就是自给自足的公开入口，直接包一层阻塞收集即可，不必重复）。
+     *
+     * <p>工具调用轮产生的正文是"模型的中间思考"，不是最终答案——每次看到 {@link AgentStreamEvent.ToolStart}
+     * 就把已经攒下的文本清空，保证最终只剩最后一轮（无工具调用的收尾轮）的正文。
+     *
+     * <p>不支持中途暂停：{@link PauseConfig} 触发的暂停在同步调用里没有"之后再恢复"的自然落点——
+     * 调用方已经在等一个返回值，不是攥着一个可以晚点再消费的 {@code Flux}，遇到就直接抛异常，
+     * 让调用方改用 {@link #stream} + {@link #resume}。
+     *
+     * @return 这一轮的最终正文
+     * @throws AgentCallException 模型调用失败（{@code code} 和对应的 {@link AgentStreamEvent.Error#code()}
+     *                            一致），或者这一轮触发了暂停（{@code code} 是 {@code "PAUSED"}）
+     */
+    public String call(String question, RunnableParams params) {
+        StringBuilder answer = new StringBuilder();
+        AtomicReference<AgentCallException> failure = new AtomicReference<>();
+
+        stream(question, params)
+                .doOnNext(event -> {
+                    switch (event) {
+                        case AgentStreamEvent.Text text -> answer.append(text.content());
+                        case AgentStreamEvent.ToolStart ignored -> answer.setLength(0);
+                        case AgentStreamEvent.Error error -> failure.set(
+                                new AgentCallException(error.code(), error.message()));
+                        case AgentStreamEvent.Paused paused -> failure.set(new AgentCallException("PAUSED",
+                                "同步调用触发了暂停（原因：" + paused.reason() + "），请改用 stream() + resume()"));
+                        default -> {
+                        }
+                    }
+                })
+                .blockLast();
+
+        if (failure.get() != null) {
+            throw failure.get();
+        }
+        return answer.toString();
     }
 
     /**
