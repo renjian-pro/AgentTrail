@@ -62,17 +62,27 @@ class ToolCallExecutor {
      */
     List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
                                ToolParamInjector paramInjector) {
+        return execute(toolCalls, sink, paramInjector, null);
+    }
+
+    /**
+     * @param sessionScopedTool 构造时的固定工具表里找不到、但这次对话请求专属的工具（比如
+     *                          ToolSearch 的检索元工具本身，每个会话各有一个独立实例）；
+     *                          传 null 等价于不存在这类工具
+     */
+    List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
+                               ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
         return Flux.fromIterable(toolCalls)
                 .flatMapSequential(toolCall -> Mono
-                        .fromCallable(() -> executeOne(toolCall, sink, paramInjector))
+                        .fromCallable(() -> executeOne(toolCall, sink, paramInjector, sessionScopedTool))
                         .subscribeOn(Schedulers.boundedElastic()))
                 .collectList()
                 .block();
     }
 
     private ToolResponse executeOne(ToolCall toolCall, Sinks.Many<AgentStreamEvent> sink,
-                                    ToolParamInjector paramInjector) {
-        ToolCallback tool = toolsByName.get(toolCall.name());
+                                    ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
+        ToolCallback tool = resolve(toolCall.name(), sessionScopedTool);
         if (tool == null) {
             // 模型幻觉出的工具：连参数都不必处理，直接把错误当结果喂回去
             sink.tryEmitNext(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), toolCall.arguments()));
@@ -89,6 +99,18 @@ class ToolCallExecutor {
 
         sink.tryEmitNext(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
         return new ToolResponse(toolCall.id(), toolCall.name(), result);
+    }
+
+    /** 先查固定表，查不到再看是不是这次会话专属的那一个（按名字比对，不假设调用方传对了）。 */
+    private ToolCallback resolve(String name, ToolCallback sessionScopedTool) {
+        ToolCallback tool = toolsByName.get(name);
+        if (tool != null) {
+            return tool;
+        }
+        if (sessionScopedTool != null && sessionScopedTool.getToolDefinition().name().equals(name)) {
+            return sessionScopedTool;
+        }
+        return null;
     }
 
     /**

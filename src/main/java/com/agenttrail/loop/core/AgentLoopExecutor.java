@@ -8,6 +8,8 @@ import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.tools.search.ToolCatalog;
+import com.agenttrail.loop.tools.search.ToolSearchSession;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -49,10 +51,11 @@ public class AgentLoopExecutor {
     private final ThinkingModeProcessor thinkingModeProcessor;
     private final TurnPersistenceHook persistenceHook;
     private final List<ToolCallback> tools;
+    private final ToolCatalog toolCatalog;
     private final int maxRounds;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
-        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
+        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null);
     }
 
     /**
@@ -65,14 +68,37 @@ public class AgentLoopExecutor {
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
                              AgentTaskManager taskManager, ContextPolicy contextPolicy,
                              ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook, null);
+    }
+
+    /**
+     * @param toolCatalog ToolSearch 延迟工具池；传 null 表示不启用该机制，行为与没有它时完全一致。
+     *                    池子里的工具**始终**可以被执行层解析到（{@link ToolCallExecutor} 按全量池建表），
+     *                    但只有本次对话已经"搜到"的那部分才会被下一轮的工具清单暴露给模型——
+     *                    可见性限制只在喂给 LLM 那一侧，执行层不做二次过滤
+     */
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                             ToolCatalog toolCatalog) {
         this.llmInvoker = new LlmInvoker(chatModel);
-        this.toolCallExecutor = new ToolCallExecutor(tools);
+        this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
         this.contextCompactor = (contextPolicy == null) ? null : new ContextCompactor(contextPolicy, chatModel);
         this.thinkingModeProcessor = new ThinkingModeProcessor(thinkingMode);
         this.persistenceHook = persistenceHook;
         this.tools = tools;
+        this.toolCatalog = toolCatalog;
         this.maxRounds = maxRounds;
+    }
+
+    private static List<ToolCallback> withDeferredPool(List<ToolCallback> tools, ToolCatalog toolCatalog) {
+        if (toolCatalog == null) {
+            return tools;
+        }
+        List<ToolCallback> merged = new ArrayList<>(tools);
+        merged.addAll(toolCatalog.allTools());
+        return merged;
     }
 
     /**
@@ -99,8 +125,11 @@ public class AgentLoopExecutor {
         }
         messages.add(new UserMessage(question));
 
-        RunContext context = new RunContext(
-                question, params, messages, sink, new AtomicInteger(0), System.currentTimeMillis());
+        // 每次对话请求各自开一个全新会话——发现的工具互相隔离，不会泄漏给并发的其他会话
+        ToolSearchSession toolSearchSession = (toolCatalog == null) ? null : toolCatalog.newSession();
+
+        RunContext context = new RunContext(question, params, messages, sink, new AtomicInteger(0),
+                System.currentTimeMillis(), toolSearchSession);
         scheduleRound(context);
         return sink.asFlux();
     }
@@ -114,7 +143,7 @@ public class AgentLoopExecutor {
     private void scheduleRound(RunContext context) {
         // 超出轮次预算后，本轮改成不挂任何工具——模型看不见工具，就没法再发起调用
         boolean toolsExhausted = maxRounds > 0 && context.nextRound() > maxRounds;
-        List<ToolCallback> roundTools = toolsExhausted ? List.of() : tools;
+        List<ToolCallback> roundTools = toolsExhausted ? List.of() : withDiscoveredTools(context.toolSearchSession());
 
         // 压缩放在发请求之前：此时上一轮的工具结果刚落进历史，正是上下文最膨胀的时刻
         if (contextCompactor != null) {
@@ -130,6 +159,23 @@ public class AgentLoopExecutor {
 
         // 每轮都要重新登记，否则停止请求作用在上一轮早已结束的订阅上（踩坑点 #9）
         taskManager.setDisposable(context.conversationId(), subscription);
+    }
+
+    /**
+     * 本轮该暴露给模型的工具清单：固定工具 + 检索元工具本身 + 这次会话目前为止已经搜到的工具。
+     *
+     * <p>"搜到"和"能调用"之间天然隔一轮：工具在第 N 轮的工具调用里被搜索元工具发现，
+     * discoveredNames 立刻更新，但第 N 轮已经在用（甚至已经收到）的模型响应不会重新协商工具清单——
+     * 只有第 N+1 轮重新组装 roundTools 时，新发现的工具才第一次出现在模型可选列表里。
+     */
+    private List<ToolCallback> withDiscoveredTools(ToolSearchSession toolSearchSession) {
+        if (toolSearchSession == null) {
+            return tools;
+        }
+        List<ToolCallback> roundTools = new ArrayList<>(tools);
+        roundTools.add(toolSearchSession.toolSearchCallback());
+        roundTools.addAll(toolSearchSession.discoveredTools());
+        return roundTools;
     }
 
     /** 处理单个流式 chunk：工具调用分片、正文文本、独立字段里的思考内容，三者都可能出现。 */
@@ -164,8 +210,10 @@ public class AgentLoopExecutor {
         context.messages().add(buildAssistantMessage(state, toolCalls));
 
         ToolParamInjector paramInjector = new ToolParamInjector(context.params().toolParams());
+        ToolCallback sessionScopedTool = (context.toolSearchSession() == null)
+                ? null : context.toolSearchSession().toolSearchCallback();
         List<ToolResponseMessage.ToolResponse> responses =
-                toolCallExecutor.execute(toolCalls, context.sink(), paramInjector);
+                toolCallExecutor.execute(toolCalls, context.sink(), paramInjector, sessionScopedTool);
         context.messages().add(ToolResponseMessage.builder().responses(responses).build());
 
         scheduleRound(context);

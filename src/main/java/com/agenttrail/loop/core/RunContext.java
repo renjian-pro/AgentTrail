@@ -2,6 +2,7 @@ package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.loop.tools.search.ToolSearchSession;
 import org.springframework.ai.chat.messages.Message;
 import reactor.core.publisher.Sinks;
 
@@ -20,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @param sink          事件出口
  * @param roundCounter  已发起的轮次数
  * @param startTimeMillis 本轮问答开始时刻，落库时用来算总耗时
+ * @param toolSearchSession 本次对话专属的延迟工具发现状态；未启用 ToolSearch 时为 null
  */
 record RunContext(
         String question,
@@ -27,7 +29,8 @@ record RunContext(
         List<Message> messages,
         Sinks.Many<AgentStreamEvent> sink,
         AtomicInteger roundCounter,
-        long startTimeMillis) {
+        long startTimeMillis,
+        ToolSearchSession toolSearchSession) {
 
     String conversationId() {
         return params.conversationId();
