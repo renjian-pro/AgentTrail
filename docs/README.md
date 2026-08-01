@@ -10,6 +10,7 @@
 | [`engineering-pitfalls-and-highlights.md`](engineering-pitfalls-and-highlights.md) | 踩坑点/亮点清单，`roadmap.md` 里的 `#N` 都指向这里 | 实现中发现新坑位/新亮点时追加编号 | 活文档 |
 | [`interview-narrative.md`](interview-narrative.md) | 面试叙事三条主线 + demo/工程落地对照表 | 有新的可讲素材时 | 活文档 |
 | [`adr/`](adr) | 架构决策记录（谁推翻了谁、为什么） | 做出不可逆的架构选择时新增一份，不修改旧的 | 只增不改 |
+| [`specs/`](specs) | 涉及范围较大的新功能 spec（问题/方案/用户故事/实现决策/测试决策/范围外），`to-spec` 技能同一套模板；发 GitHub issue 前的书面留痕，issue 化之后本文件继续作为可读版本维护 | 新 spec 或 spec 状态变化时 | 活文档 |
 | [`validation-report.md`](validation-report.md) | 一次性内部审查快照 | 不再更新 | **已归档，仅供个人参考，不对外展示** |
 | [`../AGENTS.md`](../AGENTS.md) | 工程技能配置入口（`/to-spec`/`/to-tickets`/`/triage` 等读取的三份配置指针） | 切换 issue tracker/triage 词汇/文档布局时 | 活文档 |
 | [`agents/issue-tracker.md`](agents/issue-tracker.md) | Issue tracker 配置：GitHub，`gh` CLI 操作约定 | 切换 tracker 时 | 活文档 |

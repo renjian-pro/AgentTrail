@@ -266,11 +266,11 @@
 |---|---|
 | 本地开发环境 | Docker Compose：app + MySQL(sakila) + Redis + PgVector（Phase 4 用到时再加） |
 | CI 与测试体系 | 单测（0.0 的 ScriptedLlmClient 确定性测试 + 分片重组模糊测试）+ Testcontainers 集成测试（真实 MySQL/Redis，禁 H2）+ Sonar 扫描；Phase 9 之后补 MCP 契约测试（保证 schema 不破坏外部调用方）；混沌测试（Toxiproxy 注入 Redis 故障/网络分区，验证 #30-32 的降级路径真的生效而不是纸上谈兵） |
-| 配置与密钥 | `secrets.properties` 是开发期方案；生产走配置中心（Nacos/Apollo + `@RefreshScope`）+ 密钥管理（Vault/KMS），API Key 不落明文——见过同类项目在根 pom 里硬编码 API Key 的反面案例，面试可主动讲"我见过这种反面案例，所以从一开始就用 Vault 改造" |
+| 配置与密钥 | `application-local.yml` 是开发期方案；生产走配置中心（Nacos/Apollo + `@RefreshScope`）+ 密钥管理（Vault/KMS），API Key 不落明文 |
 | 健康探针与优雅停机 | `/actuator/health` 分 liveness（只检 JVM）/readiness（检 Redis/MySQL/LLM 连通性）；K8s liveness 失败重启会丢内存会话——所以 Phase 1 的会话持久化是 K8s 部署的前置依赖；优雅停机保证进行中的 ReAct 轮次跑完或触发 PauseState 快照（踩坑点 #32） |
 | 真正部署 | 视"部署好面试用"的具体要求决定——云主机/容器平台直接跑 Docker Compose，还是需要 K8s；镜像用 Buildpacks 分层（依赖层缓存，改代码只重建应用层） |
 | 性能基线 | 单实例并发会话数目标（受 Redis 锁 + 连接池 + LLM 并发限制约束）、单会话平均 token、压缩触发后的延迟增量；Redis 锁续期频率随并发数线性放大，连接池要按并发数预算 |
-| 前端演示页 | 自建一套静态前端（SSE 分阶段时间线渲染、thinking 折叠面板、TodoProgress 进度条、Skills 侧栏、历史会话分页）——面试演示的视觉效果远强于 curl；对应课程《前端的一些相关工作》（已入库待挖掘细节） |
+| 前端演示页 | Vue3 + TS + Vite 单页应用，覆盖对话/文件问答/DeepResearch/PPT 生成——面试演示的视觉效果远强于 curl；详细设计见 [`docs/specs/frontend-v1.md`](specs/frontend-v1.md)，已拆票 [#38-#43](https://github.com/renjian-pro/AgentTrail/issues/38)；登录 + RBAC + 数据权限前端另见 [`docs/specs/frontend-phase2-auth.md`](specs/frontend-phase2-auth.md)（绑定下面 Phase 2 一起做，尚未拆票） |
 | Demo 脚本 | 一套 curl/Postman 集作为前端之外的补充，覆盖每个能力包的典型场景 |
 | 评测落地 | Phase 3c 的评测体系接上真实数据——对应课程《data-agent的评测》（文章待入库后补具体指标口径） |
 
