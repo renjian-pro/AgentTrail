@@ -53,4 +53,25 @@ class InMemoryPptTaskStoreTest {
     void returnsEmptyForAnUnknownId() {
         assertThat(new InMemoryPptTaskStore().findById(999L)).isEmpty();
     }
+
+    @Test
+    void findLatestByConversationIdReturnsTheMostRecentlyCreatedTaskForThatConversation() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        long first = store.create("conv-1", PptGenerationContext.initial("conv-1", "第一次请求"));
+        long second = store.create("conv-1", PptGenerationContext.initial("conv-1", "第二次请求"));
+        store.create("conv-2", PptGenerationContext.initial("conv-2", "另一个会话的请求"));
+
+        PptTask latest = store.findLatestByConversationId("conv-1").orElseThrow();
+
+        assertThat(latest.id()).as("id 更大的那条（后创建的）才是最新").isEqualTo(second);
+        assertThat(latest.id()).isNotEqualTo(first);
+    }
+
+    @Test
+    void findLatestByConversationIdReturnsEmptyWhenThatConversationHasNoTask() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        store.create("conv-1", PptGenerationContext.initial("conv-1", "问题"));
+
+        assertThat(store.findLatestByConversationId("conv-从来没有过任务")).isEmpty();
+    }
 }

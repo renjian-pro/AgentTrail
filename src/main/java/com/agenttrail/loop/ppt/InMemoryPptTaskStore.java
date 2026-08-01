@@ -26,6 +26,15 @@ public class InMemoryPptTaskStore implements PptTaskStore {
     }
 
     @Override
+    public Optional<PptTask> findLatestByConversationId(String conversationId) {
+        // 主键是 AtomicLong 递增分配的，id 越大就是越晚创建——用 id 排序当"最新"，
+        // 不用 createdAtMillis（同一毫秒内可能有并列，id 顺序才是唯一确定的创建先后）。
+        return tasks.values().stream()
+                .filter(task -> task.conversationId().equals(conversationId))
+                .max(java.util.Comparator.comparingLong(PptTask::id));
+    }
+
+    @Override
     public void advance(long id, PptState newState, PptGenerationContext context) {
         tasks.compute(id, (ignored, existing) -> {
             if (existing == null) {

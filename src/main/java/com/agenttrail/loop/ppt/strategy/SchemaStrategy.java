@@ -17,6 +17,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * SCHEMA 状态（issue #24）：把 {@link com.agenttrail.loop.ppt.PptOutline} 翻译成"填进这份具体
  * 模板"的最终文字（{@link PptSchema}）——字数上限写进 Prompt 只是软约束（踩坑点 #53），
  * 真正的硬性截断兜底在 RENDER 状态调用的 {@code render_ppt.py} 里，这里不重复做截断。
+ *
+ * <p>{@code context.userRequirement()} 也会拼进 Prompt（issue #32）：CREATE 流程里这个字段是
+ * 触发本次生成的原始需求文本，和大纲信息重复，附带上不会有副作用；MODIFY 流程里
+ * （{@link com.agenttrail.loop.ppt.PptGenerationService}）这个字段被替换成用户这次的具体修改
+ * 指令（例如"把第二页标题改成……"），SCHEMA 状态是 MODIFY 分支唯一重新执行的 LLM 调用，
+ * 只有让它看到修改指令，"在已有 PPT 基础上改"才是真的在改，而不是照抄一遍旧大纲。
  */
 public class SchemaStrategy implements PptGenerationStrategy {
 
@@ -60,6 +66,10 @@ public class SchemaStrategy implements PptGenerationStrategy {
             for (String bullet : slide.bullets()) {
                 builder.append("   - ").append(bullet).append('\n');
             }
+        }
+        String userRequirement = context.userRequirement();
+        if (userRequirement != null && !userRequirement.isBlank()) {
+            builder.append("\n【用户原始请求，如有具体的修改/调整要求以此为准】\n").append(userRequirement).append('\n');
         }
         return builder.toString();
     }

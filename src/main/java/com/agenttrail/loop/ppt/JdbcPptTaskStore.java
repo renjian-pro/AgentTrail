@@ -29,6 +29,16 @@ public class JdbcPptTaskStore implements PptTaskStore {
             WHERE id = ?
             """;
 
+    // 按 id 倒序取第一条即"最新"——id 自增，比 created_at 更可靠（同毫秒内可能有并列），
+    // 和 InMemoryPptTaskStore#findLatestByConversationId 用同一个排序口径，两个实现行为一致。
+    private static final String SELECT_LATEST_BY_CONVERSATION_SQL = """
+            SELECT id, conversation_id, status, error_msg, context_json, created_at, updated_at
+            FROM ppt_generation_task
+            WHERE conversation_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """;
+
     private static final String ADVANCE_SQL = """
             UPDATE ppt_generation_task
             SET status = ?, error_msg = NULL, context_json = ?, updated_at = ?
@@ -65,6 +75,14 @@ public class JdbcPptTaskStore implements PptTaskStore {
     public Optional<PptTask> findById(long id) {
         return jdbcClient.sql(SELECT_BY_ID_SQL)
                 .param(id)
+                .query(JdbcPptTaskStore::mapRow)
+                .optional();
+    }
+
+    @Override
+    public Optional<PptTask> findLatestByConversationId(String conversationId) {
+        return jdbcClient.sql(SELECT_LATEST_BY_CONVERSATION_SQL)
+                .param(conversationId)
                 .query(JdbcPptTaskStore::mapRow)
                 .optional();
     }

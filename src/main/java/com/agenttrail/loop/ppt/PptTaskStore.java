@@ -14,6 +14,16 @@ public interface PptTaskStore {
     Optional<PptTask> findById(long id);
 
     /**
+     * 按 conversationId 找该会话下最近一条任务（issue #32）——{@code MODIFY}/{@code RESUME} 两个
+     * 分支都是"用户在对话里说了一句话"触发的，调用方（{@link PptGenerationService}）手上只有
+     * conversationId，没有也不该要求调用方自己维护 taskId：{@code RESUME} 想接着跑"最近一次没跑完
+     * 的"，{@code MODIFY} 想在"最近一次跑完的"基础上改，两者语义都是"这个会话下最新的一条"，
+     * 不是"随便挑一条"——一个会话可能有多条历史任务（比如 MODIFY 每次都新建一条任务行，见
+     * {@link PptGenerationService} 里的实现），取最新的这条才对。
+     */
+    Optional<PptTask> findLatestByConversationId(String conversationId);
+
+    /**
      * 状态推进：调用方（{@link PptGenerationService}）只应该在 {@code newState}
      * 对应的上一个状态的副作用已经真正完成之后才调用这个方法——这里本身不做任何时序校验，
      * 时序正确性是调用方的职责，这里只管把这次推进原子落库，同时清空 {@code errorMsg}

@@ -191,7 +191,9 @@ CREATE TABLE IF NOT EXISTS ppt_generation_task
     created_at      BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
     updated_at      BIGINT       NOT NULL COMMENT '最近一次状态推进/失败记录的时刻（epoch millis）',
     PRIMARY KEY (id),
-    -- 运维排查"某个会话发起过哪些 PPT 任务"走这个索引；恢复流程本身永远按主键 id 查找
+    -- 运维排查"某个会话发起过哪些 PPT 任务"走这个索引；issue #32 起 MODIFY/RESUME 分支的
+    -- findLatestByConversationId 查询（按 conversation_id 找最新一条任务）也走这个索引——
+    -- crash 恢复场景（已知 taskId 时）仍然只按主键 id 查找，两条路径不冲突
     KEY idx_ppt_task_conversation (conversation_id)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
