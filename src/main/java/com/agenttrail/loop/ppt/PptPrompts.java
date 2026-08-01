@@ -11,6 +11,26 @@ public final class PptPrompts {
     private PptPrompts() {
     }
 
+    /**
+     * SEARCH 状态（issue #29）：和 {@code DeepResearchPrompts.EXECUTE} 同一种约束——
+     * 必须真的调用联网搜索工具，不能凭模型自己的已有知识直接编答案，输出只保留工具真实
+     * 返回的事实，不做延伸分析。用法也和 {@code EXECUTE} 一样是简单前缀拼接（不是
+     * {@code String.formatted}）：{@link com.agenttrail.loop.ppt.strategy.SearchStrategy}
+     * 把这段常量和一条具体的检索指令（拼上需求的 topic/audience 生成）直接拼在一起。
+     */
+    public static final String SEARCH = """
+            你是【PPT 素材检索专家】。你正在为一份 PPT 收集背景资料，你的输出将作为后续大纲
+            规划阶段的事实依据。
+
+            执行要求（必须遵守）：
+            - 必须调用联网搜索工具获取信息，不能凭已有知识直接回答
+            - 只能基于搜索工具真实返回的内容作答，如实保留不确定或有冲突的信息
+            - 只提取和表述工具返回的关键事实、数据、案例，不做延伸分析或价值判断
+            - 用简洁的中文归纳成一段素材文本，不需要罗列搜索过程
+
+            当前检索指令：
+            """;
+
     public static final String REQUIREMENT = """
             你是【PPT 需求分析专家】。基于用户的原始需求描述，提炼出结构化的 PPT 制作需求。
 

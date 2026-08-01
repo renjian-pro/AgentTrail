@@ -21,9 +21,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 三次真实结构化输出）+ 真实 Python 子进程渲染（{@code render_ppt.py} + 真实模板文件），
  * 不 mock 任何一环。
  *
- * <p>SEARCH 状态按 issue #24 的范围用简化/canned 输入（{@link
- * com.agenttrail.loop.ppt.strategy.SearchStrategy} 本身不调用任何外部服务，见其类注释），
- * 真实联网搜索接入是 issue #29 的范围。
+ * <p>SEARCH 状态从 issue #29 起也是真实调用（{@link com.agenttrail.loop.ppt.strategy.SearchStrategy}
+ * 真的会打 Tavily 联网搜索，不再是 issue #24 骨架阶段的 canned 输入），所以这份端到端测试
+ * 现在顺带覆盖了真实联网搜索这一段；专门验证"SEARCH 收集到的素材真的流入 OUTLINE"这件事本身
+ * 的更精确断言见 {@code SearchStrategyIT}。
  */
 @SpringBootTest
 class PptGenerationServiceIT {
