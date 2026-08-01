@@ -202,14 +202,14 @@
 			<scope>test</scope>
 		</dependency>
 
-		<!-- 图表生成（issue #23）：MinIO 上传本身由 mcp-echarts（独立 Node 进程）内置完成，
-		     不需要 Java 生产代码再实现一次；这个 SDK 只用来在集成测试里独立验证渲染出的图片
-		     真的落进了 MinIO bucket，不能只信任工具返回的 URL 字符串本身 -->
+		<!-- issue #23 图表生成的 MinIO 上传由 mcp-echarts（独立 Node 进程）内置完成，本来只在集成
+		     测试里用这个 SDK 独立验证图片真的落进了 bucket；issue #31（AI 配图立即转存 MinIO）
+		     第一次由这个 Java 进程的生产代码直接调 MinIO 写入（MinioPptImageStore），scope 从
+		     test 提到默认（compile），main 和 test 都用同一个坐标，不需要重复声明两次 -->
 		<dependency>
 			<groupId>io.minio</groupId>
 			<artifactId>minio</artifactId>
 			<version>8.5.17</version>
-			<scope>test</scope>
 		</dependency>
 
 	</dependencies>

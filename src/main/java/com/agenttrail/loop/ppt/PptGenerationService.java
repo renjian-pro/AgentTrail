@@ -11,7 +11,8 @@ import java.util.stream.Collectors;
 /**
  * PPT 生成状态机的编排入口（issue #24）——把 Spring 自动收集的全部 {@link PptGenerationStrategy}
  * bean 按 {@link PptGenerationStrategy#handledState()} 建成一张分发表，{@link #run(long)}
- * 沿着固定顺序 {@code INIT→REQUIREMENT→SEARCH→TEMPLATE→OUTLINE→SCHEMA→RENDER→SUCCESS}
+ * 沿着固定顺序 {@code INIT→REQUIREMENT→SEARCH→TEMPLATE→OUTLINE→SCHEMA→IMAGE→RENDER→SUCCESS}
+ * （{@code IMAGE} 是 issue #31 新增的状态：立即把文生图 API 返回的临时图片链接下载转存进 MinIO）
  * 逐个状态推进，不是散落的 if-else 链。
  *
  * <p><b>checkpoint 写入时序是这个类唯一必须严格遵守的规则</b>（对应 issue #24 明确提到的、
@@ -33,7 +34,7 @@ public class PptGenerationService {
 
     private static final List<PptState> ORDER = List.of(
             PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-            PptState.OUTLINE, PptState.SCHEMA, PptState.RENDER, PptState.SUCCESS);
+            PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER, PptState.SUCCESS);
 
     private final PptTaskStore taskStore;
     private final Map<PptState, PptGenerationStrategy> strategiesByState;

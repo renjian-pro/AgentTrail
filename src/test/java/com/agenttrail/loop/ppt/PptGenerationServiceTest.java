@@ -21,7 +21,7 @@ class PptGenerationServiceTest {
     private static List<PptGenerationStrategy> allStates(List<String> log) {
         List<PptGenerationStrategy> strategies = new ArrayList<>();
         for (PptState state : List.of(PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.SCHEMA, PptState.RENDER)) {
+                PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
         return strategies;
@@ -38,7 +38,7 @@ class PptGenerationServiceTest {
     }
 
     @Test
-    void runsAllSevenStatesInOrderAndReachesSuccess() {
+    void runsAllEightStatesInOrderAndReachesSuccess() {
         List<String> log = new ArrayList<>();
         InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
         PptGenerationService service = new PptGenerationService(taskStore, allStates(log));
@@ -46,7 +46,7 @@ class PptGenerationServiceTest {
         long taskId = service.create("conv-1", "帮我做一份介绍 PPT");
 
         assertThat(log).containsExactly(
-                "INIT#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1", "RENDER#1");
+                "INIT#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1", "IMAGE#1", "RENDER#1");
         assertThat(service.describe(taskId)).isPresent();
         assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
         assertThat(service.describe(taskId).orElseThrow().errorMsg()).isNull();
@@ -68,7 +68,7 @@ class PptGenerationServiceTest {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
         for (PptState state : List.of(PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.RENDER)) {
+                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
         // SCHEMA 永远失败——验证状态机不会把 checkpoint 提前推进到 RENDER
@@ -98,7 +98,7 @@ class PptGenerationServiceTest {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
         for (PptState state : List.of(PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.RENDER)) {
+                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
         // SCHEMA 第一次调用失败，第二次（也就是恢复重跑）成功
@@ -114,8 +114,8 @@ class PptGenerationServiceTest {
         log.clear();
         service.run(taskId);
 
-        // 恢复只重跑了 SCHEMA（这次成功）和它之后的 RENDER，之前已经成功过的状态一次都没有重跑
-        assertThat(log).containsExactly("SCHEMA#2", "RENDER#1");
+        // 恢复只重跑了 SCHEMA（这次成功）和它之后的 IMAGE/RENDER，之前已经成功过的状态一次都没有重跑
+        assertThat(log).containsExactly("SCHEMA#2", "IMAGE#1", "RENDER#1");
         assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
         assertThat(taskStore.findById(taskId).orElseThrow().errorMsg()).isNull();
     }
