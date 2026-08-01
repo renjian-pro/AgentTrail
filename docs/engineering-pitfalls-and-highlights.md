@@ -350,6 +350,7 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 ### 53. Schema 生成：`fontLimit` 对模型只是"软约束"，渲染侧必须暴力截断兜底
 - **坑**：为了防止文本框溢出（换行异常、字体被压缩、排版错乱），系统给每个文本字段配置了 `fontLimit`（字数上限）约束模型生成内容的长度。但"大模型生成内容本身具有一定的随机性，即使设置了 fontLimit，模型生成的 content 在个别情况下仍然可能超过限制"。
 - **解法**：不指望 Prompt 层约束 100% 生效，在渲染脚本里对超限文本做**暴力截断**（只替换文字不动样式，长度超了直接截）——因为生成的 PPT 本身是可编辑文件，截断带来的信息损失可以由用户手动补充调整。
+- **补充（issue #30）**：这条兜底逻辑在 #24 落地时就已经写进 `render_ppt.py` 的 `apply_fill`，但当时没有测试真正验证过——`RenderStrategyTest` 补上了这个缺口：手写一个字段长度故意超过 `PptTemplateSpec` 上限的 `PptSchema`（模拟"模型没遵守 Prompt 约束"），走真实的 `RenderStrategy` → `PptPythonRenderer` 子进程 → `render_ppt.py`，再用 python-pptx 重新打开产物 pptx、读回 shape 的实际文字校验截断长度和内容，同时留一个没超限的字段做对照，证明截断是按字段各自的 `fontLimit` 精确命中，不是无差别覆盖。这也是"提示词当契约"（承接 #52/#74-76）这类失效模式里容易被漏掉的一环：代码写了兜底不代表测过兜底真的生效，没有真的构造"模型不遵守约束"这个输入去跑一遍，兜底本身也可能是"看起来对但没验证过"的假设。
 - **面试角度**：很好地体现"Prompt 约束是 soft constraint，必须叠加代码层 hard constraint"这个原则——不能假设 LLM 会严格遵守数值型约束，任何有强排版/长度要求的字段都要在非 LLM 层再兜一道底（和踩坑点 #6"压缩占位符必须合法 JSON"是同一类"不能信任模型自觉遵守格式约定"的思路）。
 
 ### 54. 文生图返回的 URL 有时效性，必须转存对象存储才能持久化
@@ -493,6 +494,11 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **现象**：接 `qwen-plus`（DashScope OpenAI 兼容模式）时，一旦某一轮触发工具调用，`OpenAiChatModel$ChunkMerger.chunkToChatCompletion` 内部一个 `Optional.get()` 会抛 `NoSuchElementException: No value present`；同样的调用链换成 `deepseek-chat` 完全正常。定位到是 `spring-ai-openai:2.0.0` 合并 tool_call 分片 chunk 时，假设了某个字段（很可能是分片延续 chunk 上的 `id`/`index`）一定存在，而 DashScope 的流式分片形状和 OpenAI 官方在这个细节上不完全一致。
 - **处置**：这是第三方库（`spring-ai-openai`）内部实现的兼容性问题，不是本项目代码可以修的范围；暂时的规避方式是"挂了 Web 搜索这类工具的对话默认路由到 `deepseek-chat`，`qwen-plus` 保留给纯对话场景"。真要修，路径是升级 `spring-ai` 版本看是否已修复，或向上游报告这个兼容性 bug。
 - **面试角度**：和 #78 放在一起讲是一条完整的"真实联调排查"叙事——同一次真机测试里连续挖出两个平时被 Mock 掩盖的问题，一个是自己代码的线程模型 bug（能修、已修），一个是第三方库的厂商兼容性 bug（不能改源码、只能规避+报告）。能清楚区分"这个坑归谁修"本身就是排查能力的一部分。
+
+### 79. 构造函数里字段初始化顺序反了：懒加载的变体测得出来，急加载的变体测不出来
+- **坑**：issue #23 给 `AgentLoopExecutorFactory` 加图表工具支持时，构造函数被重新整理成"先把 `plainExecutorsByModelId`（每个注册模型各建一个不挂搜索/图表工具的执行器）建好，再把 `this.taskManager`/`this.webSearchToolProvider`/`this.chartToolProvider` 这几个字段赋值"。问题是 `plainExecutorsByModelId` 的初始化调的是 `buildExecutor()`，这个私有方法读的是**字段** `this.taskManager`，不是构造函数参数——Java 对象字段在显式赋值之前默认值是 `null`，构造函数体内的语句是按书写顺序执行的，不是"先把所有字段都定下来再跑方法体"。于是每一个非懒加载的 `plainExecutorsByModelId` 执行器，实际上都是拿着一个还没赋值（`null`）的 `taskManager` 建出来的。同一个类里另外两个变体——`forModel(id, true)` 懒加载的搜索执行器、`forModelWithCharts(...)` 懒加载的图表执行器——因为 `buildExecutor()` 调用发生在构造函数**返回之后**的某次真实请求里，这时候 `this.taskManager` 早就赋值完了，完全不受影响。结果是：全部走懒加载路径的单元测试（`AgentLoopExecutorFactoryTest` 里搜索/图表相关的用例）全绿，只有 `DeepResearchService`（用的是构造阶段就建好的 `plainExecutorsByModelId`）在接真实流式模型时，第一次真实调用触发 `AgentTaskManager.registerTask(...)` 就 `NullPointerException`——而且这个 NPE 第一次出现时，恰好和另外两个并发子 agent 正在同一个工作树里改这份文件重叠，一度被误判成"并发编辑导致的环境噪音"而不是真 bug，多跑了几次集成测试才确认是真的、和并发编辑无关。
+- **解法**：构造函数里，任何"字段初始化表达式依赖另一个字段的值"的写法，必须严格保证依赖的字段先赋值——这里就是把 `this.taskManager = taskManager;`（以及它引用到的 `webSearchToolProvider`/`chartToolProvider`）挪到 `plainExecutorsByModelId` 的初始化语句之前。更通用的教训：一个类里如果同时存在"构造阶段就建好"和"请求时才懒加载"两种初始化路径，构造阶段这条路径对字段赋值顺序的敏感度远高于看起来的样子——因为它是在 `this` 还没完全"活起来"的时候执行的，而懒加载路径是在对象已经完全构造完成之后才第一次运行，天然不会踩到这类顺序问题，这也是为什么这类 bug 精确地只影响"急加载"的那个变体，是排查时判断"该往哪个方向找"的一个有效线索。
+- **Java 角度**：这是"Java 对象初始化顺序"这个八股题目里经常被简化成"父类先于子类、字段先于构造函数体"的规则,在**同一个构造函数内部**的具体表现——很多人背得出"字段初始化器和实例初始化块按声明顺序在构造函数体之前执行"，但构造函数体本身内部的多条语句同样是严格按书写顺序执行、彼此之间没有"先决算所有字段"这回事，一旦某条语句的副作用（这里是调用一个读取 `this.xxx` 的私有方法）被安排在依赖字段赋值之前，编译器不会报错，因为语法上完全合法——这类 bug 只能在运行时、且只在真正触达那条代码路径时才会现形，是"能编译 ≠ 能跑对"的一个具体例子，也是为什么"仅用同步/合成测试替身跑通的单测"不能代表"接真实实现也跑得通"（和 #78 是同一类"测试替身掩盖了真实执行路径"的教训，但这次坑在对象构造阶段而不是响应式调度阶段）。
 
 ## 二十、Java 八股文关联索引（反向查表：面试考点 → 项目里的具体场景）
 
