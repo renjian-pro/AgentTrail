@@ -38,4 +38,35 @@ class OutlineStrategyTest {
         assertThat(promptSent).contains("手写 ReAct Loop");
         assertThat(promptSent).contains("素材一：关于 ReAct Loop 的背景");
     }
+    @Test
+    void acceptsOutlineJsonWrappedInAContentString() {
+        ScriptedChatModel model = new ScriptedChatModel(List.of(text("""
+                {"content":"{\\"deckTitle\\":\\"Wrapped\\",\\"deckSubtitle\\":\\"Subtitle\\",\\"slides\\":[{\\"title\\":\\"Slide\\",\\"bullets\\":[\\"One\\"]}]}"}
+                """)));
+        OutlineStrategy strategy = new OutlineStrategy(new AgentLoopExecutor(model, List.of(), 3));
+
+        PptGenerationContext result = strategy.execute(minimalContext());
+
+        assertThat(result.outline().deckTitle()).isEqualTo("Wrapped");
+        assertThat(result.outline().slides().getFirst().title()).isEqualTo("Slide");
+    }
+
+    @Test
+    void acceptsDuplicateSlideFieldsFromModelJson() {
+        ScriptedChatModel model = new ScriptedChatModel(List.of(text("""
+                {"deckTitle":"Duplicate","deckSubtitle":"Subtitle","slides":[{"title":"First","bullets":["One"],"title":"Last"}]}
+                """)));
+        OutlineStrategy strategy = new OutlineStrategy(new AgentLoopExecutor(model, List.of(), 3));
+
+        PptGenerationContext result = strategy.execute(minimalContext());
+
+        assertThat(result.outline().deckTitle()).isEqualTo("Duplicate");
+        assertThat(result.outline().slides().getFirst().title()).isEqualTo("Last");
+    }
+
+    private static PptGenerationContext minimalContext() {
+        return PptGenerationContext.initial("conv-1", "make a deck")
+                .withRequirement(new PptRequirement("Deck", "Topic", "Audience", 1, "Concise"))
+                .withSearchMaterials(List.of());
+    }
 }

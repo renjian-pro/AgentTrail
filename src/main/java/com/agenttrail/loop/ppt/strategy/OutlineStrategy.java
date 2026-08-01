@@ -10,6 +10,7 @@ import com.agenttrail.loop.ppt.PptOutline;
 import com.agenttrail.loop.ppt.PptPrompts;
 import com.agenttrail.loop.ppt.PptState;
 import com.agenttrail.loop.structured.JsonRepair;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
@@ -38,12 +39,20 @@ public class OutlineStrategy implements PptGenerationStrategy {
         String prompt = PptPrompts.OUTLINE.formatted(renderInput(context));
         String rawJson = executor.call(prompt, params);
         try {
-            PptOutline outline = MAPPER.readValue(JsonRepair.fixJson(rawJson), PptOutline.class);
+            PptOutline outline = parseOutline(rawJson);
             return context.withOutline(outline);
         } catch (Exception malformed) {
             throw new PptGenerationException(
                     "OUTLINE 状态解析失败，模型输出不是合法的 PptOutline JSON: " + rawJson, malformed);
         }
+    }
+
+    private static PptOutline parseOutline(String rawJson) throws java.io.IOException {
+        JsonNode node = MAPPER.readTree(JsonRepair.fixJson(rawJson));
+        if (node.has("content") && !node.has("deckTitle") && node.get("content").isTextual()) {
+            node = MAPPER.readTree(JsonRepair.fixJson(node.get("content").asText()));
+        }
+        return MAPPER.treeToValue(node, PptOutline.class);
     }
 
     private static String renderInput(PptGenerationContext context) {
@@ -56,7 +65,10 @@ public class OutlineStrategy implements PptGenerationStrategy {
                 .append("建议内容页数：").append(requirement.slideCount()).append('\n')
                 .append("语言风格：").append(requirement.tone()).append("\n\n")
                 .append("【检索素材】\n");
-        for (String material : context.searchMaterials()) {
+        var searchMaterials = context.searchMaterials() == null
+                ? java.util.List.<String>of()
+                : context.searchMaterials();
+        for (String material : searchMaterials) {
             builder.append("- ").append(material).append('\n');
         }
         return builder.toString();
