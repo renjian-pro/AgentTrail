@@ -1,5 +1,7 @@
 package com.agenttrail.loop.deepresearch;
 
+import com.agenttrail.loop.context.ContextCompactor;
+import com.agenttrail.loop.context.MessageRendering;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.model.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
@@ -7,6 +9,9 @@ import com.agenttrail.loop.structured.JsonRepair;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -22,9 +27,9 @@ import java.util.stream.Collectors;
 
 /**
  * DeepResearch 骨架（issue #25）+ 分层并发调度（issue #34）+ 任务失败重试（issue #36）+
- * 自我批判循环（issue #35）：需求澄清 → 研究主题生成 → 【计划（按 order 分层）→ 执行 → 结构化批判】
- * 循环，不通过且未到轮次上限时把批判反馈拼进下一轮计划生成，通过或到达轮次上限则停止 → 综合成
- * 最终报告。
+ * 自我批判循环（issue #35）+ 专用上下文压缩（issue #37）：需求澄清 → 研究主题生成 →
+ * 【计划（按 order 分层）→ 执行 → 结构化批判】循环，不通过且未到轮次上限时把批判反馈拼进
+ * 下一轮计划生成，通过或到达轮次上限则停止 → 综合成最终报告。
  *
  * <p>不重新实现一套 ReAct 机制——{@link AgentLoopExecutor} 本身就是现成的 ReAct 循环，
  * 这里只是编排"用哪个执行器、按什么顺序调几次 {@code call()}"，每一步都是一次独立、
@@ -37,7 +42,15 @@ import java.util.stream.Collectors;
  * <p>批判循环不依赖 issue #34 的并发分层——{@link #executeLayered} 本身就同时兼容"单层顺序"
  * 和"多层并发"两种计划形状，批判只是在它外面再套一层"要不要再来一轮"的判断，两票可以独立演进。
  *
- * <p>不含专用上下文压缩（issue #37）——这是后续票的范围。
+ * <p>专用上下文压缩（issue #37）压的不是一份 {@code List<Message>} 会话历史——每一步 LLM 调用
+ * 都是独立同步请求，压根没有那样的历史（见上面每一步"新生成的 conversationId"的说明）。真正会
+ * 无界增长的是这个类自己手工拼的文本："已完成任务的检索结果"这一段会随着批判轮次增多而累积。
+ * 这里把它也建模成一份 {@code List<Message>}（每个 {@link TaskResult} 包一层
+ * {@link ToolResponseMessage}，让 {@link ContextCompactor} 已有的两层机制——旧的/超长的
+ * 检索结果被压成占位符、整体超预算时被摘要——原样复用，不另起一套"字符数阈值 + 一次性摘要替换"
+ * 的简化机制。批判反馈额外打上 {@link #CRITIQUE_FEEDBACK_MARKER} 标记，交给
+ * {@link ContextCompactor} 新增的"按标记只保留最新一条"规则处理——历史批判意见一旦被更新的
+ * 一条取代就没有继续参考的价值，这条规则真删除而不是压缩，且不受 token 阈值门槛限制。
  */
 public class DeepResearchService {
 
@@ -47,6 +60,14 @@ public class DeepResearchService {
     private static final List<String> INSUFFICIENT_INFO_KEYWORDS = List.of(
             "请提供更多", "能否说明", "需要您提供", "请补充", "不够明确", "请问您");
 
+    /**
+     * 批判反馈消息的标记前缀（issue #37）——配上 {@link com.agenttrail.loop.context.ContextPolicy
+     * #retainLatestOnlyMarkers()} 使用，让 {@link ContextCompactor} 只在累积的检索结果上下文里
+     * 保留最新一条批判反馈，更早几轮的批判意见在渲染/压缩时被过滤掉，不参与累积。公开是因为生产
+     * 装配（{@code DeepResearchConfig}）需要用同一个字面量去配置 {@code ContextPolicy}。
+     */
+    public static final String CRITIQUE_FEEDBACK_MARKER = "[CRITIQUE_FEEDBACK]";
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AgentLoopExecutor plainExecutor;
@@ -55,6 +76,7 @@ public class DeepResearchService {
     private final int maxTasksPerPlan;
     private final int maxTaskRetries;
     private final int maxCritiqueRounds;
+    private final ContextCompactor researchContextCompactor;
 
     public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor) {
         this(plainExecutor, searchExecutor, 3, 20, 2, 3);
@@ -91,12 +113,27 @@ public class DeepResearchService {
      */
     public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor,
             int maxConcurrentTasksPerLayer, int maxTasksPerPlan, int maxTaskRetries, int maxCritiqueRounds) {
+        this(plainExecutor, searchExecutor, maxConcurrentTasksPerLayer, maxTasksPerPlan, maxTaskRetries,
+                maxCritiqueRounds, null);
+    }
+
+    /**
+     * @param researchContextCompactor DeepResearch 专用的上下文压缩器（issue #37）——压缩的是
+     *                                 {@link #critique}/{@link #summarize} 用到的累积检索结果 +
+     *                                 批判反馈这份文本，跟 {@code AgentLoopExecutor} 自己内部
+     *                                 ReAct 子循环的上下文压缩是两个独立的东西，互不干扰；传 null
+     *                                 表示不压缩，行为与没有这个机制时一致
+     */
+    public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor,
+            int maxConcurrentTasksPerLayer, int maxTasksPerPlan, int maxTaskRetries, int maxCritiqueRounds,
+            ContextCompactor researchContextCompactor) {
         this.plainExecutor = plainExecutor;
         this.searchExecutor = searchExecutor;
         this.maxConcurrentTasksPerLayer = maxConcurrentTasksPerLayer;
         this.maxTasksPerPlan = maxTasksPerPlan;
         this.maxTaskRetries = maxTaskRetries;
         this.maxCritiqueRounds = maxCritiqueRounds;
+        this.researchContextCompactor = researchContextCompactor;
     }
 
     public DeepResearchReport research(String question) {
@@ -108,18 +145,24 @@ public class DeepResearchService {
         String topic = plainExecutor.call(DeepResearchPrompts.TOPIC_GENERATION + question, freshParams(null));
         log.info("DeepResearch 研究主题：{}", topic);
 
-        List<TaskResult> results = planExecuteCritiqueLoop(topic);
+        ResearchLoopOutcome outcome = planExecuteCritiqueLoop(topic);
 
-        String report = summarize(question, topic, results);
-        return DeepResearchReport.completed(topic, results, report);
+        String report = summarize(question, topic, outcome.researchContext());
+        return DeepResearchReport.completed(topic, outcome.allResults(), report);
     }
 
     /**
      * 计划 → 执行 → 批判的循环：批判反馈拼进下一轮的计划生成，让模型针对性补充而不是盲目重跑
      * 一遍一样的任务；每一轮新产出的任务结果都累加进最终结果集（不丢弃前面几轮已经查到的内容）。
+     *
+     * @return {@code allResults} 是返回给调用方的原始结构化结果（issue #37 的压缩不影响它——
+     *         压缩只作用于喂给 LLM 的文本，不该影响 API 返回给外部消费者的数据完整性）；
+     *         {@code researchContext} 是喂给 {@link #critique}/{@link #summarize} 的累积上下文，
+     *         每一轮结束都可能被 {@link #researchContextCompactor} 原地压缩过
      */
-    private List<TaskResult> planExecuteCritiqueLoop(String topic) {
+    private ResearchLoopOutcome planExecuteCritiqueLoop(String topic) {
         List<TaskResult> allResults = new ArrayList<>();
+        List<Message> researchContext = new ArrayList<>();
         String previousFeedback = null;
 
         for (int round = 1; round <= maxCritiqueRounds; round++) {
@@ -129,36 +172,68 @@ public class DeepResearchService {
             ResearchPlan plan = applyBreadthCap(generatePlan(planInput));
             log.info("DeepResearch 第 {} 轮执行计划：{} 个任务", round, plan.tasks().size());
 
-            allResults.addAll(executeLayered(plan));
+            List<TaskResult> roundResults = executeLayered(plan);
+            allResults.addAll(roundResults);
+            roundResults.forEach(result -> researchContext.add(taskResultToContextMessage(result)));
 
             if (round == maxCritiqueRounds) {
                 log.info("DeepResearch 批判循环已达轮数上限 {}，直接进入总结", maxCritiqueRounds);
                 break;
             }
 
-            CritiqueResult critique = critique(topic, allResults);
+            CritiqueResult critique = critique(topic, researchContext);
             log.info("DeepResearch 第 {} 轮批判：{}{}", round, critique.passed() ? "通过" : "不通过",
                     critique.passed() ? "" : "，反馈：" + critique.feedback());
             if (critique.passed()) {
                 break;
             }
             previousFeedback = critique.feedback();
+            researchContext.add(critiqueFeedbackContextMessage(previousFeedback));
         }
-        return allResults;
+        return new ResearchLoopOutcome(allResults, researchContext);
+    }
+
+    /** {@link #planExecuteCritiqueLoop} 的两份输出——见该方法的类注释，两者服务于不同消费方。 */
+    private record ResearchLoopOutcome(List<TaskResult> allResults, List<Message> researchContext) {
+    }
+
+    /** 把一个任务结果包成 {@link ToolResponseMessage}——借用"工具结果"这个消息形状，
+     * 让 {@link ContextCompactor} 已有的 micro_compact（旧的/超长的工具内容换占位符）
+     * 原样对研究结果生效，不需要为 DeepResearch 的检索结果另写一套压缩判断。 */
+    private static Message taskResultToContextMessage(TaskResult result) {
+        String responseData = result.instruction() + "：\n" + renderResultOrFailure(result);
+        return ToolResponseMessage.builder()
+                .responses(List.of(new ToolResponseMessage.ToolResponse(result.taskId(), result.taskId(), responseData)))
+                .build();
+    }
+
+    /** 打上 {@link #CRITIQUE_FEEDBACK_MARKER} 标记，交给 {@link ContextCompactor} 的
+     * "按标记只保留最新一条"规则处理——见类注释。 */
+    private static Message critiqueFeedbackContextMessage(String feedback) {
+        return new UserMessage(CRITIQUE_FEEDBACK_MARKER + "\n" + feedback);
+    }
+
+    /**
+     * 把累积的研究上下文（可能被压缩过）渲染成文本，喂进 {@link #critique}/{@link #summarize}
+     * 的提示词。压缩发生在渲染之前——{@link ContextCompactor} 原地修改传入的列表，之后同一份
+     * 列表在下一次调用这个方法时会看到上一次已经压过的结果，压缩效果因此能跨轮次持续生效，
+     * 不是"压完这一次就没了"。
+     */
+    private String renderResearchContext(List<Message> researchContext, String topic) {
+        if (researchContext.isEmpty()) {
+            return "（未检索到任何结果）";
+        }
+        if (researchContextCompactor != null) {
+            researchContextCompactor.compact(researchContext, topic);
+        }
+        return MessageRendering.render(researchContext);
     }
 
     /** 结构化布尔判定（issue #18 机制复用），不做自由文本解析猜测。 */
-    private CritiqueResult critique(String topic, List<TaskResult> results) {
+    private CritiqueResult critique(String topic, List<Message> researchContext) {
         StringBuilder input = new StringBuilder(DeepResearchPrompts.CRITIQUE);
-        input.append(topic).append("\n\n已完成任务的检索结果：\n");
-        if (results.isEmpty()) {
-            input.append("（未检索到任何结果）");
-        } else {
-            for (TaskResult result : results) {
-                input.append("- ").append(result.instruction()).append("：\n")
-                        .append(renderResultOrFailure(result)).append("\n\n");
-            }
-        }
+        input.append(topic).append("\n\n已完成任务的检索结果：\n")
+                .append(renderResearchContext(researchContext, topic));
 
         RunnableParams params = freshParams(OutputType.of(CritiqueResult.class));
         String rawJson = plainExecutor.call(input.toString(), params);
@@ -334,19 +409,11 @@ public class DeepResearchService {
         return context.isEmpty() ? "无" : context.toString();
     }
 
-    private String summarize(String question, String topic, List<TaskResult> results) {
+    private String summarize(String question, String topic, List<Message> researchContext) {
         StringBuilder context = new StringBuilder(DeepResearchPrompts.SUMMARIZE);
         context.append("【用户原始问题】\n").append(question)
                 .append("\n\n【研究主题】\n").append(topic)
-                .append("\n\n【检索结果】\n");
-        if (results.isEmpty()) {
-            context.append("（未检索到相关结果）");
-        } else {
-            for (TaskResult result : results) {
-                context.append("- ").append(result.instruction()).append("：\n")
-                        .append(renderResultOrFailure(result)).append("\n\n");
-            }
-        }
+                .append("\n\n【检索结果】\n").append(renderResearchContext(researchContext, topic));
         return plainExecutor.call(context.toString(), freshParams(null));
     }
 

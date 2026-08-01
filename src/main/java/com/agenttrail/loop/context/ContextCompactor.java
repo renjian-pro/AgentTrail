@@ -22,6 +22,10 @@ import java.util.List;
  *       代价是一次额外的 LLM 摘要调用
  * </ul>
  *
+ * <p>两层之前还有一步和 GC 类比无关的结构性清理——{@link #dropSupersededMarkedMessages}
+ * （issue #37）：按 {@link ContextPolicy#retainLatestOnlyMarkers()} 删掉"已经被更新一条取代"
+ * 的旧消息，不是压缩内容大小，是整条丢弃过期内容，默认不启用（标记集合为空）。
+ *
  * <p>直接原地修改传入的消息列表，因为循环持有的就是这一个列表。
  */
 public class ContextCompactor {
@@ -52,7 +56,13 @@ public class ContextCompactor {
      * @param currentQuestion 当前用户提问，用来引导摘要该保留哪些信息
      */
     public void compact(List<Message> messages, String currentQuestion) {
-        if (messages == null || messages.size() <= 2) {
+        if (messages == null) {
+            return;
+        }
+        // 标记去重要在两层压缩之前、且不受"消息数太少不值得压"这道门槛限制——它不是省 token
+        // 的优化，是纠正"过期内容不该继续参与决策"这个语义问题，哪怕总共只有两三条消息也要生效。
+        dropSupersededMarkedMessages(messages);
+        if (messages.size() <= 2) {
             return;
         }
         microCompact(messages);
@@ -63,6 +73,37 @@ public class ContextCompactor {
                     estimatedTokens, policy.tokenThreshold(), messages.size());
             autoCompact(messages, currentQuestion);
         }
+    }
+
+    // ==================== Layer 0: 按标记只保留最新一条 ====================
+
+    /**
+     * 对 {@link ContextPolicy#retainLatestOnlyMarkers()} 里的每个标记，找出文本以该标记开头的
+     * 所有消息，只保留列表里最靠后的一条，更早的整条从消息列表里删掉（issue #37）。
+     *
+     * <p>和 micro_compact 的区别：micro_compact 压缩的是"内容太大"，结构（消息条数、顺序）不变，
+     * 换成占位符后模型仍然知道"这里曾经有一次工具调用"；这里删的是"内容已过期"——旧的一条
+     * 一旦被新的一条取代，就连"曾经存在过"这件事都不需要模型知道，所以是真删除而不是占位替换。
+     *
+     * <p>目前唯一的调用方是 DeepResearch 的批判反馈（{@code DeepResearchService
+     * .CRITIQUE_FEEDBACK_MARKER}）：历史批判意见一旦被更新的一条取代就不再有参考价值，
+     * 留着只会让后续轮次误以为"还要处理上一条批判提的问题"。这里刻意做成policy 驱动的通用能力
+     * 而不是 DeepResearch 专属分支——{@link ContextCompactor} 本来就是给任何持有
+     * {@code List<Message>} 历史的调用方复用的，不应该在这个共享类里认识 DeepResearch 的概念。
+     */
+    private void dropSupersededMarkedMessages(List<Message> messages) {
+        for (String marker : policy.retainLatestOnlyMarkers()) {
+            List<Integer> indices = indicesOf(messages, message -> matchesMarker(message, marker));
+            // 倒序删除，避免前面的删除操作把后面待删索引位置"挤动"
+            for (int i = indices.size() - 2; i >= 0; i--) {
+                messages.remove((int) indices.get(i));
+            }
+        }
+    }
+
+    private static boolean matchesMarker(Message message, String marker) {
+        String text = message.getText();
+        return text != null && text.startsWith(marker);
     }
 
     // ==================== Layer 1: micro_compact ====================

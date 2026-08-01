@@ -5,6 +5,7 @@ import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.ArrayList;
@@ -153,6 +154,21 @@ public class AgentLoopExecutorFactory {
         // 图表工具非空才缓存——理由和上面 webSearch 分支一致：一次降级不该锁死后续所有请求
         chartExecutorsByKey.put(cacheKey, executor);
         return executor;
+    }
+
+    /**
+     * 暴露某个模型标识对应的裸 {@link ChatModel}——目前唯一的调用方是 DeepResearch 自己的专用
+     * 上下文压缩器（issue #37）：它压缩的是 critique/summarize 用到的检索结果文本，这份文本
+     * 从来不经过 {@link AgentLoopExecutor} 的 ReAct 循环，所以需要绕开这一层拿到裸模型去发起
+     * 摘要调用，跟 {@link #forModel} 系列返回"已经装配好的执行器"是两回事。
+     */
+    public ChatModel chatModelFor(String modelId) {
+        String resolvedId = resolve(modelId);
+        RegisteredModel model = modelsById.get(resolvedId);
+        if (model == null) {
+            throw new IllegalArgumentException("未知的模型标识: " + resolvedId);
+        }
+        return model.chatModel();
     }
 
     private String resolve(String modelId) {

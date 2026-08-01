@@ -6,16 +6,23 @@ import java.util.Set;
 /**
  * 上下文压缩策略。不配置则完全不压缩，循环行为与没有这个机制时一致。
  *
- * @param tokenThreshold  估算 token 超过这个数就触发整体摘要压缩
- * @param keepRecentTools 最近 N 组工具调用/结果保留原文，更早的才压
- * @param maxToolLength   单条工具内容超过这个字符数才压；设为 0 表示不做长度压缩
- * @param protectedTools  这些工具的内容永不压缩（见 {@link #BUILTIN_PROTECTED_TOOLS}）
+ * @param tokenThreshold          估算 token 超过这个数就触发整体摘要压缩
+ * @param keepRecentTools         最近 N 组工具调用/结果保留原文，更早的才压
+ * @param maxToolLength           单条工具内容超过这个字符数才压；设为 0 表示不做长度压缩
+ * @param protectedTools          这些工具的内容永不压缩（见 {@link #BUILTIN_PROTECTED_TOOLS}）
+ * @param retainLatestOnlyMarkers 消息文本以这些标记开头的，只保留最新一条，更早的整条丢弃
+ *                                （issue #37）——不是"压缩内容"，是"结构性删除"：旧的一条一旦
+ *                                被新的一条取代就没有参考价值，不像工具结果那样有"占位符"这种
+ *                                半保留状态可用。典型用法：DeepResearch 用它标记批判反馈消息，
+ *                                只让最新一轮的批判意见参与后续渲染/压缩，更早几轮的不再累积。
+ *                                默认空集合，不启用这条规则
  */
 public record ContextPolicy(
         int tokenThreshold,
         int keepRecentTools,
         int maxToolLength,
-        Set<String> protectedTools) {
+        Set<String> protectedTools,
+        Set<String> retainLatestOnlyMarkers) {
 
     public static final int DEFAULT_TOKEN_THRESHOLD = 60_000;
     public static final int DEFAULT_KEEP_RECENT_TOOLS = 4;
@@ -36,11 +43,12 @@ public record ContextPolicy(
             merged.addAll(protectedTools);
         }
         protectedTools = Set.copyOf(merged);
+        retainLatestOnlyMarkers = (retainLatestOnlyMarkers == null) ? Set.of() : Set.copyOf(retainLatestOnlyMarkers);
     }
 
     public static ContextPolicy defaults() {
         return new ContextPolicy(
-                DEFAULT_TOKEN_THRESHOLD, DEFAULT_KEEP_RECENT_TOOLS, DEFAULT_MAX_TOOL_LENGTH, Set.of());
+                DEFAULT_TOKEN_THRESHOLD, DEFAULT_KEEP_RECENT_TOOLS, DEFAULT_MAX_TOOL_LENGTH, Set.of(), Set.of());
     }
 
     public boolean isProtected(String toolName) {
@@ -57,6 +65,7 @@ public record ContextPolicy(
         private int keepRecentTools = DEFAULT_KEEP_RECENT_TOOLS;
         private int maxToolLength = DEFAULT_MAX_TOOL_LENGTH;
         private Set<String> protectedTools = Set.of();
+        private Set<String> retainLatestOnlyMarkers = Set.of();
 
         public Builder tokenThreshold(int tokenThreshold) {
             this.tokenThreshold = tokenThreshold;
@@ -78,8 +87,14 @@ public record ContextPolicy(
             return this;
         }
 
+        public Builder retainLatestOnlyMarkers(String... markers) {
+            this.retainLatestOnlyMarkers = Set.of(markers);
+            return this;
+        }
+
         public ContextPolicy build() {
-            return new ContextPolicy(tokenThreshold, keepRecentTools, maxToolLength, protectedTools);
+            return new ContextPolicy(
+                    tokenThreshold, keepRecentTools, maxToolLength, protectedTools, retainLatestOnlyMarkers);
         }
     }
 }

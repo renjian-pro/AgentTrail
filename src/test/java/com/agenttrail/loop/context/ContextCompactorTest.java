@@ -96,6 +96,54 @@ class ContextCompactorTest {
         assertThat(toolResponseTextAt(messages, 1)).as("普通工具结果照压").contains("compacted");
     }
 
+    // ==================== Layer 0: 按标记只保留最新一条 ====================
+
+    /** 多条消息都以同一个标记开头时，只留最靠后的一条，更早的整条从列表里消失（issue #37）。 */
+    @Test
+    void keepsOnlyTheLatestMessageMatchingARetainLatestOnlyMarker() {
+        ContextPolicy policy = ContextPolicy.builder().retainLatestOnlyMarkers("[FEEDBACK]").build();
+        List<Message> messages = new ArrayList<>(List.of(
+                new UserMessage("原始提问"),
+                new UserMessage("[FEEDBACK]第一轮反馈"),
+                new UserMessage("普通消息，不该受影响"),
+                new UserMessage("[FEEDBACK]第二轮反馈")));
+
+        new ContextCompactor(policy, UNUSED_MODEL).compact(messages, "现在问什么");
+
+        assertThat(messages).hasSize(3);
+        assertThat(messages).noneMatch(m -> m.getText().contains("第一轮反馈"));
+        assertThat(messages).anyMatch(m -> m.getText().contains("第二轮反馈"));
+        assertThat(messages).anyMatch(m -> m.getText().equals("普通消息，不该受影响"));
+    }
+
+    /** 只有一条消息命中标记时，没有"更早的"可丢——原样保留。 */
+    @Test
+    void leavesASingleMarkedMessageUntouched() {
+        ContextPolicy policy = ContextPolicy.builder().retainLatestOnlyMarkers("[FEEDBACK]").build();
+        List<Message> messages = new ArrayList<>(List.of(
+                new UserMessage("原始提问"),
+                new UserMessage("[FEEDBACK]唯一一轮反馈")));
+
+        new ContextCompactor(policy, UNUSED_MODEL).compact(messages, "现在问什么");
+
+        assertThat(messages).hasSize(2);
+        assertThat(messages.get(1).getText()).contains("唯一一轮反馈");
+    }
+
+    /** 没配置任何标记时（默认），这条规则完全不生效，和引入这个机制之前行为一致。 */
+    @Test
+    void doesNothingWhenNoRetainLatestOnlyMarkersAreConfigured() {
+        ContextPolicy policy = ContextPolicy.builder().build();
+        List<Message> messages = new ArrayList<>(List.of(
+                new UserMessage("[FEEDBACK]第一轮反馈"),
+                new UserMessage("[FEEDBACK]第二轮反馈")));
+        List<Message> before = List.copyOf(messages);
+
+        new ContextCompactor(policy, UNUSED_MODEL).compact(messages, "现在问什么");
+
+        assertThat(messages).containsExactlyElementsOf(before);
+    }
+
     // ==================== Layer 2: auto_compact ====================
 
     @Test

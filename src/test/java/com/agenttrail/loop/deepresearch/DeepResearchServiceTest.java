@@ -1,5 +1,7 @@
 package com.agenttrail.loop.deepresearch;
 
+import com.agenttrail.loop.context.ContextCompactor;
+import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
 import org.junit.jupiter.api.Test;
@@ -309,6 +311,163 @@ class DeepResearchServiceTest {
         assertThatThrownBy(() -> service.research("测试问题"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("执行计划解析失败");
+    }
+
+    // ==================== issue #37：DeepResearch 专用上下文压缩 ====================
+
+    /**
+     * 验证"历史 Critique 反馈只保留最新一条，更早的批判反馈在渲染/压缩时被过滤掉"这条验收标准，
+     * 直接对着真实累积状态断言，不是靠"分开一个变量就顺带满足"（issue #37 的关键区别，见票据说明：
+     * {@code previousFeedback} 那个单独变量早在 issue #35 就已经只存最新一条，但拼进 critique() 的
+     * 累积检索结果上下文里如果不专门处理，历史反馈还是会一条条堆起来）。
+     *
+     * <p>跑够 3 轮批判（第 3 轮通过，提前结束，不需要真的跑满 4 轮）：第 1 轮批判不通过留下反馈 A，
+     * 第 2 轮批判不通过留下反馈 B，断言第 3 轮批判实际收到的提示词里只有 B、没有 A——
+     * 如果没有"按标记只保留最新一条"这条规则，A 应该还在（未压缩场景下上下文只加不减）。
+     */
+    @Test
+    void keepsOnlyTheLatestCritiqueFeedbackInTheAccumulatedResearchContext() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[{"id":"task-1","instruction":"搜索1","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":false,"feedback":"缺A的信息"}
+                        """)),
+                List.of(text("""
+                        {"tasks":[{"id":"task-2","instruction":"搜索2","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":false,"feedback":"缺B的信息"}
+                        """)),
+                List.of(text("""
+                        {"tasks":[{"id":"task-3","instruction":"搜索3","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":true,"feedback":""}
+                        """)),
+                List.of(text("# 报告")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text("结果1")),
+                List.of(text("结果2")),
+                List.of(text("结果3")));
+
+        // 阈值给得很大，这个用例只关心标记过滤，不想让 token 阈值触发的整体摘要压缩掺进来干扰
+        ContextCompactor researchContextCompactor = new ContextCompactor(
+                ContextPolicy.builder()
+                        .tokenThreshold(100_000)
+                        .retainLatestOnlyMarkers(DeepResearchService.CRITIQUE_FEEDBACK_MARKER)
+                        .build(),
+                new ScriptedChatModel()); // 不会被调用——这个用例不会触发 autoCompact
+
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 4, researchContextCompactor);
+
+        DeepResearchReport report = service.research("测试批判反馈只保留最新一条");
+
+        assertThat(report.taskResults()).hasSize(3);
+        assertThat(report.report()).isEqualTo("# 报告");
+
+        // 第 3 轮批判（第 8 次纯文本调用，index=7）实际收到的提示词
+        String thirdCritiquePrompt = plainModel.messagesAtRound(7).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(thirdCritiquePrompt)
+                .as("最新一轮（第 2 轮）批判反馈必须还在，供第 3 轮批判参考")
+                .contains("缺B的信息");
+        assertThat(thirdCritiquePrompt)
+                .as("更早一轮（第 1 轮）批判反馈已经被更新的一条取代，不该再出现")
+                .doesNotContain("缺A的信息");
+    }
+
+    /**
+     * 验证"触发阈值"和"压缩后的效果"两条验收标准：token 预算被撑爆时真的触发了整体摘要压缩
+     * （而不是无限累积原始检索结果），并且压缩产出的摘要确实被后续轮次的 LLM 调用看到了——
+     * 不是"压缩完信息就丢了"。用可控的摘要模型固定返回一段可识别的文本，直接断言这段文本
+     * 出现在触发压缩后的那一轮、以及再往后一轮的提示词里；同时反向断言被压掉的原始长文本
+     * 不再出现，证明确实发生了替换而不是简单追加。
+     */
+    @Test
+    void compactsResearchContextWhenTokenThresholdIsExceededAndTheSummaryStillDrivesLaterRounds() {
+        String longRawResult = "关于该主题的详细检索结果内容，包含大量细节数据。".repeat(20);
+        String summaryText = "摘要：已提炼三项检索结果的核心结论";
+
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[
+                          {"id":"task-1","instruction":"搜索1","order":1},
+                          {"id":"task-2","instruction":"搜索2","order":1},
+                          {"id":"task-3","instruction":"搜索3","order":1}
+                        ]}
+                        """)),
+                List.of(text("""
+                        {"passed":false,"feedback":"还需要更多信息"}
+                        """)),
+                List.of(text("""
+                        {"tasks":[{"id":"task-4","instruction":"搜索4","order":1}]}
+                        """)),
+                List.of(text("# 报告：验证压缩仍能影响后续决策")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text(longRawResult)),
+                List.of(text(longRawResult)),
+                List.of(text(longRawResult)),
+                List.of(text("结果D")));
+
+        ChatModel summarisingModel = new ChatModel() {
+            @Override
+            public ChatResponse call(Prompt prompt) {
+                return text(summaryText);
+            }
+
+            @Override
+            public Flux<ChatResponse> stream(Prompt prompt) {
+                throw new UnsupportedOperationException("摘要走同步调用");
+            }
+        };
+        ContextCompactor researchContextCompactor = new ContextCompactor(
+                ContextPolicy.builder()
+                        .tokenThreshold(200)
+                        .retainLatestOnlyMarkers(DeepResearchService.CRITIQUE_FEEDBACK_MARKER)
+                        .build(),
+                summarisingModel);
+
+        // maxConcurrentTasksPerLayer=1：同一层 3 个任务强制串行调用 searchModel，
+        // ScriptedChatModel 本身不是线程安全的，真并发跑这一层会有竞态（见类注释）
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                1, 20, 2, 2, researchContextCompactor);
+
+        DeepResearchReport report = service.research("测试压缩触发且摘要能延续到后续轮次");
+
+        assertThat(report.taskResults())
+                .as("压缩只影响喂给 LLM 的文本，不该影响返回给调用方的结构化结果").hasSize(4);
+        assertThat(report.report()).isEqualTo("# 报告：验证压缩仍能影响后续决策");
+
+        // 第 1 轮批判（第 4 次纯文本调用，index=3）：3 个长文本已经超过 tokenThreshold=200，
+        // 这次调用自己的提示词就应该已经是压缩后的摘要，而不是原始长文本
+        String firstCritiquePrompt = plainModel.messagesAtRound(3).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(firstCritiquePrompt).as("压缩产出的摘要必须出现在触发压缩后的这一轮提示词里")
+                .contains(summaryText);
+        assertThat(firstCritiquePrompt).as("原始长文本应该已经被摘要替换掉，不该再原样出现")
+                .doesNotContain(longRawResult.substring(0, 50));
+
+        // 最终总结（第 6 次纯文本调用，index=5）：验证压缩效果跨轮次持续存在，不是"压完这一次就没了"
+        String summarizePrompt = plainModel.messagesAtRound(5).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(summarizePrompt).as("摘要应该一路带到最终总结，证明压缩后的信息确实继续影响了后续决策")
+                .contains(summaryText);
+        assertThat(summarizePrompt).as("原始长文本不该在任何后续阶段死灰复燃")
+                .doesNotContain(longRawResult.substring(0, 50));
     }
 
     /**
