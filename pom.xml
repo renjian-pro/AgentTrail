@@ -245,8 +245,13 @@
 						<include>**/*Test.java</include>
 						<include>**/*Tests.java</include>
 						<include>**/*TestCase.java</include>
-						<include>**/*IT.java</include>
 					</includes>
+					<excludes>
+						<exclude>**/*IT.java</exclude>
+						<!-- These classes have integration dependencies despite their names. -->
+						<exclude>**/AgentTrailApplicationTests.java</exclude>
+						<exclude>**/SkillManagerTest.java</exclude>
+					</excludes>
 				</configuration>
 			</plugin>
 
@@ -268,5 +273,29 @@
 			</plugin>
 		</plugins>
 	</build>
+
+	<profiles>
+		<profile>
+			<id>integration</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-surefire-plugin</artifactId>
+						<configuration>
+							<!-- Restore the full test set for an explicitly provisioned environment. -->
+							<excludes combine.self="override"/>
+							<includes combine.self="override">
+								<include>**/*Test.java</include>
+								<include>**/*Tests.java</include>
+								<include>**/*TestCase.java</include>
+								<include>**/*IT.java</include>
+							</includes>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
 
 </project>
