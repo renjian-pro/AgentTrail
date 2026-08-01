@@ -12,23 +12,18 @@ package com.agenttrail.support;
  */
 public final class SharedMySql {
 
-    private static final String HOST = "127.0.0.1";
-    private static final int PORT = 3306;
-    private static final String DATABASE = "agenttrail";
-
     private SharedMySql() {
     }
 
     public static String jdbcUrl() {
-        return "jdbc:mysql://%s:%d/%s?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8".formatted(
-                HOST, PORT, DATABASE);
+        return Secrets.require("AGENTTRAIL_DB_URL");
     }
 
     public static String username() {
-        return "root";
+        return Secrets.require("AGENTTRAIL_DB_USERNAME");
     }
 
     public static String password() {
-        return "root";
+        return Secrets.require("AGENTTRAIL_DB_PASSWORD");
     }
 }

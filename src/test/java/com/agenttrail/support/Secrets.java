@@ -1,8 +1,8 @@
 package com.agenttrail.support;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
@@ -13,8 +13,8 @@ import java.util.Properties;
  * （issue #26 的 RAG 管线测试就是这种情况——它不是 {@code @SpringBootTest}，没有
  * 现成的 Bean 可注入）。
  *
- * <p>先看环境变量，环境变量没有再看 {@code secrets.properties}——和 {@code application.properties}
- * 里 {@code ${DASHSCOPE_API_KEY:}} 这套约定保持一致。
+ * <p>先看环境变量，环境变量没有再看 {@code secrets.properties}——和
+ * {@code application-example.properties} 里 {@code ${DASHSCOPE_API_KEY:}} 的约定保持一致。
  */
 public final class Secrets {
 
@@ -24,11 +24,16 @@ public final class Secrets {
     }
 
     private static Properties load() {
+        return load(Path.of("secrets.properties"));
+    }
+
+    static Properties load(Path path) {
         Properties properties = new Properties();
-        Path path = Path.of("secrets.properties");
         if (Files.exists(path)) {
-            try (InputStream in = Files.newInputStream(path)) {
-                properties.load(in);
+            // Properties.load(InputStream) 固定按 ISO-8859-1 解码，会把本地中文配置读成乱码。
+            // 明确用 UTF-8 Reader，和仓库的 .editorconfig 保持同一编码约定。
+            try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+                properties.load(reader);
             } catch (IOException failure) {
                 throw new UncheckedIOException(failure);
             }

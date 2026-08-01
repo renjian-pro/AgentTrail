@@ -1,9 +1,14 @@
 HELP.md
 target/
 
-### Secrets — never commit ###
+### Local application config and secrets — never commit ###
+src/main/resources/application.properties
+src/main/resources/application.yml
+src/main/resources/application.yaml
 secrets.properties
 .env
+.env.*
+!.env.example
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

@@ -1,6 +1,7 @@
 package com.agenttrail.loop.tools.chart;
 
 import com.agenttrail.loop.context.ContextPolicy;
+import com.agenttrail.support.Secrets;
 import io.minio.MinioClient;
 import io.minio.StatObjectArgs;
 import org.junit.jupiter.api.Test;
@@ -22,26 +23,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 且这张图片真的落进了配置好的 MinIO bucket——不能只信任 mcp-echarts 返回的 URL 字符串本身，
  * 要用 MinIO 官方 SDK 独立核实一遍。
  *
- * <p>依赖本机已经起了一个指向这台机器 MinIO 容器（{@code llmentor-minio}，
- * {@code minioadmin}/{@code minioadmin}，bucket {@code agenttrail-charts}）的 mcp-echarts
- * streamable-HTTP 实例：
- * <pre>
- * docker start llmentor-minio
- * MINIO_ENDPOINT=localhost MINIO_PORT=9000 MINIO_USE_SSL=false \
- * MINIO_ACCESS_KEY=minioadmin MINIO_SECRET_KEY=minioadmin MINIO_BUCKET_NAME=agenttrail-charts \
- * npx -y mcp-echarts -t streamable -p 3033
- * </pre>
+ * <p>依赖本机已经启动并配置好的 MinIO 与 mcp-echarts streamable-HTTP 实例；连接地址、
+ * 凭据和 bucket 全部从 {@code secrets.properties} 或环境变量读取。
  * bucket 需要提前建好并设置公开可读策略（mcp-echarts 自己不会建 bucket）。这不是这个测试类
  * 自己起的进程——和 {@code TavilySearchToolProviderIT} 依赖真实 Tavily 服务是同一个道理，
  * 本地没有起这个进程时这个测试会失败，不是这个类的 bug。
  */
 class ChartToolProviderIT {
 
-    private static final String MCP_URL = "http://localhost:3033/mcp";
-    private static final String MINIO_ENDPOINT = "http://localhost:9000";
-    private static final String MINIO_ACCESS_KEY = "minioadmin";
-    private static final String MINIO_SECRET_KEY = "minioadmin";
-    private static final String MINIO_BUCKET = "agenttrail-charts";
+    private static final String MCP_URL = Secrets.require("MCP_ECHARTS_URL");
+    private static final String MINIO_ENDPOINT = Secrets.require("AGENTTRAIL_MINIO_ENDPOINT");
+    private static final String MINIO_ACCESS_KEY = Secrets.require("AGENTTRAIL_MINIO_ACCESS_KEY");
+    private static final String MINIO_SECRET_KEY = Secrets.require("AGENTTRAIL_MINIO_SECRET_KEY");
+    private static final String MINIO_BUCKET = Secrets.require("AGENTTRAIL_MINIO_BUCKET");
 
     @Test
     void generatesARealChartAndUploadsItToMinioReturningAnAccessibleUrl() throws Exception {

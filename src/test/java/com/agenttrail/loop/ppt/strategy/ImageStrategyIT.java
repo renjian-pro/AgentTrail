@@ -5,6 +5,7 @@ import com.agenttrail.loop.ppt.PptGenerationContext;
 import com.agenttrail.loop.ppt.PptRequirement;
 import com.agenttrail.loop.ppt.PptSchema;
 import com.agenttrail.support.SharedMySql;
+import com.agenttrail.support.Secrets;
 import io.minio.MinioClient;
 import io.minio.StatObjectArgs;
 import org.junit.jupiter.api.Test;
@@ -25,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * issue #31 验收标准第三条："用真实的文生图 API key 和真实的 MinIO 实例跑通一次'生图→立即转存→
  * PPT 里正确引用'的完整流程"——真实 DashScope {@code qwen-image-plus}（{@code secrets.properties}
  * 里已有的 {@code DASHSCOPE_API_KEY}，issue #20/#27 同一个账号，不是新申请的 key）+ 真实
- * {@code llmentor-minio} 容器，不 mock 任何一环。
+ * 本机 MinIO 容器，不 mock 任何一环。连接地址和凭据只从本地配置读取。
  *
  * <p>只单独跑 {@link ImageStrategy} 这一个状态（而不是走 {@code PptGenerationServiceIT} 那种
  * 8 状态端到端），是为了精确断言"配图→转存→schema 引用"这条链路本身，不被前面几个状态
@@ -43,10 +44,10 @@ class ImageStrategyIT {
         registry.add("spring.datasource.password", SharedMySql::password);
     }
 
-    private static final String MINIO_ENDPOINT = "http://localhost:9000";
-    private static final String MINIO_ACCESS_KEY = "minioadmin";
-    private static final String MINIO_SECRET_KEY = "minioadmin";
-    private static final String MINIO_BUCKET = "agenttrail-ppt-images";
+    private static final String MINIO_ENDPOINT = Secrets.require("AGENTTRAIL_MINIO_ENDPOINT");
+    private static final String MINIO_ACCESS_KEY = Secrets.require("AGENTTRAIL_MINIO_ACCESS_KEY");
+    private static final String MINIO_SECRET_KEY = Secrets.require("AGENTTRAIL_MINIO_SECRET_KEY");
+    private static final String MINIO_BUCKET = Secrets.require("AGENTTRAIL_PPT_IMAGE_MINIO_BUCKET");
 
     @Autowired
     private ImageStrategy imageStrategy;
