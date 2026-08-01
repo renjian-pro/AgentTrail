@@ -85,6 +85,11 @@ public class RenderStrategy implements PptGenerationStrategy {
                         new PptTextFill(PptTemplateSpec.CONTENT_BODY_SHAPE, fill.slideBodyText(),
                                 PptTemplateSpec.CONTENT_BODY_FONT_LIMIT))))
                 .toList();
-        return new PptRenderPayload(titleSlideFills, contentSlides);
+        // schema.coverImageUrl()（issue #31）此前从没被翻译进渲染载荷——render_ppt.py 之前根本
+        // 不认识这个字段，标题页永远只有文字。这一票（issue #33）把它接上，和内容页的装饰图形
+        // 共用同一套"渲染载荷带图片信息、render_ppt.py 负责真正贴图"机制，见 PptRenderPayload
+        // 类注释。为 null（没配图/断点续传时旧任务没有这个字段）时 render_ppt.py 自己退化成
+        // Pillow 装饰图形兜底，这里不需要做任何 null 特判。
+        return new PptRenderPayload(titleSlideFills, contentSlides, schema.coverImageUrl());
     }
 }
