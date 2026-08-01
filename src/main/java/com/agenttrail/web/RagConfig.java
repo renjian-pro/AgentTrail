@@ -31,19 +31,25 @@ public class RagConfig {
     private static final int EMBEDDING_DIMENSIONS = 1024;
 
     @Bean
-    public VectorStore fileChunkVectorStore(EmbeddingModel embeddingModel,
+    PgVectorDataSource pgVectorDataSource(
             @Value("${agenttrail.pgvector.url}") String url,
             @Value("${agenttrail.pgvector.username}") String username,
-            @Value("${agenttrail.pgvector.password}") String password) {
+            @Value("${agenttrail.pgvector.password}") String password,
+            @Value("${agenttrail.pgvector.maximum-pool-size:4}") int maximumPoolSize) {
         HikariConfig poolConfig = new HikariConfig();
         poolConfig.setJdbcUrl(url);
         poolConfig.setUsername(username);
         poolConfig.setPassword(password);
         poolConfig.setDriverClassName("org.postgresql.Driver");
         poolConfig.setPoolName("pgvector-pool");
-        HikariDataSource pgVectorDataSource = new HikariDataSource(poolConfig);
+        poolConfig.setMaximumPoolSize(maximumPoolSize);
+        poolConfig.setMinimumIdle(0);
+        return new PgVectorDataSource(new HikariDataSource(poolConfig));
+    }
 
-        PgVectorStore store = PgVectorStore.builder(new JdbcTemplate(pgVectorDataSource), embeddingModel)
+    @Bean
+    public VectorStore fileChunkVectorStore(EmbeddingModel embeddingModel, PgVectorDataSource pgVectorDataSource) {
+        PgVectorStore store = PgVectorStore.builder(pgVectorDataSource.jdbcTemplate(), embeddingModel)
                 .dimensions(EMBEDDING_DIMENSIONS)
                 .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
                 .indexType(PgVectorStore.PgIndexType.HNSW)
@@ -68,5 +74,22 @@ public class RagConfig {
     public RagRetrievalService ragRetrievalService(VectorStore fileChunkVectorStore,
             @Qualifier("openAiChatModel") ChatModel chatModel) {
         return new RagRetrievalService(fileChunkVectorStore, chatModel);
+    }
+
+    static final class PgVectorDataSource implements AutoCloseable {
+        private final HikariDataSource dataSource;
+
+        PgVectorDataSource(HikariDataSource dataSource) {
+            this.dataSource = dataSource;
+        }
+
+        JdbcTemplate jdbcTemplate() {
+            return new JdbcTemplate(dataSource);
+        }
+
+        @Override
+        public void close() {
+            dataSource.close();
+        }
     }
 }
