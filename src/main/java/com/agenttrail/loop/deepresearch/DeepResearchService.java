@@ -21,9 +21,10 @@ import java.util.concurrent.Semaphore;
 import java.util.stream.Collectors;
 
 /**
- * DeepResearch 骨架（issue #25）+ 分层并发调度（issue #34）+ 任务失败重试（issue #36）：
- * 需求澄清 → 研究主题生成 → 按 order 分层的执行计划（同层并发、跨层串行，单个任务失败按配置
- * 上限真正重试）→ 综合成最终报告。
+ * DeepResearch 骨架（issue #25）+ 分层并发调度（issue #34）+ 任务失败重试（issue #36）+
+ * 自我批判循环（issue #35）：需求澄清 → 研究主题生成 → 【计划（按 order 分层）→ 执行 → 结构化批判】
+ * 循环，不通过且未到轮次上限时把批判反馈拼进下一轮计划生成，通过或到达轮次上限则停止 → 综合成
+ * 最终报告。
  *
  * <p>不重新实现一套 ReAct 机制——{@link AgentLoopExecutor} 本身就是现成的 ReAct 循环，
  * 这里只是编排"用哪个执行器、按什么顺序调几次 {@code call()}"，每一步都是一次独立、
@@ -31,9 +32,12 @@ import java.util.stream.Collectors;
  *
  * <p>{@code searchExecutor} 必须是挂了联网搜索工具的执行器（{@code AgentLoopExecutorFactory
  * .forModel(id, true)}），{@code plainExecutor} 是同一个模型不挂搜索的版本——需求澄清、主题生成、
- * 计划拆解、最终总结这几步都不需要工具，没必要让模型在这几步也能选择去调搜索工具。
+ * 计划拆解、批判判定、最终总结这几步都不需要工具，没必要让模型在这几步也能选择去调搜索工具。
  *
- * <p>不含批判环节（issue #35）、不含专用上下文压缩（issue #37）——这些都是后续票的范围。
+ * <p>批判循环不依赖 issue #34 的并发分层——{@link #executeLayered} 本身就同时兼容"单层顺序"
+ * 和"多层并发"两种计划形状，批判只是在它外面再套一层"要不要再来一轮"的判断，两票可以独立演进。
+ *
+ * <p>不含专用上下文压缩（issue #37）——这是后续票的范围。
  */
 public class DeepResearchService {
 
@@ -50,9 +54,10 @@ public class DeepResearchService {
     private final int maxConcurrentTasksPerLayer;
     private final int maxTasksPerPlan;
     private final int maxTaskRetries;
+    private final int maxCritiqueRounds;
 
     public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor) {
-        this(plainExecutor, searchExecutor, 3, 20, 2);
+        this(plainExecutor, searchExecutor, 3, 20, 2, 3);
     }
 
     /**
@@ -66,7 +71,7 @@ public class DeepResearchService {
      */
     public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor,
             int maxConcurrentTasksPerLayer, int maxTasksPerPlan) {
-        this(plainExecutor, searchExecutor, maxConcurrentTasksPerLayer, maxTasksPerPlan, 2);
+        this(plainExecutor, searchExecutor, maxConcurrentTasksPerLayer, maxTasksPerPlan, 2, 3);
     }
 
     /**
@@ -76,11 +81,22 @@ public class DeepResearchService {
      */
     public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor,
             int maxConcurrentTasksPerLayer, int maxTasksPerPlan, int maxTaskRetries) {
+        this(plainExecutor, searchExecutor, maxConcurrentTasksPerLayer, maxTasksPerPlan, maxTaskRetries, 3);
+    }
+
+    /**
+     * @param maxCritiqueRounds 批判循环最多跑几轮（issue #35）——第一轮计划-执行总会跑，之后每次
+     *                          批判不通过就再来一轮，直到批判通过或者跑满这个轮数为止；到达轮数
+     *                          上限时不管批判有没有通过都直接进入总结，不无限重试
+     */
+    public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor,
+            int maxConcurrentTasksPerLayer, int maxTasksPerPlan, int maxTaskRetries, int maxCritiqueRounds) {
         this.plainExecutor = plainExecutor;
         this.searchExecutor = searchExecutor;
         this.maxConcurrentTasksPerLayer = maxConcurrentTasksPerLayer;
         this.maxTasksPerPlan = maxTasksPerPlan;
         this.maxTaskRetries = maxTaskRetries;
+        this.maxCritiqueRounds = maxCritiqueRounds;
     }
 
     public DeepResearchReport research(String question) {
@@ -92,13 +108,87 @@ public class DeepResearchService {
         String topic = plainExecutor.call(DeepResearchPrompts.TOPIC_GENERATION + question, freshParams(null));
         log.info("DeepResearch 研究主题：{}", topic);
 
-        ResearchPlan plan = applyBreadthCap(generatePlan(topic));
-        log.info("DeepResearch 执行计划：{} 个任务", plan.tasks().size());
-
-        List<TaskResult> results = executeLayered(plan);
+        List<TaskResult> results = planExecuteCritiqueLoop(topic);
 
         String report = summarize(question, topic, results);
         return DeepResearchReport.completed(topic, results, report);
+    }
+
+    /**
+     * 计划 → 执行 → 批判的循环：批判反馈拼进下一轮的计划生成，让模型针对性补充而不是盲目重跑
+     * 一遍一样的任务；每一轮新产出的任务结果都累加进最终结果集（不丢弃前面几轮已经查到的内容）。
+     */
+    private List<TaskResult> planExecuteCritiqueLoop(String topic) {
+        List<TaskResult> allResults = new ArrayList<>();
+        String previousFeedback = null;
+
+        for (int round = 1; round <= maxCritiqueRounds; round++) {
+            String planInput = previousFeedback == null
+                    ? topic
+                    : topic + "\n\n【上一轮批判反馈，本轮需针对性补充】\n" + previousFeedback;
+            ResearchPlan plan = applyBreadthCap(generatePlan(planInput));
+            log.info("DeepResearch 第 {} 轮执行计划：{} 个任务", round, plan.tasks().size());
+
+            allResults.addAll(executeLayered(plan));
+
+            if (round == maxCritiqueRounds) {
+                log.info("DeepResearch 批判循环已达轮数上限 {}，直接进入总结", maxCritiqueRounds);
+                break;
+            }
+
+            CritiqueResult critique = critique(topic, allResults);
+            log.info("DeepResearch 第 {} 轮批判：{}{}", round, critique.passed() ? "通过" : "不通过",
+                    critique.passed() ? "" : "，反馈：" + critique.feedback());
+            if (critique.passed()) {
+                break;
+            }
+            previousFeedback = critique.feedback();
+        }
+        return allResults;
+    }
+
+    /** 结构化布尔判定（issue #18 机制复用），不做自由文本解析猜测。 */
+    private CritiqueResult critique(String topic, List<TaskResult> results) {
+        StringBuilder input = new StringBuilder(DeepResearchPrompts.CRITIQUE);
+        input.append(topic).append("\n\n已完成任务的检索结果：\n");
+        if (results.isEmpty()) {
+            input.append("（未检索到任何结果）");
+        } else {
+            for (TaskResult result : results) {
+                input.append("- ").append(result.instruction()).append("：\n")
+                        .append(renderResultOrFailure(result)).append("\n\n");
+            }
+        }
+
+        RunnableParams params = freshParams(OutputType.of(CritiqueResult.class));
+        String rawJson = plainExecutor.call(input.toString(), params);
+        String fixed = JsonRepair.fixJson(rawJson);
+        try {
+            return MAPPER.readValue(fixed, CritiqueResult.class);
+        } catch (Exception malformed) {
+            // 和 generatePlan() 同样的兜底手法：JsonRepair 修不动时可能落到 {"content": "..."} 信封，
+            // 里面往往还是一份合法的 CritiqueResult JSON。这里解不开就不再深究——批判判定失败时
+            // 保守地当作"不通过"处理，让循环继续跑而不是让一次解析失败直接中断整个研究流程。
+            CritiqueResult unwrapped = tryUnwrapCritiqueContentFallback(fixed);
+            if (unwrapped != null) {
+                return unwrapped;
+            }
+            log.warn("DeepResearch 批判结果解析失败，保守按不通过处理：{}", malformed.getMessage());
+            return new CritiqueResult(false, "批判结果解析失败，本轮判定为不通过以确保继续迭代");
+        }
+    }
+
+    private static CritiqueResult tryUnwrapCritiqueContentFallback(String fixedJson) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = MAPPER.readTree(fixedJson);
+            com.fasterxml.jackson.databind.JsonNode content = root.get("content");
+            if (content == null || !content.isTextual()) {
+                return null;
+            }
+            return MAPPER.readValue(content.asText(), CritiqueResult.class);
+        } catch (Exception stillNotParseable) {
+            return null;
+        }
     }
 
     /** 固定标记优先；两个标记都没出现时才走关键词兜底，都不命中默认视为信息充分（参考实现的取舍：宁可少追问）。 */
@@ -225,14 +315,14 @@ public class DeepResearchService {
             try {
                 String output = searchExecutor.call(
                         DeepResearchPrompts.EXECUTE + instructionWithContext, freshParams(null));
-                return TaskResult.success(task.id(), task.instruction(), output);
+                return TaskResult.success(task.id(), task.instruction(), task.order(), output);
             } catch (Exception failure) {
                 lastErrorMessage = failure.getMessage();
                 log.warn("DeepResearch 任务 {} 第 {} 次尝试失败：{}", task.id(), attempt, lastErrorMessage);
             }
         }
         log.error("DeepResearch 任务 {} 连续 {} 次尝试均失败，放弃重试", task.id(), maxTaskRetries + 1);
-        return TaskResult.failure(task.id(), task.instruction(), lastErrorMessage);
+        return TaskResult.failure(task.id(), task.instruction(), task.order(), lastErrorMessage);
     }
 
     private static String renderLayerContext(List<TaskResult> layerResults) {

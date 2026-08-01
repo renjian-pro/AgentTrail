@@ -81,7 +81,8 @@ class DeepResearchServiceTest {
 
         DeepResearchService service = new DeepResearchService(
                 new AgentLoopExecutor(plainModel, List.of(), 5),
-                new AgentLoopExecutor(searchModel, List.of(), 5));
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 1); // maxCritiqueRounds=1：这个用例不关心批判循环，跑完第一轮就该停
 
         DeepResearchReport report = service.research("帮我研究一下某公司");
 
@@ -122,7 +123,7 @@ class DeepResearchServiceTest {
         DeepResearchService service = new DeepResearchService(
                 new AgentLoopExecutor(plainModel, List.of(), 5),
                 new AgentLoopExecutor(searchModel, List.of(), 5),
-                concurrencyCap, 20);
+                concurrencyCap, 20, 2, 1); // maxCritiqueRounds=1：跑完第一轮就该停，不进批判
 
         DeepResearchReport report = service.research("测试并发上限");
 
@@ -153,7 +154,7 @@ class DeepResearchServiceTest {
         DeepResearchService service = new DeepResearchService(
                 new AgentLoopExecutor(plainModel, List.of(), 5),
                 new AgentLoopExecutor(searchModel, List.of(), 5),
-                3, 2);
+                3, 2, 2, 1); // maxCritiqueRounds=1：跑完第一轮就该停，不进批判
 
         DeepResearchReport report = service.research("测试广度上限");
 
@@ -177,7 +178,7 @@ class DeepResearchServiceTest {
         DeepResearchService service = new DeepResearchService(
                 new AgentLoopExecutor(plainModel, List.of(), 5),
                 new AgentLoopExecutor(searchModel, List.of(), 5),
-                3, 20, 2);
+                3, 20, 2, 1); // maxCritiqueRounds=1：跑完第一轮就该停，不进批判
 
         DeepResearchReport report = service.research("测试重试成功");
 
@@ -203,7 +204,7 @@ class DeepResearchServiceTest {
         DeepResearchService service = new DeepResearchService(
                 new AgentLoopExecutor(plainModel, List.of(), 5),
                 new AgentLoopExecutor(alwaysFailingModel, List.of(), 5),
-                3, 20, maxTaskRetries);
+                3, 20, maxTaskRetries, 1); // maxCritiqueRounds=1：跑完第一轮就该停，不进批判
 
         DeepResearchReport report = service.research("测试重试耗尽");
 
@@ -216,6 +217,81 @@ class DeepResearchServiceTest {
                 .as("1 次初始尝试 + %d 次重试，达到上限后不再继续", maxTaskRetries)
                 .isEqualTo(maxTaskRetries + 1);
         assertThat(report.report()).as("单个任务失败不该阻塞总结阶段").isEqualTo("# 报告：任务失败但依然生成了总结");
+    }
+
+    @Test
+    void stopsAfterOneRoundWhenTheCritiquePassesImmediately() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[{"id":"task-1","instruction":"搜索1","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":true,"feedback":""}
+                        """)),
+                List.of(text("# 报告：一轮就通过了")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(List.of(text("结果1")));
+
+        // maxCritiqueRounds=3，但批判第一轮就判定通过，不应该再跑第二轮
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 3);
+
+        DeepResearchReport report = service.research("测试批判一次通过");
+
+        assertThat(report.taskResults()).hasSize(1);
+        assertThat(report.report()).isEqualTo("# 报告：一轮就通过了");
+        assertThat(plainModel.roundCount())
+                .as("澄清+主题+计划+批判+总结，共 5 次纯文本调用，批判通过后不该有第二轮计划调用")
+                .isEqualTo(5);
+        assertThat(searchModel.roundCount()).as("只有一轮任务执行").isEqualTo(1);
+    }
+
+    @Test
+    void feedsCritiqueFeedbackIntoTheNextRoundAndAccumulatesResultsAcrossRounds() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[{"id":"task-1","instruction":"搜索1","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":false,"feedback":"缺少最新一手数据来源，需要补充"}
+                        """)),
+                List.of(text("""
+                        {"tasks":[{"id":"task-2","instruction":"搜索2","order":1}]}
+                        """)),
+                List.of(text("# 报告：两轮之后的综合结果")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text("第一轮结果")),
+                List.of(text("第二轮结果")));
+
+        // maxCritiqueRounds=2：第一轮批判不通过，跑第二轮；第二轮已经是轮次上限，
+        // 不管批判结果如何都直接停止，不会有第三次计划调用
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 2);
+
+        DeepResearchReport report = service.research("测试批判反馈驱动下一轮");
+
+        assertThat(report.taskResults())
+                .as("两轮的任务结果都应该累加进最终结果，不能只保留最后一轮")
+                .hasSize(2);
+        assertThat(report.taskResults().get(0).taskId()).isEqualTo("task-1");
+        assertThat(report.taskResults().get(1).taskId()).isEqualTo("task-2");
+        assertThat(report.report()).isEqualTo("# 报告：两轮之后的综合结果");
+        assertThat(plainModel.roundCount())
+                .as("澄清+主题+计划1+批判1+计划2+总结，共 6 次；到达轮次上限后不再有第二次批判调用")
+                .isEqualTo(6);
+
+        // 第二轮的计划生成（第 5 次纯文本调用，index=4）应该带上第一轮批判反馈作为输入
+        String secondPlanPrompt = plainModel.messagesAtRound(4).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(secondPlanPrompt).contains("缺少最新一手数据来源，需要补充");
     }
 
     @Test

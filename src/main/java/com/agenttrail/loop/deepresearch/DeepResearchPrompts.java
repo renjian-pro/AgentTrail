@@ -5,8 +5,9 @@ package com.agenttrail.loop.deepresearch;
  * （dodo-agent {@code PlanExecutePrompts}）——判定标记、判定倾向（"能推断方向就直接开始，
  * 不追问细节"）都是原样保留，这条本身就是"和 PPT 需求澄清同一套解法"的复用证据。
  *
- * <p>PLAN 提示词相对参考实现做了简化：不生成 {@code order} 分层字段——这一票的验收范围是
- * 单层顺序执行，并发分层是 issue #34 的范围，提示词里提前教模型生成一个用不上的字段没有意义。
+ * <p>PLAN 提示词现在会生成 {@code order} 分层字段（issue #34）。CRITIQUE（issue #35）是结构化
+ * 通过/不通过判定，不通过时的反馈文本会被拼进下一轮的 PLAN 调用，让模型针对性补充而不是
+ * 盲目重跑一遍一样的任务。
  */
 final class DeepResearchPrompts {
 
@@ -75,7 +76,7 @@ final class DeepResearchPrompts {
             用户问题：
             """;
 
-    /** {@code %s} 占位符是结构化输出格式指令（由 issue #18 的 OutputType 机制注入到问题末尾）。 */
+    /** 结构化输出格式指令由 issue #18 的 OutputType 机制在 {@code AgentLoopExecutor} 里自动追加。 */
     static final String PLAN = """
             你是【DeepResearch 执行计划规划专家】。
 
@@ -104,6 +105,24 @@ final class DeepResearchPrompts {
             - 如存在不确定或冲突信息，如实保留
 
             当前任务：
+            """;
+
+    /** 结构化输出格式指令由 issue #18 的 OutputType 机制在 {@code AgentLoopExecutor} 里自动追加，
+     * 不需要在这段提示词里手动占位——调用方按 {@code CRITIQUE + 研究主题 + 检索结果} 拼接。 */
+    static final String CRITIQUE = """
+            你是【DeepResearch 结果质量评审专家】。
+
+            基于研究主题和已完成任务的检索结果，判断当前掌握的信息是否已经足够支撑写出一份
+            有实质内容、能回答研究主题的分析报告。
+
+            ## 判断原则
+            - 只关心"信息是否足够"，不要评判语言表达、格式这类与内容无关的方面
+            - 如果关键子主题完全没有检索到任何有效信息，或者结果高度重复、没有增量信息，判定不通过
+            - 不要吹毛求疵：不要求覆盖所有可能的细枝末节，抓大放小
+            - 不通过时，feedback 要具体指出还缺哪些方面的信息，作为下一轮补充检索的方向；
+              通过时 feedback 可以留空
+
+            研究主题：
             """;
 
     static final String SUMMARIZE = """
