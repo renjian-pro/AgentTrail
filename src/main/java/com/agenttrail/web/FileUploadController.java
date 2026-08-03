@@ -3,6 +3,7 @@ package com.agenttrail.web;
 import com.agenttrail.loop.file.FileParsingException;
 import com.agenttrail.loop.file.FileQaService;
 import com.agenttrail.loop.rag.VectorizationException;
+import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -38,7 +39,7 @@ public class FileUploadController {
             @RequestParam("conversationId") String conversationId) {
         try {
             return FileUploadResponse.from(fileQaService.ingest(
-                    conversationId, file.getOriginalFilename(), file.getContentType(),
+                    currentUserId(), conversationId, file.getOriginalFilename(), file.getContentType(),
                     file.getInputStream(), file.getSize()));
         } catch (IOException readFailure) {
             throw new UncheckedIOException(readFailure);
@@ -55,10 +56,23 @@ public class FileUploadController {
     @GetMapping("/agent/v1/files/{fileId}/content")
     public FileContentResponse content(@PathVariable long fileId,
             @RequestParam(name = "question", required = false) String question) {
+        String userId = currentUserId();
+        if (userId != null && !fileQaService.belongsToUser(fileId, userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件不存在: " + fileId);
+        }
         try {
             return new FileContentResponse(fileId, fileQaService.contentFor(fileId, question));
         } catch (NoSuchElementException notFound) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, notFound.getMessage(), notFound);
+        }
+    }
+
+    private static String currentUserId() {
+        try {
+            return StpUtil.isLogin() ? StpUtil.getLoginIdAsString() : null;
+        } catch (RuntimeException noHttpContext) {
+            // 纯单元测试直接调用 Controller 时没有 Sa-Token 请求上下文；真实 HTTP 请求会被拦截器保护。
+            return null;
         }
     }
 }

@@ -2,6 +2,7 @@ package com.agenttrail.web;
 
 import com.agenttrail.loop.ppt.PptGenerationService;
 import com.agenttrail.loop.ppt.PptTask;
+import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
@@ -46,22 +47,40 @@ public class PptGenerationController {
     public PptGenerationResponse create(@RequestBody PptGenerationRequest request) {
         long startedAt = System.nanoTime();
         try {
-            long taskId = pptGenerationService.create(request.conversationId(), request.message());
-            PptGenerationResponse response = toResponse(taskId);
-            conversationService.recordSuccess(request.conversationId(), request.message(),
-                    "PPT 任务状态：" + response.status(), "ppt", response, elapsedMillis(startedAt));
+            String userId = currentUserId();
+            long taskId = userId == null
+                    ? pptGenerationService.create(request.conversationId(), request.message())
+                    : pptGenerationService.create(userId, request.conversationId(), request.message());
+            PptGenerationResponse response = toResponse(userId, taskId);
+            if (userId == null) {
+                conversationService.recordSuccess(request.conversationId(), request.message(),
+                        "PPT 任务状态：" + response.status(), "ppt", response, elapsedMillis(startedAt));
+            } else {
+                conversationService.recordSuccess(userId, request.conversationId(), request.message(),
+                        "PPT 任务状态：" + response.status(), "ppt", response, elapsedMillis(startedAt));
+            }
             return response;
         } catch (RuntimeException failure) {
-            conversationService.recordFailure(request.conversationId(), request.message(), "ppt",
-                    failure.getMessage(), elapsedMillis(startedAt));
+            String userId = currentUserId();
+            if (userId == null) {
+                conversationService.recordFailure(request.conversationId(), request.message(), "ppt",
+                        failure.getMessage(), elapsedMillis(startedAt));
+            } else {
+                conversationService.recordFailure(userId, request.conversationId(), request.message(), "ppt",
+                        failure.getMessage(), elapsedMillis(startedAt));
+            }
             throw failure;
         }
     }
 
     @PostMapping("/agent/v1/ppt/resume/{taskId}")
     public PptGenerationResponse resume(@PathVariable long taskId) {
-        pptGenerationService.run(taskId);
-        return toResponse(taskId);
+        String userId = currentUserId();
+        if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
+        }
+        if (userId == null) pptGenerationService.run(taskId); else pptGenerationService.run(userId, taskId);
+        return toResponse(userId, taskId);
     }
 
     /**
@@ -71,7 +90,7 @@ public class PptGenerationController {
     @GetMapping(value = "/agent/v1/ppt/{taskId}/download",
             produces = "application/vnd.openxmlformats-officedocument.presentationml.presentation")
     public ResponseEntity<Resource> download(@PathVariable long taskId) {
-        Path output = outputFileOf(taskId);
+        Path output = outputFileOf(currentUserId(), taskId);
         try {
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(
@@ -86,26 +105,27 @@ public class PptGenerationController {
         }
     }
 
-    private PptGenerationResponse toResponse(long taskId) {
-        PptTask task = pptGenerationService.describe(taskId)
+    private PptGenerationResponse toResponse(String userId, long taskId) {
+        PptTask task = (userId == null ? pptGenerationService.describe(taskId) : pptGenerationService.describe(userId, taskId))
                 .orElseThrow(() -> new IllegalStateException("PPT 任务不存在: " + taskId));
         String downloadUrl = task.status() == com.agenttrail.loop.ppt.PptState.SUCCESS
-                && hasOutputFile(taskId)
+                && hasOutputFile(userId, taskId)
                 ? "/agent/v1/ppt/" + taskId + "/download"
                 : null;
         return new PptGenerationResponse(taskId, task.status(), task.errorMsg(), downloadUrl);
     }
 
-    private boolean hasOutputFile(long taskId) {
+    private boolean hasOutputFile(String userId, long taskId) {
         try {
-            return Files.isRegularFile(Path.of(pptGenerationService.outputPathOf(taskId)));
+            String output = userId == null ? pptGenerationService.outputPathOf(taskId) : pptGenerationService.outputPathOf(userId, taskId);
+            return Files.isRegularFile(Path.of(output));
         } catch (InvalidPathException | NullPointerException ignored) {
             return false;
         }
     }
 
-    private Path outputFileOf(long taskId) {
-        String outputPath = pptGenerationService.outputPathOf(taskId);
+    private Path outputFileOf(String userId, long taskId) {
+        String outputPath = userId == null ? pptGenerationService.outputPathOf(taskId) : pptGenerationService.outputPathOf(userId, taskId);
         try {
             Path output = outputPath == null ? null : Path.of(outputPath).toAbsolutePath().normalize();
             if (output == null || !Files.isRegularFile(output)) {
@@ -119,5 +139,10 @@ public class PptGenerationController {
 
     private static long elapsedMillis(long startedAt) {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+    }
+
+    private static String currentUserId() {
+        try { return StpUtil.isLogin() ? StpUtil.getLoginIdAsString() : null; }
+        catch (RuntimeException noHttpContext) { return null; }
     }
 }

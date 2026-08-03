@@ -22,7 +22,7 @@ public class InMemoryFileStore implements FileStore {
     @Override
     public long save(UploadedFile file) {
         long id = nextId.getAndIncrement();
-        UploadedFile saved = new UploadedFile(id, file.conversationId(), file.turnId(), file.fileName(),
+        UploadedFile saved = new UploadedFile(id, file.userId(), file.conversationId(), file.turnId(), file.fileName(),
                 file.contentType(), file.sizeBytes(), file.kind(), file.parsedText(), file.rawBytes(),
                 file.createdAtMillis());
         filesById.put(id, saved);
@@ -44,7 +44,7 @@ public class InMemoryFileStore implements FileStore {
 
     @Override
     public void updateParsedText(long id, String parsedText) {
-        filesById.computeIfPresent(id, (key, existing) -> new UploadedFile(existing.id(), existing.conversationId(),
+        filesById.computeIfPresent(id, (key, existing) -> new UploadedFile(existing.id(), existing.userId(), existing.conversationId(),
                 existing.turnId(), existing.fileName(), existing.contentType(), existing.sizeBytes(),
                 existing.kind(), parsedText, existing.rawBytes(), existing.createdAtMillis()));
     }
@@ -53,7 +53,7 @@ public class InMemoryFileStore implements FileStore {
     public void linkFilesToTurn(String conversationId, long turnId) {
         for (UploadedFile file : filesById.values()) {
             if (file.conversationId().equals(conversationId) && file.turnId() == null) {
-                filesById.put(file.id(), new UploadedFile(file.id(), file.conversationId(), turnId, file.fileName(),
+                filesById.put(file.id(), new UploadedFile(file.id(), file.userId(), file.conversationId(), turnId, file.fileName(),
                         file.contentType(), file.sizeBytes(), file.kind(), file.parsedText(), file.rawBytes(),
                         file.createdAtMillis()));
             }

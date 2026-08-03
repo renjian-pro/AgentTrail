@@ -12,6 +12,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.GetMapping;
 import reactor.core.publisher.Flux;
+import cn.dev33.satoken.stp.StpUtil;
+
+import java.util.Map;
 
 import java.util.UUID;
 
@@ -48,7 +51,8 @@ public class AgentLoopController {
     public Flux<ServerSentEvent<AgentStreamEvent>> chat(@RequestBody AgentChatRequest request) {
         String conversationId = (request.conversationId() == null || request.conversationId().isBlank())
                 ? UUID.randomUUID().toString() : request.conversationId();
-        RunnableParams params = new RunnableParams(conversationId, "anonymous");
+        String userId = StpUtil.getLoginIdAsString();
+        RunnableParams params = new RunnableParams(conversationId, userId, Map.of("userId", userId), null);
         return executorFactory.forModelWithCharts(request.modelId(), request.webSearchEnabled())
                 .stream(request.message(), params)
                 .map(event -> ServerSentEvent.builder(event)
@@ -58,18 +62,27 @@ public class AgentLoopController {
 
     @PostMapping("/agent/v1/chat/stop")
     public StopChatResponse stop(@RequestParam String conversationId) {
+        String userId = StpUtil.getLoginIdAsString();
+        if (!conversationHistoryService.belongsToUser(conversationId, userId)) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,
+                    "会话不存在: " + conversationId);
+        }
         return new StopChatResponse(conversationId, agentTaskManager.stopTask(conversationId));
     }
 
     @GetMapping("/agent/v1/conversations")
     public ConversationPageResponse conversations(@RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return conversationHistoryService.findConversations(page, size);
+        return conversationHistoryService.findConversations(StpUtil.getLoginIdAsString(), page, size);
     }
 
     @GetMapping("/agent/v1/conversations/{conversationId}/history")
     public ConversationHistoryResponse history(@org.springframework.web.bind.annotation.PathVariable String conversationId,
             @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
-        return conversationHistoryService.findPage(conversationId, page, size);
+        if (!conversationHistoryService.belongsToUser(conversationId, StpUtil.getLoginIdAsString())) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,
+                    "会话不存在: " + conversationId);
+        }
+        return conversationHistoryService.findPage(StpUtil.getLoginIdAsString(), conversationId, page, size);
     }
 }

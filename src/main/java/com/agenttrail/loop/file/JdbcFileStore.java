@@ -15,18 +15,18 @@ public class JdbcFileStore implements FileStore {
 
     private static final String INSERT_SQL = """
             INSERT INTO agent_file
-                (conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String SELECT_BY_ID_SQL = """
-            SELECT id, conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at
+            SELECT id, user_id, conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at
             FROM agent_file
             WHERE id = ?
             """;
 
     private static final String SELECT_BY_CONVERSATION_SQL = """
-            SELECT id, conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at
+            SELECT id, user_id, conversation_id, turn_id, file_name, content_type, size_bytes, kind, parsed_text, raw_bytes, created_at
             FROM agent_file
             WHERE conversation_id = ?
             ORDER BY id ASC
@@ -50,6 +50,7 @@ public class JdbcFileStore implements FileStore {
     public long save(UploadedFile file) {
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql(INSERT_SQL)
+                .param(file.userId())
                 .param(file.conversationId())
                 .param(file.turnId())
                 .param(file.fileName())
@@ -102,6 +103,7 @@ public class JdbcFileStore implements FileStore {
         Long turnIdOrNull = rs.wasNull() ? null : turnId;
         return new UploadedFile(
                 rs.getLong("id"),
+                rs.getString("user_id"),
                 rs.getString("conversation_id"),
                 turnIdOrNull,
                 rs.getString("file_name"),

@@ -75,12 +75,18 @@ public class FileQaService {
      */
     public IngestedFile ingest(String conversationId, String fileName, String contentType,
             InputStream content, long sizeBytes) {
+        return ingest(null, conversationId, fileName, contentType, content, sizeBytes);
+    }
+
+    /** 带资源归属的生产入口；userId 在最外层冻结后一路传到持久化。 */
+    public IngestedFile ingest(String userId, String conversationId, String fileName, String contentType,
+            InputStream content, long sizeBytes) {
         FileKind kind = FileKindDetector.detect(contentType, fileName);
 
         if (kind == FileKind.IMAGE) {
             byte[] rawBytes = readAllBytes(content);
             long id = fileStore.save(new UploadedFile(
-                    null, conversationId, null, fileName, contentType, sizeBytes, FileKind.IMAGE, null, rawBytes,
+                    null, userId, conversationId, null, fileName, contentType, sizeBytes, FileKind.IMAGE, null, rawBytes,
                     clock.millis()));
             return new IngestedFile(id, fileName, kind, sizeBytes, 0, false);
         }
@@ -89,7 +95,7 @@ public class FileQaService {
         boolean routedToRag = parsedText.length() > ragThresholdChars;
 
         long id = fileStore.save(new UploadedFile(
-                null, conversationId, null, fileName, contentType, sizeBytes, FileKind.TEXT, parsedText, null,
+                null, userId, conversationId, null, fileName, contentType, sizeBytes, FileKind.TEXT, parsedText, null,
                 clock.millis()));
 
         if (routedToRag) {
@@ -127,6 +133,11 @@ public class FileQaService {
             return NO_RESULTS_TEMPLATE;
         }
         return String.join("\n\n---\n\n", retrieved);
+    }
+
+    /** HTTP 层在读取正文前调用；资源不存在与不属于当前用户统一按不可见处理。 */
+    public boolean belongsToUser(long fileId, String userId) {
+        return fileStore.findById(fileId).map(file -> userId != null && userId.equals(file.userId())).orElse(false);
     }
 
     /** 缓存命中直接返回；未命中才真的调多模态模型，并把结果写回缓存。 */

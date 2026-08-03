@@ -25,6 +25,14 @@ spring:
   autoconfigure:
     exclude: org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
 
+# Token 通过 Authorization: Bearer <token> 传递，Sa-Token 的 Redis DAO 负责跨实例共享会话。
+sa-token:
+  token-name: Authorization
+  token-prefix: Bearer
+  is-read-header: true
+  is-read-cookie: false
+  is-read-body: false
+
 tavily:
   mcp-url: https://mcp.tavily.com/mcp/
   timeout-seconds: 30

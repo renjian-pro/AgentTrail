@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS agent_pause_state
 CREATE TABLE IF NOT EXISTS agent_file
 (
     id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键，单个文件的标识',
+    user_id         VARCHAR(100) NULL COMMENT '所属登录用户，资源归属校验的唯一依据',
     conversation_id VARCHAR(100) NOT NULL COMMENT '会话标识，跨轮可见',
     turn_id         BIGINT       NULL COMMENT '归属的单轮问答 id（agent_session.id）；上传时为 NULL，等这一轮结束才回填',
     file_name       VARCHAR(255) NOT NULL COMMENT '原始文件名',
@@ -159,7 +160,8 @@ CREATE TABLE IF NOT EXISTS agent_file
     created_at      BIGINT       NOT NULL COMMENT '上传时刻（epoch millis）',
     PRIMARY KEY (id),
     -- 按会话查全部附件（历史回放、issue #28 的分组渲染）走这个索引
-    KEY idx_file_conversation (conversation_id)
+    KEY idx_file_conversation (conversation_id),
+    KEY idx_file_user (user_id)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT '文件问答：上传文件的元数据 + 正文（Tika 解析文本或图片识别描述）';
@@ -184,6 +186,7 @@ CREATE TABLE IF NOT EXISTS agent_file
 CREATE TABLE IF NOT EXISTS ppt_generation_task
 (
     id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键，单个 PPT 生成任务的标识',
+    user_id         VARCHAR(100) NULL COMMENT '所属登录用户，恢复与下载必须做归属校验',
     conversation_id VARCHAR(100) NOT NULL COMMENT '发起这个任务的会话标识',
     status          VARCHAR(20)  NOT NULL COMMENT '当前状态（PptState 枚举名），即断点续传的 checkpoint',
     error_msg       LONGTEXT     NULL COMMENT 'status 对应状态上一次执行失败的错误信息；成功推进到这个状态时为 NULL',
@@ -194,7 +197,139 @@ CREATE TABLE IF NOT EXISTS ppt_generation_task
     -- 运维排查"某个会话发起过哪些 PPT 任务"走这个索引；issue #32 起 MODIFY/RESUME 分支的
     -- findLatestByConversationId 查询（按 conversation_id 找最新一条任务）也走这个索引——
     -- crash 恢复场景（已知 taskId 时）仍然只按主键 id 查找，两条路径不冲突
-    KEY idx_ppt_task_conversation (conversation_id)
+    KEY idx_ppt_task_conversation (conversation_id),
+    KEY idx_ppt_task_user (user_id)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT 'PPT 生成状态机任务：status/error_msg 是按状态粒度的断点续传 checkpoint';
+
+-- 用户体系采用五张标准 RBAC 表：用户与部门多对多，角色上的 data_scope 决定后续
+-- 数据分析能力包能看到的范围。认证 token 不把权限事实复制到 token 内，角色变更可以即时生效。
+CREATE TABLE IF NOT EXISTS sys_dept
+(
+    id         BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    name       VARCHAR(100) NOT NULL COMMENT '部门名称',
+    parent_id  BIGINT       NOT NULL DEFAULT 0 COMMENT '父部门 id，顶级部门为 0',
+    ancestors  VARCHAR(500) NOT NULL DEFAULT '0' COMMENT '祖先路径，逗号分隔 id 链',
+    sort       INT          NOT NULL DEFAULT 0 COMMENT '显示顺序',
+    status     VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE' COMMENT '状态：ACTIVE/DISABLED',
+    created_at BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
+    updated_at BIGINT       NOT NULL COMMENT '最近更新时刻（epoch millis）',
+    PRIMARY KEY (id),
+    KEY idx_sys_dept_parent (parent_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT '部门树';
+
+CREATE TABLE IF NOT EXISTS sys_role
+(
+    id         BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    code       VARCHAR(64)  NOT NULL COMMENT '角色代码',
+    name       VARCHAR(64)  NOT NULL COMMENT '角色名称',
+    data_scope VARCHAR(32)  NOT NULL DEFAULT 'DEPT' COMMENT '数据范围：ALL/DEPT_AND_SUB/DEPT/SELF',
+    sort       INT          NOT NULL DEFAULT 0 COMMENT '显示顺序',
+    status     VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE' COMMENT '状态：ACTIVE/DISABLED',
+    created_at BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
+    updated_at BIGINT       NOT NULL COMMENT '最近更新时刻（epoch millis）',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_sys_role_code (code)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT '角色';
+
+CREATE TABLE IF NOT EXISTS sys_user
+(
+    id         BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    username   VARCHAR(64)  NOT NULL COMMENT '登录用户名',
+    password   VARCHAR(128) NOT NULL COMMENT 'BCrypt 密码哈希',
+    nickname   VARCHAR(64)  NULL COMMENT '昵称',
+    status     VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE' COMMENT '状态：ACTIVE/DISABLED',
+    created_at BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
+    updated_at BIGINT       NOT NULL COMMENT '更新时间（epoch millis）',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_sys_user_username (username)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT '用户';
+
+CREATE TABLE IF NOT EXISTS sys_user_role
+(
+    user_id    BIGINT NOT NULL COMMENT '用户 id',
+    role_id    BIGINT NOT NULL COMMENT '角色 id',
+    created_at BIGINT NOT NULL COMMENT '关联建立时刻（epoch millis）',
+    PRIMARY KEY (user_id, role_id),
+    KEY idx_sys_user_role_role (role_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT '用户角色关联';
+
+CREATE TABLE IF NOT EXISTS sys_user_dept
+(
+    user_id    BIGINT NOT NULL COMMENT '用户 id',
+    dept_id    BIGINT NOT NULL COMMENT '部门 id',
+    created_at BIGINT NOT NULL COMMENT '关联建立时刻（epoch millis）',
+    PRIMARY KEY (user_id, dept_id),
+    KEY idx_sys_user_dept_dept (dept_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT '用户部门关联';
+
+-- 认证与权限种子数据。密码统一为开发环境测试密码 password，数据库内只保留 BCrypt 哈希。
+INSERT INTO sys_dept (id, name, parent_id, ancestors, sort, status, created_at, updated_at)
+VALUES (1, '集团', 0, '0', 1, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (2, '技术中心', 1, '0,1', 1, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (3, '产品部', 2, '0,1,2', 1, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (4, '平台部', 2, '0,1,2', 2, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (5, '运营中心', 1, '0,1', 2, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
+ON DUPLICATE KEY UPDATE name = VALUES(name), parent_id = VALUES(parent_id), ancestors = VALUES(ancestors), updated_at = VALUES(updated_at);
+
+INSERT INTO sys_role (id, code, name, data_scope, sort, status, created_at, updated_at)
+VALUES (1, 'admin', '系统管理员', 'ALL', 1, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (2, 'manager', '部门经理', 'DEPT_AND_SUB', 2, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (3, 'analyst', '数据分析师', 'DEPT', 3, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (4, 'employee', '普通员工', 'SELF', 4, 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
+ON DUPLICATE KEY UPDATE name = VALUES(name), data_scope = VALUES(data_scope), updated_at = VALUES(updated_at);
+
+INSERT INTO sys_user (id, username, password, nickname, status, created_at, updated_at)
+VALUES (1, 'admin', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '系统管理员', 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (2, 'mgr_test', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '测试经理', 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (3, 'analyst_test', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '测试分析师', 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (4, 'cross_analyst', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '跨部门分析师', 'ACTIVE', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
+ON DUPLICATE KEY UPDATE password = VALUES(password), nickname = VALUES(nickname), status = VALUES(status), updated_at = VALUES(updated_at);
+
+INSERT INTO sys_user_role (user_id, role_id, created_at)
+VALUES (1, 1, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000), (2, 2, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (3, 3, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000), (4, 3, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
+ON DUPLICATE KEY UPDATE created_at = VALUES(created_at);
+
+INSERT INTO sys_user_dept (user_id, dept_id, created_at)
+VALUES (1, 1, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000), (2, 2, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (3, 3, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000), (4, 3, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (4, 4, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
+ON DUPLICATE KEY UPDATE created_at = VALUES(created_at);
+
+-- 细粒度权限只覆盖管理面；agent 业务接口的边界仍由登录态与资源归属校验保证。
+CREATE TABLE IF NOT EXISTS sys_permission
+(
+    id         BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    code       VARCHAR(64)  NOT NULL COMMENT '权限码',
+    name       VARCHAR(64)  NOT NULL COMMENT '权限名称',
+    module     VARCHAR(32)  NOT NULL COMMENT '所属模块',
+    created_at BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_sys_permission_code (code)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT '权限点定义';
+
+CREATE TABLE IF NOT EXISTS sys_role_permission
+(
+    role_id       BIGINT NOT NULL COMMENT '角色 id',
+    permission_id BIGINT NOT NULL COMMENT '权限点 id',
+    created_at    BIGINT NOT NULL COMMENT '关联建立时刻（epoch millis）',
+    PRIMARY KEY (role_id, permission_id),
+    KEY idx_sys_role_permission_permission (permission_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT '角色权限关联';
+
+INSERT INTO sys_permission (id, code, name, module, created_at)
+VALUES (1, 'sys:user:view', '查看用户', '用户管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (2, 'sys:user:create', '新增用户', '用户管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (3, 'sys:user:update', '编辑用户', '用户管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (4, 'sys:user:manage-status', '启用/禁用用户', '用户管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (5, 'sys:user:delete', '删除用户', '用户管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (6, 'sys:role:view', '查看角色', '角色管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (7, 'sys:role:manage-permission', '分配角色权限', '角色管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (8, 'sys:dept:view', '查看部门', '部门管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
+ON DUPLICATE KEY UPDATE name = VALUES(name), module = VALUES(module);
+
+INSERT INTO sys_role_permission (role_id, permission_id, created_at)
+SELECT 1, id, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 FROM sys_permission
+ON DUPLICATE KEY UPDATE created_at = VALUES(created_at);
