@@ -1,5 +1,6 @@
 import type { StreamEvent } from '../types/stream-event'
 import { jsonInit, request } from './http'
+import { clearToken, readToken } from './auth-token'
 
 export type ChatRequest = { message: string; conversationId?: string; modelId?: string; webSearchEnabled: boolean }
 export type HistoryTurn = { id: number; question: string; answer: string; think: string | null; timeline: string | null; createdAtMillis: number }
@@ -30,7 +31,16 @@ export function decodeSseFrame(frame: string): StreamEvent | null {
 }
 
 export async function* streamChat(body: ChatRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
-  const response = await fetch('/agent/v1/chat', { ...jsonInit(body), signal, headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' } })
+  const headers = new Headers({ Accept: 'text/event-stream', 'Content-Type': 'application/json' })
+  const token = readToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const response = await fetch('/agent/v1/chat', { ...jsonInit(body), signal, headers })
+  if (response.status === 401) {
+    clearToken()
+    if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      try { window.location.href = '/login' } catch { /* jsdom and embedded hosts may reject navigation */ }
+    }
+  }
   if (!response.ok || !response.body) throw new Error(await response.text() || '对话连接失败')
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''
   while (true) {
