@@ -12,10 +12,10 @@ public class InMemoryPptTaskStore implements PptTaskStore {
     private final AtomicLong idSequence = new AtomicLong(1);
 
     @Override
-    public long create(String conversationId, PptGenerationContext initialContext) {
+    public long create(String userId, String conversationId, PptGenerationContext initialContext) {
         long id = idSequence.getAndIncrement();
         long now = System.currentTimeMillis();
-        tasks.put(id, new PptTask(id, conversationId, PptState.INIT, null,
+        tasks.put(id, new PptTask(id, userId, conversationId, PptState.INIT, null,
                 PptContextJson.toJson(initialContext), now, now));
         return id;
     }
@@ -40,7 +40,7 @@ public class InMemoryPptTaskStore implements PptTaskStore {
             if (existing == null) {
                 throw new IllegalArgumentException("PPT 任务不存在: " + id);
             }
-            return new PptTask(id, existing.conversationId(), newState, null,
+            return new PptTask(id, existing.userId(), existing.conversationId(), newState, null,
                     PptContextJson.toJson(context), existing.createdAtMillis(), System.currentTimeMillis());
         });
     }
@@ -51,7 +51,7 @@ public class InMemoryPptTaskStore implements PptTaskStore {
             if (existing == null) {
                 throw new IllegalArgumentException("PPT 任务不存在: " + id);
             }
-            return new PptTask(id, existing.conversationId(), failedState, errorMsg,
+            return new PptTask(id, existing.userId(), existing.conversationId(), failedState, errorMsg,
                     existing.contextJson(), existing.createdAtMillis(), System.currentTimeMillis());
         });
     }

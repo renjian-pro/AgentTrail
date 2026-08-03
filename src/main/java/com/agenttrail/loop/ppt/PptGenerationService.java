@@ -61,17 +61,22 @@ public class PptGenerationService {
      *         可用于后续通过 {@link #run(long)} 恢复（如果这次没能跑到 SUCCESS）
      */
     public long create(String conversationId, String userMessage) {
+        return create("legacy", conversationId, userMessage);
+    }
+
+    /** HTTP 层使用的带归属入口；userId 在这里冻结，后续断点任务只接受同一归属。 */
+    public long create(String userId, String conversationId, String userMessage) {
         PptIntent intent = PptIntentRecognizer.recognize(userMessage);
         return switch (intent) {
-            case CREATE -> createNew(conversationId, userMessage);
-            case RESUME -> resumeExisting(conversationId);
-            case MODIFY -> modifyExisting(conversationId, userMessage);
+            case CREATE -> createNew(userId, conversationId, userMessage);
+            case RESUME -> resumeExisting(userId, conversationId);
+            case MODIFY -> modifyExisting(userId, conversationId, userMessage);
         };
     }
 
-    private long createNew(String conversationId, String userMessage) {
+    private long createNew(String userId, String conversationId, String userMessage) {
         PptGenerationContext initialContext = PptGenerationContext.initial(conversationId, userMessage);
-        long taskId = taskStore.create(conversationId, initialContext);
+        long taskId = taskStore.create(userId, conversationId, initialContext);
         run(taskId);
         return taskId;
     }
@@ -82,8 +87,8 @@ public class PptGenerationService {
      * 实现一套续传逻辑，{@code run(long)} 本身既是"第一次跑完"的执行体也是"断点恢复"的入口，
      * 这里只是补上"根据 conversationId 找到 taskId"这一步，调用方（聊天入口）不需要自己记 taskId。
      */
-    private long resumeExisting(String conversationId) {
-        PptTask existing = taskStore.findLatestByConversationId(conversationId)
+    private long resumeExisting(String userId, String conversationId) {
+        PptTask existing = taskStore.findLatestByConversationId(userId, conversationId)
                 .orElseThrow(() -> new IllegalStateException(
                         "会话 " + conversationId + " 下没有可以继续的 PPT 任务"));
         if (existing.status() == PptState.SUCCESS) {
@@ -103,8 +108,8 @@ public class PptGenerationService {
      * 每次 MODIFY 都新建一条任务，原始任务和历史修改记录都完整保留在 {@code ppt_generation_task}
      * 表里，不是原地覆盖。
      */
-    private long modifyExisting(String conversationId, String userMessage) {
-        PptTask existing = taskStore.findLatestByConversationId(conversationId)
+    private long modifyExisting(String userId, String conversationId, String userMessage) {
+        PptTask existing = taskStore.findLatestByConversationId(userId, conversationId)
                 .filter(task -> task.status() == PptState.SUCCESS)
                 .orElseThrow(() -> new IllegalStateException(
                         "会话 " + conversationId + " 下没有已经生成完成的 PPT，无法在其基础上修改"));
@@ -113,7 +118,7 @@ public class PptGenerationService {
                 previous.requirement(), previous.searchMaterials(), previous.templatePath(), previous.outline(),
                 previous.schema(), previous.outputPath());
 
-        long newTaskId = taskStore.create(conversationId, modifyContext);
+        long newTaskId = taskStore.create(userId, conversationId, modifyContext);
         // 新任务默认从 INIT 起步（taskStore.create 的固定行为），这里立即把 checkpoint 快进到
         // SCHEMA——INIT/REQUIREMENT/SEARCH/TEMPLATE/OUTLINE 都不需要真的执行一遍，这一行本身就是
         // "定位到已有记录、在其基础上改，不重新走完整流程"这条验收标准的具体落地。
@@ -153,9 +158,19 @@ public class PptGenerationService {
         }
     }
 
+    public void run(String userId, long taskId) {
+        taskStore.findById(userId, taskId)
+                .orElseThrow(() -> new java.util.NoSuchElementException("PPT 任务不存在: " + taskId));
+        run(taskId);
+    }
+
     /** 查询一条任务当前的持久化状态（HTTP 层展示用）——不驱动任何执行，纯读。 */
     public Optional<PptTask> describe(long taskId) {
         return taskStore.findById(taskId);
+    }
+
+    public Optional<PptTask> describe(String userId, long taskId) {
+        return taskStore.findById(userId, taskId);
     }
 
     /** 从任务当前的上下文快照里取出已产出的 pptx 路径；还没跑到 RENDER 完成时为 {@code null}。 */
@@ -165,6 +180,12 @@ public class PptGenerationService {
                 .map(PptContextJson::fromJson)
                 .map(PptGenerationContext::outputPath)
                 .orElse(null);
+    }
+
+    public String outputPathOf(String userId, long taskId) {
+        return taskStore.findById(userId, taskId)
+                .map(PptTask::contextJson).map(PptContextJson::fromJson)
+                .map(PptGenerationContext::outputPath).orElse(null);
     }
 
     private static PptState nextState(PptState current) {

@@ -19,12 +19,12 @@ public class JdbcPptTaskStore implements PptTaskStore {
 
     private static final String INSERT_SQL = """
             INSERT INTO ppt_generation_task
-                (conversation_id, status, error_msg, context_json, created_at, updated_at)
-            VALUES (?, ?, NULL, ?, ?, ?)
+                (user_id, conversation_id, status, error_msg, context_json, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, ?, ?, ?)
             """;
 
     private static final String SELECT_BY_ID_SQL = """
-            SELECT id, conversation_id, status, error_msg, context_json, created_at, updated_at
+            SELECT id, user_id, conversation_id, status, error_msg, context_json, created_at, updated_at
             FROM ppt_generation_task
             WHERE id = ?
             """;
@@ -32,7 +32,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
     // 按 id 倒序取第一条即"最新"——id 自增，比 created_at 更可靠（同毫秒内可能有并列），
     // 和 InMemoryPptTaskStore#findLatestByConversationId 用同一个排序口径，两个实现行为一致。
     private static final String SELECT_LATEST_BY_CONVERSATION_SQL = """
-            SELECT id, conversation_id, status, error_msg, context_json, created_at, updated_at
+            SELECT id, user_id, conversation_id, status, error_msg, context_json, created_at, updated_at
             FROM ppt_generation_task
             WHERE conversation_id = ?
             ORDER BY id DESC
@@ -58,10 +58,11 @@ public class JdbcPptTaskStore implements PptTaskStore {
     }
 
     @Override
-    public long create(String conversationId, PptGenerationContext initialContext) {
+    public long create(String userId, String conversationId, PptGenerationContext initialContext) {
         long now = System.currentTimeMillis();
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql(INSERT_SQL)
+                .param(userId)
                 .param(conversationId)
                 .param(PptState.INIT.name())
                 .param(PptContextJson.toJson(initialContext))
@@ -110,6 +111,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
     private static PptTask mapRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
         return new PptTask(
                 rs.getLong("id"),
+                rs.getString("user_id"),
                 rs.getString("conversation_id"),
                 PptState.valueOf(rs.getString("status")),
                 rs.getString("error_msg"),

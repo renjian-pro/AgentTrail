@@ -9,9 +9,17 @@ import java.util.Optional;
 public interface PptTaskStore {
 
     /** 创建一条新任务，初始状态固定是 {@link PptState#INIT}，返回生成的主键。 */
-    long create(String conversationId, PptGenerationContext initialContext);
+    default long create(String conversationId, PptGenerationContext initialContext) {
+        return create("legacy", conversationId, initialContext);
+    }
+
+    long create(String userId, String conversationId, PptGenerationContext initialContext);
 
     Optional<PptTask> findById(long id);
+
+    default Optional<PptTask> findById(String userId, long id) {
+        return findById(id).filter(task -> userId == null || userId.equals(task.userId()));
+    }
 
     /**
      * 按 conversationId 找该会话下最近一条任务（issue #32）——{@code MODIFY}/{@code RESUME} 两个
@@ -22,6 +30,11 @@ public interface PptTaskStore {
      * {@link PptGenerationService} 里的实现），取最新的这条才对。
      */
     Optional<PptTask> findLatestByConversationId(String conversationId);
+
+    default Optional<PptTask> findLatestByConversationId(String userId, String conversationId) {
+        return findLatestByConversationId(conversationId)
+                .filter(task -> userId == null || userId.equals(task.userId()));
+    }
 
     /**
      * 状态推进：调用方（{@link PptGenerationService}）只应该在 {@code newState}

@@ -5,6 +5,7 @@ import com.agenttrail.loop.deepresearch.DeepResearchService;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import cn.dev33.satoken.stp.StpUtil;
 
 import java.util.concurrent.TimeUnit;
 
@@ -30,17 +31,34 @@ public class DeepResearchController {
         try {
             DeepResearchReport report = deepResearchService.research(request.question());
             String answer = report.needsClarification() ? report.clarifyingQuestion() : report.report();
-            conversationService.recordSuccess(request.conversationId(), request.question(), answer,
-                    "research", report, elapsedMillis(startedAt));
+            String userId = currentUserId();
+            if (userId == null) {
+                conversationService.recordSuccess(request.conversationId(), request.question(), answer,
+                        "research", report, elapsedMillis(startedAt));
+            } else {
+                conversationService.recordSuccess(userId, request.conversationId(), request.question(), answer,
+                        "research", report, elapsedMillis(startedAt));
+            }
             return report;
         } catch (RuntimeException failure) {
-            conversationService.recordFailure(request.conversationId(), request.question(), "research",
-                    failure.getMessage(), elapsedMillis(startedAt));
+            String userId = currentUserId();
+            if (userId == null) {
+                conversationService.recordFailure(request.conversationId(), request.question(), "research",
+                        failure.getMessage(), elapsedMillis(startedAt));
+            } else {
+                conversationService.recordFailure(userId, request.conversationId(), request.question(), "research",
+                        failure.getMessage(), elapsedMillis(startedAt));
+            }
             throw failure;
         }
     }
 
     private static long elapsedMillis(long startedAt) {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+    }
+
+    private static String currentUserId() {
+        try { return StpUtil.isLogin() ? StpUtil.getLoginIdAsString() : null; }
+        catch (RuntimeException noHttpContext) { return null; }
     }
 }

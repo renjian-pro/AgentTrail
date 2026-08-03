@@ -12,6 +12,10 @@ package com.agenttrail.loop.ppt;
  *                    的 outline/schema 结构），整体存一段 JSON，参照 {@code agent_pause_state}
  *                    表已经验证过的取舍（拆列存储没有额外的查询收益）
  */
-public record PptTask(long id, String conversationId, PptState status, String errorMsg, String contextJson,
+public record PptTask(long id, String userId, String conversationId, PptState status, String errorMsg, String contextJson,
                        long createdAtMillis, long updatedAtMillis) {
+    public PptTask(long id, String conversationId, PptState status, String errorMsg, String contextJson,
+            long createdAtMillis, long updatedAtMillis) {
+        this(id, null, conversationId, status, errorMsg, contextJson, createdAtMillis, updatedAtMillis);
+    }
 }

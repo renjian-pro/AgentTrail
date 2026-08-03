@@ -34,6 +34,7 @@ package com.agenttrail.loop.file;
  */
 public record UploadedFile(
         Long id,
+        String userId,
         String conversationId,
         Long turnId,
         String fileName,
@@ -43,4 +44,11 @@ public record UploadedFile(
         String parsedText,
         byte[] rawBytes,
         long createdAtMillis) {
+
+    /** 兼容早期内存测试构造器；生产请求必须传入真实 userId。 */
+    public UploadedFile(Long id, String conversationId, Long turnId, String fileName, String contentType,
+            long sizeBytes, FileKind kind, String parsedText, byte[] rawBytes, long createdAtMillis) {
+        this(id, null, conversationId, turnId, fileName, contentType, sizeBytes, kind, parsedText, rawBytes,
+                createdAtMillis);
+    }
 }
