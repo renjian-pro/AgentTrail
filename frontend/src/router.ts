@@ -1,8 +1,33 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ChatView from './views/ChatView.vue'
+import LoginView from './views/LoginView.vue'
+import RoleListView from './views/RoleListView.vue'
+import UserManagementView from './views/UserManagementView.vue'
+import { TOKEN_KEY } from './api/auth-token'
+import { useAuthStore } from './stores/auth'
 
-/** 对话/文件问答/联网搜索/Deep Research/PPT 生成共用一个入口，不再分页面路由。 */
-export default createRouter({ history: createWebHistory(), routes: [
+const router = createRouter({ history: createWebHistory(), routes: [
   { path: '/', redirect: '/chat' },
-  { path: '/chat', component: ChatView }
+  { path: '/login', component: LoginView },
+  { path: '/chat', component: ChatView },
+  { path: '/roles', component: RoleListView },
+  { path: '/admin/users', component: UserManagementView, meta: { requiresAdmin: true } }
 ] })
+
+router.beforeEach(async to => {
+  if (to.path === '/login') return true
+  if (!localStorage.getItem(TOKEN_KEY)) return { path: '/login', query: { redirect: to.fullPath } }
+  const auth = useAuthStore()
+  if (!auth.currentUser) {
+    try {
+      await auth.fetchCurrentUser()
+    } catch {
+      auth.clearLocalSession()
+      return { path: '/login', query: { redirect: to.fullPath } }
+    }
+  }
+  if (to.meta.requiresAdmin && !auth.currentUser?.roles.includes('admin')) return { path: '/chat' }
+  return true
+})
+
+export default router
