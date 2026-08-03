@@ -4,6 +4,10 @@ import com.agenttrail.loop.model.AgentStreamEvent;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Sinks;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.IntStream;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
@@ -45,6 +49,19 @@ class EventSinksTest {
         EventSinks.emit(sink, SOME_EVENT);
 
         assertThatCode(() -> EventSinks.emit(sink, SOME_EVENT)).doesNotThrowAnyException();
+    }
+
+    /** DeepResearch 会让多个工具线程同时发事件；统一入口必须串行化发射，不能丢 FAIL_NON_SERIALIZED。 */
+    @Test
+    void serializesConcurrentEmittersInsteadOfDroppingTheirEvents() {
+        Sinks.Many<AgentStreamEvent> sink = EventSinks.bounded(512);
+        List<AgentStreamEvent> received = new CopyOnWriteArrayList<>();
+        sink.asFlux().subscribe(received::add);
+
+        IntStream.range(0, 200).parallel()
+                .forEach(index -> EventSinks.emit(sink, new AgentStreamEvent.Text("chunk-" + index)));
+
+        assertThat(received).hasSize(200);
     }
 
     /** @return 在第一次发射失败之前，成功发射了多少次；一直没失败则返回 {@link #PATIENCE}。 */

@@ -1,0 +1,67 @@
+# AgentTrail 安全默认值。真实地址、账号和密钥放在仓库根目录 application-local.yml。
+spring:
+  application:
+    name: AgentTrail
+  config:
+    import: optional:file:./application-local.yml
+  ai:
+    deepseek:
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-chat
+    openai:
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      chat:
+        options:
+          model: qwen-plus
+      embedding:
+        options:
+          model: text-embedding-v4
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema.sql
+  autoconfigure:
+    exclude: org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+
+tavily:
+  mcp-url: https://mcp.tavily.com/mcp/
+  timeout-seconds: 30
+  max-attempts: 2
+
+agenttrail:
+  pgvector:
+    maximum-pool-size: 4
+  multimodal:
+    model: qwen3-vl-plus
+  file:
+    rag-threshold-chars: 5000
+  mcp-echarts:
+    url: http://localhost:3033/mcp
+    timeout-seconds: 15
+    max-attempts: 2
+  minio:
+    bucket: agenttrail-charts
+  ppt:
+    python-executable: python
+    render-script-path: src/main/resources/ppt-scripts/render_ppt.py
+    template-path: src/main/resources/ppt-templates/default-template.pptx
+    output-dir: target/ppt-output
+    render-timeout-seconds: 60
+    model: deepseek-chat
+    image:
+      endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
+      model: qwen-image-plus
+      size: "1024*1024"
+      timeout-seconds: 60
+      minio-bucket: agenttrail-ppt-images
+  deepresearch:
+    model: qwen-plus
+    search-model: deepseek-chat
+    max-concurrent-tasks-per-layer: 3
+    max-tasks-per-plan: 20
+    max-task-retries: 2
+    max-critique-rounds: 3
+    context:
+      token-threshold: 60000

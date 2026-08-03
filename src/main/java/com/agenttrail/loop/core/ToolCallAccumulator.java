@@ -10,9 +10,10 @@ import java.util.Map;
  * 重组被流式拆散的工具调用（踩坑点 #1）。
  *
  * <p>厂商会把一次逻辑上的工具调用拆成多个 chunk 下发：第一个 chunk 带 {@code id}/{@code name}/
- * {@code type} 和参数 JSON 的开头一段，之后每个 chunk 只重复同一个 {@code id} 加上参数的下一段。
- * 这里按 id 匹配、纯字符串拼接，中间刻意不做任何 JSON 解析——因为半截参数必然不是合法 JSON，
- * 增量校验只会产生假警报。真正的校验放在整轮结束后，由 {@link ToolCallExecutor} 统一做。
+ * {@code type} 和参数 JSON 的开头一段，后续 chunk 可能重复 id，也可能按 OpenAI 协议省略 id。
+ * 这里按 id（省略时沿用当前活动调用）匹配、纯字符串拼接，中间刻意不做任何 JSON 解析——因为
+ * 半截参数必然不是合法 JSON，增量校验只会产生假警报。真正的校验放在整轮结束后，由
+ * {@link ToolCallExecutor} 统一做。
  *
  * <p>保留插入顺序，这样后续拼工具结果时能按模型请求的原始顺序回填——OpenAI 形状的协议要求
  * tool 响应与 tool_call 一一对应，顺序错了模型侧会错位关联。
@@ -24,14 +25,28 @@ class ToolCallAccumulator {
     /** 按工具调用 id 索引；用 {@link LinkedHashMap} 保住首次出现的顺序。 */
     private final Map<String, ToolCall> callsById = new LinkedHashMap<>();
 
+    /** 协议允许后续增量分片省略 id；单个活动调用时用它恢复归属。 */
+    private String activeCallId;
+
     /**
      * 把一个流式分片折叠进它所属的工具调用里，首次出现时创建。
      *
-     * <p>只有第一个分片带 {@code name} 和 {@code type}，后续分片这两个字段是 null，
-     * 因此两者都取"最先提供该字段的那个分片"的值。
+     * <p>只有第一个分片通常带 {@code name} 和 {@code type}，后续分片这两个字段是 null，
+     * 因此两者都取"最先提供该字段的那个分片"的值。若后续分片省略 {@code id}，它归入
+     * 最近一个带 id 的活动调用；若首个分片就没有 id，则无法安全关联，直接拒绝该轮。
      */
     void accept(ToolCall incoming) {
-        callsById.merge(incoming.id(), incoming, ToolCallAccumulator::join);
+        String id = incoming.id();
+        if (id == null || id.isBlank()) {
+            if (activeCallId == null) {
+                throw new IllegalArgumentException("工具调用首个分片缺少 id，无法重组参数");
+            }
+            id = activeCallId;
+            incoming = new ToolCall(id, incoming.type(), incoming.name(), incoming.arguments());
+        } else {
+            activeCallId = id;
+        }
+        callsById.merge(id, incoming, ToolCallAccumulator::join);
     }
 
     private static ToolCall join(ToolCall existing, ToolCall incoming) {

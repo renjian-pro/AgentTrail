@@ -13,8 +13,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * issue #29 验收标准："用真实的联网搜索跑通一次'给一个 PPT 主题 → 收集到真实资料 → 资料进入
- * 后续 OUTLINE 阶段'的流程"——真实 Tavily key（{@code secrets.properties} 里的
- * {@code TAVILY_API_KEY}）+ 真实 {@code deepseek-chat} 模型 key，不 mock 任何一环。
+ * 后续 OUTLINE 阶段'的流程"——本地 YAML 中的真实 Tavily key + 真实
+ * {@code deepseek-chat} 模型 key，不 mock 任何一环。
  *
  * <p>7 个状态端到端跑通已经由 {@code PptGenerationServiceIT} 覆盖（issue #24），并且从这一票起
  * 那份测试也顺带验证了真实联网搜索——{@link SearchStrategy} 现在总是真实调用 Tavily，不再有

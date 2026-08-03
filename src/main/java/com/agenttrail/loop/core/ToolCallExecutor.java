@@ -118,7 +118,16 @@ class ToolCallExecutor {
         String arguments = paramInjector.inject(sanitizeArguments(toolCall), tool.getToolDefinition());
         EventSinks.emit(sink, new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), arguments));
 
-        String result = tool.call(arguments);
+        String result;
+        try {
+            result = tool.call(arguments);
+        } catch (Exception failure) {
+            // MCP 超时、远端 5xx、参数校验异常都只是这一项工具调用失败。把错误作为
+            // ToolResponse 喂回模型，它才能换查询或基于已有资料继续；向外抛会取消整轮
+            // Flux，DeepResearch 并发任务还会进一步产生 onErrorDropped 噪音。
+            String detail = failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
+            result = errorPayload("tool execution failed: " + detail);
+        }
 
         EventSinks.emit(sink, new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
         // 用模型原始的 toolCall.arguments()，不是上面刚注入过系统参数的 arguments——进度快照要和

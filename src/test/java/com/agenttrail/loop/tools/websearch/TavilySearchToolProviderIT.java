@@ -1,6 +1,6 @@
 package com.agenttrail.loop.tools.websearch;
 
-import com.agenttrail.support.Secrets;
+import com.agenttrail.support.LocalConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -17,7 +17,7 @@ class TavilySearchToolProviderIT {
 
     @Test
     void fetchesRealSearchResultsFromTavily() {
-        String apiKey = Secrets.require("TAVILY_API_KEY");
+        String apiKey = LocalConfig.require("tavily.api-key");
         WebSearchResultParser parser = new TavilyWebSearchResultParser();
         TavilySearchToolProvider provider = new TavilySearchToolProvider(
                 "https://mcp.tavily.com/mcp/", apiKey, Duration.ofSeconds(20), 2, parser);
@@ -41,7 +41,7 @@ class TavilySearchToolProviderIT {
 
     @Test
     void toolCallbacksIsCachedAfterASuccessfulInitialization() {
-        String apiKey = Secrets.require("TAVILY_API_KEY");
+        String apiKey = LocalConfig.require("tavily.api-key");
         TavilySearchToolProvider provider = new TavilySearchToolProvider(
                 "https://mcp.tavily.com/mcp/", apiKey, Duration.ofSeconds(20), 2, new TavilyWebSearchResultParser());
 

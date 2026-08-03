@@ -1,11 +1,18 @@
 HELP.md
 target/
 
+### Generated frontend runtime and assets ###
+frontend/node_modules/
+frontend/.mvn-node/
+frontend/*.tsbuildinfo
+src/main/resources/static/
+
 ### Local application config and secrets — never commit ###
 src/main/resources/application.properties
-src/main/resources/application.yml
 src/main/resources/application.yaml
+application-local.yml
 secrets.properties
+.local-backup/
 .env
 .env.*
 !.env.example

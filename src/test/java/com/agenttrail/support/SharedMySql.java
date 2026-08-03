@@ -16,14 +16,14 @@ public final class SharedMySql {
     }
 
     public static String jdbcUrl() {
-        return Secrets.require("AGENTTRAIL_DB_URL");
+        return LocalConfig.require("spring.datasource.url");
     }
 
     public static String username() {
-        return Secrets.require("AGENTTRAIL_DB_USERNAME");
+        return LocalConfig.require("spring.datasource.username");
     }
 
     public static String password() {
-        return Secrets.require("AGENTTRAIL_DB_PASSWORD");
+        return LocalConfig.require("spring.datasource.password");
     }
 }

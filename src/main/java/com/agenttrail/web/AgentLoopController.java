@@ -1,13 +1,17 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.core.AgentCallException;
 import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
-import org.springframework.http.HttpStatus;
+import com.agenttrail.loop.task.AgentTaskManager;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.GetMapping;
+import reactor.core.publisher.Flux;
 
 import java.util.UUID;
 
@@ -15,15 +19,12 @@ import java.util.UUID;
  * V1 引擎（{@code loop.core.AgentLoopExecutor}）独立的 HTTP 入口——不复用 V0 的
  * {@link AgentController}/{@code /agent/chat}，两者互不影响。
  *
- * <p>先用同步的 {@link AgentLoopExecutor#call} 而不是流式 {@code stream()}：接口形状和 V0 的
- * {@code /agent/chat} 保持一致（同样是 {@link AgentChatRequest}/{@link AgentChatResponse}），
- * 便于先跑通装配这一步；要换成 SSE 推流，把返回类型换成 {@code Flux<AgentStreamEvent>}、
- * {@code produces = MediaType.TEXT_EVENT_STREAM_VALUE} 即可，不需要动 {@link AgentLoopExecutorConfig}
- * 里的装配。
+ * <p>这里直接订阅 {@link AgentLoopExecutor#stream} 返回的事件流并映射为 SSE。普通文本会逐段
+ * 推送；工具调用分片只在 Runtime 内部按 toolCallId 重组，完整一轮后再执行工具，不把半截
+ * arguments 暴露给浏览器。
  *
- * <p>这里没有落库、没有会话历史（{@link AgentLoopExecutorConfig} 没配 {@code persistenceHook}），
- * 所以每次请求各生成一个新的 conversationId 即可，不影响任何行为——多轮会话记忆是后续要接的机制，
- * 不是这个最小入口的范围。
+ * <p>普通对话、DeepResearch 和 PPT 共用 {@code agent_session} 会话事实源；请求传入已有
+ * {@code conversationId} 时继续追加同一会话，未传入时才创建新的会话标识。
  *
  * <p>请求体的 {@code modelId} 是可选的模型标识（issue #20），不传时 {@link AgentLoopExecutorFactory}
  * 落到默认模型（{@code qwen-plus}）。不支持同一会话中途换模型——调用方要在同一个会话里
@@ -33,20 +34,42 @@ import java.util.UUID;
 public class AgentLoopController {
 
     private final AgentLoopExecutorFactory executorFactory;
+    private final AgentTaskManager agentTaskManager;
+    private final ConversationHistoryService conversationHistoryService;
 
-    public AgentLoopController(AgentLoopExecutorFactory executorFactory) {
+    public AgentLoopController(AgentLoopExecutorFactory executorFactory, AgentTaskManager agentTaskManager,
+            ConversationHistoryService conversationHistoryService) {
         this.executorFactory = executorFactory;
+        this.agentTaskManager = agentTaskManager;
+        this.conversationHistoryService = conversationHistoryService;
     }
 
-    @PostMapping("/agent/v1/chat")
-    public AgentChatResponse chat(@RequestBody AgentChatRequest request) {
-        RunnableParams params = new RunnableParams(UUID.randomUUID().toString(), "anonymous");
-        try {
-            String answer = executorFactory.forModelWithCharts(request.modelId(), request.webSearchEnabled())
-                    .call(request.message(), params);
-            return new AgentChatResponse(answer);
-        } catch (AgentCallException failure) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, failure.getMessage(), failure);
-        }
+    @PostMapping(value = "/agent/v1/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<AgentStreamEvent>> chat(@RequestBody AgentChatRequest request) {
+        String conversationId = (request.conversationId() == null || request.conversationId().isBlank())
+                ? UUID.randomUUID().toString() : request.conversationId();
+        RunnableParams params = new RunnableParams(conversationId, "anonymous");
+        return executorFactory.forModelWithCharts(request.modelId(), request.webSearchEnabled())
+                .stream(request.message(), params)
+                .map(event -> ServerSentEvent.builder(event)
+                        .event(event.getClass().getSimpleName())
+                        .build());
+    }
+
+    @PostMapping("/agent/v1/chat/stop")
+    public StopChatResponse stop(@RequestParam String conversationId) {
+        return new StopChatResponse(conversationId, agentTaskManager.stopTask(conversationId));
+    }
+
+    @GetMapping("/agent/v1/conversations")
+    public ConversationPageResponse conversations(@RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return conversationHistoryService.findConversations(page, size);
+    }
+
+    @GetMapping("/agent/v1/conversations/{conversationId}/history")
+    public ConversationHistoryResponse history(@org.springframework.web.bind.annotation.PathVariable String conversationId,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return conversationHistoryService.findPage(conversationId, page, size);
     }
 }

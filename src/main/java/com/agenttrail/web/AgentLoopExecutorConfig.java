@@ -1,11 +1,14 @@
 package com.agenttrail.web;
 
 import com.agenttrail.loop.model.ThinkingMode;
+import com.agenttrail.loop.persistence.JdbcSessionStore;
+import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilyWebSearchResultParser;
 import com.agenttrail.loop.tools.websearch.WebSearchResultParser;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,6 +17,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
 import java.util.List;
+import javax.sql.DataSource;
 
 /**
  * V1 引擎（{@code loop.core.AgentLoopExecutor}）的生产装配——issue #20 起不再是单一模型的单例，
@@ -27,11 +31,21 @@ import java.util.List;
  * 图表生成工具（mcp-echarts，streamable-HTTP，见 {@link AgentLoopExecutorFactory#forModelWithCharts}）——
  * 和联网搜索不同，图表生成没有按对话开关的必要，{@code AgentLoopController} 统一挂载。
  *
- * <p>这里仍然只接了裸引擎——没暂停恢复/追踪审计/分层记忆/文件问答，见
- * {@code docs/architecture.md} 第四节的扩展模式。
+ * <p>当前装配已接入会话持久化、联网搜索和图表工具；暂停恢复、追踪审计、分层记忆和文件问答
+ * 仍按场景作为可选机制扩展，见 {@code docs/architecture.md} 第四节。
  */
 @Configuration
 public class AgentLoopExecutorConfig {
+
+    /**
+     * 当前工程使用的是精简 MVC starter，不依赖 JSON starter 的隐式自动装配。
+     * 统一历史要把能力结果写为时间线 JSON，因此这里显式提供唯一的序列化器，避免应用在
+     * CapabilityConversationService 创建前就因缺 Bean 失败。
+     */
+    @Bean
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper();
+    }
 
     /** 会话单飞注册必须全局共享一份，不能每个模型各建一份，否则同一会话换模型问单飞检测会失效。 */
     @Bean
@@ -42,6 +56,24 @@ public class AgentLoopExecutorConfig {
     @Bean
     public WebSearchResultParser webSearchResultParser() {
         return new TavilyWebSearchResultParser();
+    }
+
+    /** V1 对话的短期历史和单轮落库共用同一实现，避免读写两套会话语义发生漂移。 */
+    @Bean
+    public TurnPersistenceHook turnPersistenceHook(DataSource dataSource) {
+        return new JdbcSessionStore(dataSource);
+    }
+
+    @Bean
+    public ConversationHistoryService conversationHistoryService(DataSource dataSource) {
+        return new ConversationHistoryService(dataSource);
+    }
+
+    /** 对话、DeepResearch、PPT 共用 agent_session，不维护互相漂移的多套历史。 */
+    @Bean
+    public CapabilityConversationService capabilityConversationService(
+            TurnPersistenceHook turnPersistenceHook, ObjectMapper objectMapper) {
+        return new CapabilityConversationService(turnPersistenceHook, objectMapper);
     }
 
     /**
@@ -81,12 +113,13 @@ public class AgentLoopExecutorConfig {
             @Qualifier("openAiChatModel") ChatModel qwenChatModel,
             AgentTaskManager agentTaskManager,
             TavilySearchToolProvider tavilySearchToolProvider,
-            ChartToolProvider chartToolProvider) {
+            ChartToolProvider chartToolProvider,
+            TurnPersistenceHook turnPersistenceHook) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
-                // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DASHSCOPE_API_KEY 到位后要实测校正
+                // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
                 new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
         return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider,
-                chartToolProvider);
+                chartToolProvider, turnPersistenceHook);
     }
 }

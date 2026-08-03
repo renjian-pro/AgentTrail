@@ -1,7 +1,7 @@
 package com.agenttrail.loop.tools.chart;
 
 import com.agenttrail.loop.context.ContextPolicy;
-import com.agenttrail.support.Secrets;
+import com.agenttrail.support.LocalConfig;
 import io.minio.MinioClient;
 import io.minio.StatObjectArgs;
 import org.junit.jupiter.api.Test;
@@ -24,18 +24,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 要用 MinIO 官方 SDK 独立核实一遍。
  *
  * <p>依赖本机已经启动并配置好的 MinIO 与 mcp-echarts streamable-HTTP 实例；连接地址、
- * 凭据和 bucket 全部从 {@code secrets.properties} 或环境变量读取。
+ * 凭据和 bucket 全部从 {@code application-local.yml} 或环境变量读取。
  * bucket 需要提前建好并设置公开可读策略（mcp-echarts 自己不会建 bucket）。这不是这个测试类
  * 自己起的进程——和 {@code TavilySearchToolProviderIT} 依赖真实 Tavily 服务是同一个道理，
  * 本地没有起这个进程时这个测试会失败，不是这个类的 bug。
  */
 class ChartToolProviderIT {
 
-    private static final String MCP_URL = Secrets.require("MCP_ECHARTS_URL");
-    private static final String MINIO_ENDPOINT = Secrets.require("AGENTTRAIL_MINIO_ENDPOINT");
-    private static final String MINIO_ACCESS_KEY = Secrets.require("AGENTTRAIL_MINIO_ACCESS_KEY");
-    private static final String MINIO_SECRET_KEY = Secrets.require("AGENTTRAIL_MINIO_SECRET_KEY");
-    private static final String MINIO_BUCKET = Secrets.require("AGENTTRAIL_MINIO_BUCKET");
+    private static final String MCP_URL = LocalConfig.require("agenttrail.mcp-echarts.url");
+    private static final String MINIO_ENDPOINT = LocalConfig.require("agenttrail.minio.endpoint");
+    private static final String MINIO_ACCESS_KEY = LocalConfig.require("agenttrail.minio.access-key");
+    private static final String MINIO_SECRET_KEY = LocalConfig.require("agenttrail.minio.secret-key");
+    private static final String MINIO_BUCKET = LocalConfig.require("agenttrail.minio.bucket");
 
     @Test
     void generatesARealChartAndUploadsItToMinioReturningAnAccessibleUrl() throws Exception {

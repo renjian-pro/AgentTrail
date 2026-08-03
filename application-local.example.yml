@@ -1,0 +1,26 @@
+# 复制为 application-local.yml，只填写本机实际使用的能力；该文件已被 Git 忽略。
+spring:
+  ai:
+    deepseek:
+      api-key: ""
+    openai:
+      api-key: ""
+  datasource:
+    url: ""
+    username: ""
+    password: ""
+
+tavily:
+  api-key: ""
+
+agenttrail:
+  pgvector:
+    url: ""
+    username: ""
+    password: ""
+  minio:
+    endpoint: ""
+    access-key: ""
+    secret-key: ""
+  skills:
+    directory: ""

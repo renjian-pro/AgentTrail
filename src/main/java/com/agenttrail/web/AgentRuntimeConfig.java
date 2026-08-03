@@ -12,9 +12,9 @@ public class AgentRuntimeConfig {
 
     @Bean
     public AgentRuntime agentRuntime(
-            @Value("${deepseek.api-key}") String apiKey,
-            @Value("${deepseek.base-url}") String baseUrl,
-            @Value("${deepseek.model}") String model) {
+            @Value("${spring.ai.deepseek.api-key}") String apiKey,
+            @Value("${spring.ai.deepseek.base-url}") String baseUrl,
+            @Value("${spring.ai.deepseek.chat.options.model}") String model) {
         return new AgentScopeRuntime(apiKey, baseUrl, model, 5);
     }
 }

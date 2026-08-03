@@ -34,6 +34,16 @@ class AgentLoopExecutorFactoryTest {
                 new TavilyWebSearchResultParser());
     }
 
+    private static TavilySearchToolProvider fakeSearchProvider(String toolName) {
+        return new TavilySearchToolProvider("unused", "unused", Duration.ofMillis(1), 1,
+                new TavilyWebSearchResultParser()) {
+            @Override
+            public List<ToolCallback> toolCallbacks() {
+                return List.of(new RecordingToolCallback(toolName, "fake search", "search result"));
+            }
+        };
+    }
+
     /** 指向一个本机大概率没有监听的端口，短超时 + 单次尝试，快速失败走降级路径，不需要真的连 mcp-echarts。 */
     private static ChartToolProvider degradedChartProvider() {
         return new ChartToolProvider("http://localhost:1/mcp", Duration.ofMillis(200), 1);
@@ -163,6 +173,19 @@ class AgentLoopExecutorFactoryTest {
     }
 
     @Test
+    void routesQwenWebSearchThroughTheNativeCompatibleModelBeforeToolChunksReachOpenAiSdk() {
+        ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), fakeSearchProvider("web_search"));
+
+        String answer = factory.forModel("qwen-plus", true).call("hi", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(answer).isEqualTo("from deepseek");
+        assertThat(qwen.roundCount()).isZero();
+    }
+
+    @Test
     void forModelWithChartsDegradesToThePlainExecutorWhenNoChartProviderIsConfigured() {
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
@@ -200,4 +223,19 @@ class AgentLoopExecutorFactoryTest {
         assertThat(withCharts).as("第二次调用应该命中缓存")
                 .isSameAs(factory.forModelWithCharts("qwen-plus", false));
     }
+
+    @Test
+    void routesQwenChartConversationsThroughTheNativeCompatibleModelToo() {
+        ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null, fakeChartProvider("chart"));
+
+        String answer = factory.forModelWithCharts("qwen-plus", false)
+                .call("hi", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(answer).isEqualTo("from deepseek");
+        assertThat(qwen.roundCount()).isZero();
+    }
+
 }

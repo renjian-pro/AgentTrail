@@ -37,7 +37,13 @@ final class EventSinks {
     }
 
     static void emit(Sinks.Many<AgentStreamEvent> sink, AgentStreamEvent event) {
-        Sinks.EmitResult result = sink.tryEmitNext(event);
+        // ToolCallExecutor 会并发执行同一轮的多个工具；Reactor sink 拒绝并发的 tryEmitNext，
+        // 直接调用会得到 FAIL_NON_SERIALIZED 并静默丢事件。以 sink 自身作为细粒度锁，只串行化
+        // 极短的入队动作，不会把真正耗时的工具调用串行化。
+        Sinks.EmitResult result;
+        synchronized (sink) {
+            result = sink.tryEmitNext(event);
+        }
         if (result.isFailure()) {
             log.warn("事件发射失败（{}），事件被丢弃: {}", result, event);
         }
