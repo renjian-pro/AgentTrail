@@ -12,7 +12,9 @@ export async function request<T>(input: RequestInfo, init?: RequestInit): Promis
     }
   }
   if (!response.ok) throw new Error(await responseErrorMessage(response) || `Request failed (${response.status})`)
-  return response.json() as Promise<T>
+  if (response.status === 204) return undefined as T
+  const body = await response.text()
+  return (body ? JSON.parse(body) : undefined) as T
 }
 
 export function jsonInit(body: unknown): RequestInit {
