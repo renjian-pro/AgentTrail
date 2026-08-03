@@ -4,8 +4,8 @@ import com.agenttrail.loop.ppt.PptContentSlideFill;
 import com.agenttrail.loop.ppt.PptGenerationContext;
 import com.agenttrail.loop.ppt.PptRequirement;
 import com.agenttrail.loop.ppt.PptSchema;
+import com.agenttrail.support.LocalConfig;
 import com.agenttrail.support.SharedMySql;
-import com.agenttrail.support.Secrets;
 import io.minio.MinioClient;
 import io.minio.StatObjectArgs;
 import org.junit.jupiter.api.Test;
@@ -24,8 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * issue #31 验收标准第三条："用真实的文生图 API key 和真实的 MinIO 实例跑通一次'生图→立即转存→
- * PPT 里正确引用'的完整流程"——真实 DashScope {@code qwen-image-plus}（{@code secrets.properties}
- * 里已有的 {@code DASHSCOPE_API_KEY}，issue #20/#27 同一个账号，不是新申请的 key）+ 真实
+ * PPT 里正确引用'的完整流程"——真实 DashScope {@code qwen-image-plus}（本地 YAML 中的
+ * Spring AI OpenAI 兼容配置，issue #20/#27 同一个账号）+ 真实
  * 本机 MinIO 容器，不 mock 任何一环。连接地址和凭据只从本地配置读取。
  *
  * <p>只单独跑 {@link ImageStrategy} 这一个状态（而不是走 {@code PptGenerationServiceIT} 那种
@@ -44,10 +44,10 @@ class ImageStrategyIT {
         registry.add("spring.datasource.password", SharedMySql::password);
     }
 
-    private static final String MINIO_ENDPOINT = Secrets.require("AGENTTRAIL_MINIO_ENDPOINT");
-    private static final String MINIO_ACCESS_KEY = Secrets.require("AGENTTRAIL_MINIO_ACCESS_KEY");
-    private static final String MINIO_SECRET_KEY = Secrets.require("AGENTTRAIL_MINIO_SECRET_KEY");
-    private static final String MINIO_BUCKET = Secrets.require("AGENTTRAIL_PPT_IMAGE_MINIO_BUCKET");
+    private static final String MINIO_ENDPOINT = LocalConfig.require("agenttrail.minio.endpoint");
+    private static final String MINIO_ACCESS_KEY = LocalConfig.require("agenttrail.minio.access-key");
+    private static final String MINIO_SECRET_KEY = LocalConfig.require("agenttrail.minio.secret-key");
+    private static final String MINIO_BUCKET = LocalConfig.require("agenttrail.ppt.image.minio-bucket");
 
     @Autowired
     private ImageStrategy imageStrategy;
@@ -67,7 +67,7 @@ class ImageStrategyIT {
         String coverImageUrl = result.schema().coverImageUrl();
         assertThat(coverImageUrl)
                 .as("配图成功时 schema 必须真的多出一个 coverImageUrl——失败时才允许是 null，" +
-                        "如果这个断言失败，很可能是 DASHSCOPE_API_KEY 没配或者 MinIO 没起，不是代码逻辑错")
+                        "如果这个断言失败，很可能是 spring.ai.openai.api-key 没配或者 MinIO 没起，不是代码逻辑错")
                 .isNotBlank();
         assertThat(coverImageUrl)
                 .as("持久化引用必须是自建 MinIO 的 URL，不能是 DashScope 返回的临时链接")

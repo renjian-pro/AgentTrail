@@ -22,9 +22,10 @@ class AgentLoopExecutorTest {
                 .collectList()
                 .block(Duration.ofSeconds(5));
 
-        assertThat(events).hasSize(2);
-        assertThat(events.get(0)).isEqualTo(new AgentStreamEvent.Text("hello world"));
-        assertThat(events.get(1)).isEqualTo(new AgentStreamEvent.Complete("conv-1", null));
+        assertThat(events).hasSize(3);
+        assertThat(events.get(0)).isEqualTo(new AgentStreamEvent.AgentStart("conv-1"));
+        assertThat(events.get(1)).isEqualTo(new AgentStreamEvent.Text("hello world"));
+        assertThat(events.get(2)).isEqualTo(new AgentStreamEvent.Complete("conv-1", null));
         assertThat(chatModel.roundCount()).isEqualTo(1);
     }
 }

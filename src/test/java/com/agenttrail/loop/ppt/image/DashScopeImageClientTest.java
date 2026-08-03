@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link HttpServer} 起一个 stub，脚本化返回体，锁定"请求怎么发、返回体怎么解析"这条契约：
  * 真实文档核实的接口形状见类注释——{@code output.choices[0].message.content[0].image}，
  * 这里用手写的响应体固定住这条解析路径，不依赖真实网络请求（真实网络请求见 issue #31 的
- * IT 测试，需要真实 DASHSCOPE_API_KEY）。
+ * IT 测试，需要本地配置真实的 {@code spring.ai.openai.api-key}）。
  */
 class DashScopeImageClientTest {
 
@@ -77,7 +77,7 @@ class DashScopeImageClientTest {
 
         assertThatThrownBy(() -> client.generateImageUrl("一只猫"))
                 .isInstanceOf(PptImageException.class)
-                .hasMessageContaining("DASHSCOPE_API_KEY");
+                .hasMessageContaining("spring.ai.openai.api-key");
     }
 
     @Test

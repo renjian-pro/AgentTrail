@@ -49,7 +49,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 手写 ReAct 循环：一轮 = 一次流式模型调用 +（如果模型要调工具）一批工具执行 + 递归进入下一轮。
+ * 手写 ReAct 循环：一轮 = 一次流式模型调用 +（如果模型要调工具）一批并行工具执行 + 递归进入下一轮。
  *
  * <p>终止条件只有一个——某一轮从头到尾没有出现工具调用，那一轮的文本就是最终答案。
  * 不依赖模型自报"我说完了"这类约定，因为那属于"提示词当契约"，模型不遵守时无法兜底。
@@ -343,6 +343,7 @@ public class AgentLoopExecutor {
 
         RunContext context = new RunContext(question, params, messages, sink, new AtomicInteger(0),
                 System.currentTimeMillis(), toolSearchSession, mdcSnapshot);
+        context.emit(new AgentStreamEvent.AgentStart(params.conversationId()));
         stageOutputManager.afterStart(new StageContext(question, null, params), context::emit);
         scheduleRound(context);
         return sink.asFlux();
@@ -395,7 +396,7 @@ public class AgentLoopExecutor {
     }
 
     /**
-     * 调度一轮：发起流式请求，边收边攒，流结束后再决定"收尾"还是"执行工具并进入下一轮"。
+     * 调度一轮：发起流式请求，边收边攒，流结束后再决定“收尾”还是“执行工具并进入下一轮”。
      *
      * <p>之所以要等整个流结束才决策，是因为一轮的性质（文本轮 / 工具调用轮）在流跑完之前
      * 是不确定的，详见 {@link RoundState}。
@@ -416,14 +417,14 @@ public class AgentLoopExecutor {
         Disposable subscription = llmInvoker.streamRound(context.messages(), roundTools)
                 // 真实的 HTTP ChatModel（Reactor Netty 实现）在自己的 I/O 线程上信号 onComplete——
                 // finishRound 出现工具调用时会走到 ToolCallExecutor.execute() 内部的 .block()，
-                // 直接卡在 I/O 线程上会被 Reactor 的非阻塞线程检查拒绝
-                // （IllegalStateException: block()... not supported in thread reactor-http-nio-*）。
-                // 挂 ScriptedChatModel 的测试从没触发过这条检查——它不是真的 Reactor Netty 实现，
-                // 这个坑只有接真实模型 + 真实工具调用同时发生才会暴露。
+                // 直接卡在 I/O 线程上会被 Reactor 的非阻塞线程检查拒绝；统一切换到弹性线程。
                 .publishOn(Schedulers.boundedElastic())
                 .doOnNext(chunk -> processChunk(chunk, state, context))
                 .doOnComplete(() -> finishRound(state, context, requestSnapshot))
                 .doOnError(error -> failRun(error, context, state, requestSnapshot))
+                // failRun 已把异常转成协议内的 Error + Complete；继续把 error 冒给无 error consumer 的
+                // subscribe 只会制造 onErrorDropped 噪声，且前端不会得到任何额外信息。
+                .onErrorComplete()
                 .subscribe();
 
         // 每轮都要重新登记，否则停止请求作用在上一轮早已结束的订阅上（踩坑点 #9）

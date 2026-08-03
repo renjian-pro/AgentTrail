@@ -61,7 +61,7 @@ public class PptGenerationConfig {
     @Bean
     public RequirementStrategy pptRequirementStrategy(AgentLoopExecutorFactory executorFactory,
             @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new RequirementStrategy(executorFactory.forModel(modelId, false));
+        return new RequirementStrategy(executorFactory.forInternalOrchestration(modelId, false));
     }
 
     /**
@@ -74,7 +74,7 @@ public class PptGenerationConfig {
     @Bean
     public SearchStrategy pptSearchStrategy(AgentLoopExecutorFactory executorFactory,
             @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new SearchStrategy(executorFactory.forModel(modelId, true));
+        return new SearchStrategy(executorFactory.forInternalOrchestration(modelId, true));
     }
 
     @Bean
@@ -87,13 +87,13 @@ public class PptGenerationConfig {
     @Bean
     public OutlineStrategy pptOutlineStrategy(AgentLoopExecutorFactory executorFactory,
             @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new OutlineStrategy(executorFactory.forModel(modelId, false));
+        return new OutlineStrategy(executorFactory.forInternalOrchestration(modelId, false));
     }
 
     @Bean
     public SchemaStrategy pptSchemaStrategy(AgentLoopExecutorFactory executorFactory,
             @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new SchemaStrategy(executorFactory.forModel(modelId, false));
+        return new SchemaStrategy(executorFactory.forInternalOrchestration(modelId, false));
     }
 
     @Bean
@@ -104,13 +104,13 @@ public class PptGenerationConfig {
 
     /**
      * 文生图 API 客户端（issue #31）——DashScope {@code qwen-image-plus}，直接 REST 调用（接口契约
-     * 见 {@link DashScopeImageClient} 类注释），复用同一个 {@code DASHSCOPE_API_KEY}（issue #20
+     * 见 {@link DashScopeImageClient} 类注释），复用同一个 DashScope API Key（issue #20
      * 多模型路由/issue #27 图片多模态问答已经在用的同一个 DashScope 账号，不是新申请的 key）。
      */
     @Bean
     public TextToImageClient pptTextToImageClient(
             @Value("${agenttrail.ppt.image.endpoint}") String endpoint,
-            @Value("${agenttrail.ppt.image.api-key}") String apiKey,
+            @Value("${spring.ai.openai.api-key}") String apiKey,
             @Value("${agenttrail.ppt.image.model}") String model,
             @Value("${agenttrail.ppt.image.size}") String size,
             @Value("${agenttrail.ppt.image.timeout-seconds}") long timeoutSeconds) {
@@ -120,13 +120,13 @@ public class PptGenerationConfig {
     /**
      * 配图立即转存 MinIO（issue #31）——独立的 {@code agenttrail-ppt-images} bucket，和 issue #23
      * 图表的 {@code agenttrail-charts} bucket 同一个"共享 MinIO 实例、各功能各自一份 bucket"约定，
-     * 复用同一套 {@code AGENTTRAIL_MINIO_*} 环境变量（同一个 {@code llmentor-minio} 容器）。
+     * 复用同一套 {@code agenttrail.minio.*} 连接配置。
      */
     @Bean
     public PptImageStore pptImageStore(
-            @Value("${agenttrail.ppt.image.minio-endpoint}") String endpoint,
-            @Value("${agenttrail.ppt.image.minio-access-key}") String accessKey,
-            @Value("${agenttrail.ppt.image.minio-secret-key}") String secretKey,
+            @Value("${agenttrail.minio.endpoint}") String endpoint,
+            @Value("${agenttrail.minio.access-key}") String accessKey,
+            @Value("${agenttrail.minio.secret-key}") String secretKey,
             @Value("${agenttrail.ppt.image.minio-bucket}") String bucket,
             @Value("${agenttrail.ppt.image.timeout-seconds}") long timeoutSeconds) {
         return new MinioPptImageStore(endpoint, accessKey, secretKey, bucket, Duration.ofSeconds(timeoutSeconds));

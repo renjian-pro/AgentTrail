@@ -73,6 +73,21 @@ class ToolCallExecutorTest {
                 .asString().contains("does-not-exist");
     }
 
+    /** 外部 MCP 超时也是工具失败，必须作为结果喂回模型，不能炸掉整条 Agent 流。 */
+    @Test
+    void reportsToolExceptionsAsToolResultsRatherThanFailingTheAgentStream() {
+        RecordingToolCallback timeout = new RecordingToolCallback("search", "times out", arguments -> {
+            throw new IllegalStateException("upstream timed out after 30s");
+        });
+        ToolCallExecutor executor = new ToolCallExecutor(List.of(timeout));
+
+        List<ToolResponse> responses = executor.execute(
+                List.of(call("call-1", "search", "{}")), sink, NO_INJECTION);
+
+        assertThat(responses).singleElement().extracting(ToolResponse::responseData)
+                .asString().contains("error", "upstream timed out after 30s");
+    }
+
     /**
      * 一轮里的多个工具并发执行，但结果必须按模型请求的原始顺序拼回——
      * OpenAI 形状的协议要求 tool 响应与 tool_call 一一对应，顺序错了模型侧会错位关联。

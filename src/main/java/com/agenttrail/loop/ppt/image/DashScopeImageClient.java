@@ -48,7 +48,7 @@ public class DashScopeImageClient implements TextToImageClient {
     @Override
     public String generateImageUrl(String prompt) {
         if (apiKey == null || apiKey.isBlank()) {
-            throw new PptImageException("DASHSCOPE_API_KEY 未配置，无法调用文生图 API");
+            throw new PptImageException("spring.ai.openai.api-key 未配置，无法调用文生图 API");
         }
         HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint))
                 .timeout(timeout)

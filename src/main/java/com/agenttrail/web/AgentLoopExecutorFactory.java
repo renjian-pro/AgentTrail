@@ -2,6 +2,7 @@ package com.agenttrail.web;
 
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
@@ -31,6 +32,9 @@ import java.util.stream.Collectors;
  */
 public class AgentLoopExecutorFactory {
 
+    private static final String QWEN_PLUS = "qwen-plus";
+    private static final String TOOL_CALLING_COMPATIBLE_MODEL = "deepseek-chat";
+
     private final Map<String, RegisteredModel> modelsById;
     private final Map<String, AgentLoopExecutor> plainExecutorsByModelId;
     private final Map<String, AgentLoopExecutor> webSearchExecutorsByModelId = new ConcurrentHashMap<>();
@@ -42,6 +46,7 @@ public class AgentLoopExecutorFactory {
     private final TavilySearchToolProvider webSearchToolProvider;
     /** 传 null 表示这套装配完全不提供图表生成——{@link #forModelWithCharts} 时静默退化成不带图表。 */
     private final ChartToolProvider chartToolProvider;
+    private final TurnPersistenceHook persistenceHook;
 
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider) {
@@ -51,6 +56,12 @@ public class AgentLoopExecutorFactory {
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
             ChartToolProvider chartToolProvider) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, null);
+    }
+
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook) {
         if (models.stream().noneMatch(model -> model.id().equals(defaultModelId))) {
             throw new IllegalArgumentException("默认模型 " + defaultModelId + " 不在注册的模型列表里");
         }
@@ -62,15 +73,28 @@ public class AgentLoopExecutorFactory {
         this.taskManager = taskManager;
         this.webSearchToolProvider = webSearchToolProvider;
         this.chartToolProvider = chartToolProvider;
+        this.persistenceHook = persistenceHook;
         this.plainExecutorsByModelId = models.stream().collect(Collectors.toMap(
                 RegisteredModel::id,
-                model -> buildExecutor(model, List.of(), null)));
+                model -> buildExecutor(model, List.of(), null, true)));
     }
 
     private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy) {
+        return buildExecutor(model, tools, contextPolicy, true);
+    }
+
+    /**
+     * @param persist 是否挂 {@link #persistenceHook}——{@code false} 用于 DeepResearch 这类内部编排
+     *                （critique/plan/summarize 等子调用）：它们不是用户在应用层面发起的一轮对话，
+     *                落进 {@code agent_session} 只会把会话历史侧栏污染成一堆内部子提示词
+     *                （见 {@link #forInternalOrchestration}）。
+     */
+    private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy,
+            boolean persist) {
         AgentLoopExecutor.Builder builder = AgentLoopExecutor.builder(model.chatModel(), tools, 10)
                 .taskManager(taskManager)
-                .thinkingMode(model.thinkingMode());
+                .thinkingMode(model.thinkingMode())
+                .persistenceHook(persist ? persistenceHook : null);
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
         }
@@ -93,21 +117,22 @@ public class AgentLoopExecutorFactory {
             return requireExecutor(plainExecutorsByModelId, resolvedId);
         }
 
-        AgentLoopExecutor cached = webSearchExecutorsByModelId.get(resolvedId);
+        List<ToolCallback> webSearchTools = webSearchToolProvider.toolCallbacks();
+        String effectiveModelId = resolveToolCallingModel(resolvedId, !webSearchTools.isEmpty());
+        AgentLoopExecutor cached = webSearchExecutorsByModelId.get(effectiveModelId);
         if (cached != null) {
             return cached;
         }
 
-        List<ToolCallback> webSearchTools = webSearchToolProvider.toolCallbacks();
-        RegisteredModel model = modelsById.get(resolvedId);
+        RegisteredModel model = modelsById.get(effectiveModelId);
         if (model == null) {
-            throw new IllegalArgumentException("未知的模型标识: " + resolvedId);
+            throw new IllegalArgumentException("未知的模型标识: " + effectiveModelId);
         }
         AgentLoopExecutor executor = buildExecutor(model, webSearchTools, null);
         // 只缓存"搜索工具真的挂上了"的结果——如果这次是降级（工具列表为空），
         // 不缓存，让下一次请求有机会在 Tavily 恢复后重新拿到一个真正带搜索的执行器
         if (!webSearchTools.isEmpty()) {
-            webSearchExecutorsByModelId.put(resolvedId, executor);
+            webSearchExecutorsByModelId.put(effectiveModelId, executor);
         }
         return executor;
     }
@@ -132,20 +157,21 @@ public class AgentLoopExecutorFactory {
         }
 
         String resolvedId = resolve(modelId);
-        String cacheKey = resolvedId + "|" + webSearchEnabled;
+        List<ToolCallback> webSearchTools = (webSearchEnabled && webSearchToolProvider != null)
+                ? webSearchToolProvider.toolCallbacks() : List.of();
+        List<ToolCallback> tools = new ArrayList<>(webSearchTools);
+        tools.addAll(chartTools);
+        String effectiveModelId = resolveToolCallingModel(resolvedId, !tools.isEmpty());
+        String cacheKey = effectiveModelId + "|" + webSearchEnabled;
         AgentLoopExecutor cached = chartExecutorsByKey.get(cacheKey);
         if (cached != null) {
             return cached;
         }
 
-        RegisteredModel model = modelsById.get(resolvedId);
+        RegisteredModel model = modelsById.get(effectiveModelId);
         if (model == null) {
-            throw new IllegalArgumentException("未知的模型标识: " + resolvedId);
+            throw new IllegalArgumentException("未知的模型标识: " + effectiveModelId);
         }
-        List<ToolCallback> webSearchTools = (webSearchEnabled && webSearchToolProvider != null)
-                ? webSearchToolProvider.toolCallbacks() : List.of();
-        List<ToolCallback> tools = new ArrayList<>(webSearchTools);
-        tools.addAll(chartTools);
 
         ContextPolicy contextPolicy = ContextPolicy.builder()
                 .protectedTools(chartTools.stream().map(tool -> tool.getToolDefinition().name()).toArray(String[]::new))
@@ -154,6 +180,26 @@ public class AgentLoopExecutorFactory {
         // 图表工具非空才缓存——理由和上面 webSearch 分支一致：一次降级不该锁死后续所有请求
         chartExecutorsByKey.put(cacheKey, executor);
         return executor;
+    }
+
+    /**
+     * 给 DeepResearch 这类"内部会自己反复调用 ReAct 循环，但每次调用都不是用户发起的一轮对话"
+     * 的编排逻辑用——不缓存（调用方通常只在装配阶段调一次并自己持有引用），不挂
+     * {@link #persistenceHook}。如果复用 {@link #forModel} 系列返回的执行器，DeepResearch 内部
+     * 的 critique/plan/summarize 每个子调用都会各自生成一个随机 conversationId 落进
+     * {@code agent_session}，把面向用户的会话历史侧栏污染成一堆内部子提示词（曾经真实发生过，
+     * 一次 DeepResearch 请求能在 {@code agent_session} 里留下十几条几千到上万字的垃圾行）。
+     */
+    public AgentLoopExecutor forInternalOrchestration(String modelId, boolean webSearchEnabled) {
+        String resolvedId = resolve(modelId);
+        List<ToolCallback> tools = (webSearchEnabled && webSearchToolProvider != null)
+                ? webSearchToolProvider.toolCallbacks() : List.of();
+        String effectiveModelId = resolveToolCallingModel(resolvedId, !tools.isEmpty());
+        RegisteredModel model = modelsById.get(effectiveModelId);
+        if (model == null) {
+            throw new IllegalArgumentException("未知的模型标识: " + effectiveModelId);
+        }
+        return buildExecutor(model, tools, null, false);
     }
 
     /**
@@ -173,6 +219,21 @@ public class AgentLoopExecutorFactory {
 
     private String resolve(String modelId) {
         return (modelId == null || modelId.isBlank()) ? defaultModelId : modelId;
+    }
+
+    /**
+     * OpenAI 流式协议允许 tool call 后续增量分片省略 id，但当前 OpenAI 兼容客户端会对该 Optional
+     * 直接调用 get。qwen-plus 走这条客户端路径时，工具仍需保留流式分片给 Runtime 自己重组，
+     * 因此统一切到原生客户端已验证兼容的 deepseek-chat；不挂工具的执行器仍使用用户选择的 qwen-plus。
+     */
+    private String resolveToolCallingModel(String requestedModelId, boolean hasTools) {
+        if (!hasTools || !QWEN_PLUS.equals(requestedModelId)) {
+            return requestedModelId;
+        }
+        if (!modelsById.containsKey(TOOL_CALLING_COMPATIBLE_MODEL)) {
+            throw new IllegalStateException("工具调用需要兼容模型，但未注册: " + TOOL_CALLING_COMPATIBLE_MODEL);
+        }
+        return TOOL_CALLING_COMPATIBLE_MODEL;
     }
 
     private static AgentLoopExecutor requireExecutor(Map<String, AgentLoopExecutor> executors, String modelId) {

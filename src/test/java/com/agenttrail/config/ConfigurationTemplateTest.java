@@ -1,13 +1,13 @@
 package com.agenttrail.config;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.config.YamlPropertiesFactoryBean;
+import org.springframework.core.io.FileSystemResource;
 
-import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashSet;
-import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -18,52 +18,54 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ConfigurationTemplateTest {
 
-    private static final Path APPLICATION_TEMPLATE =
-            Path.of("src/main/resources/application-example.properties");
+    private static final Path APPLICATION_DEFAULTS =
+            Path.of("src/main/resources/application.yml");
+    private static final Path LOCAL_TEMPLATE = Path.of("application-local.example.yml");
     private static final Pattern VALUE_KEY = Pattern.compile("@Value\\(\"\\$\\{([^}:]+)");
+    private static final Set<String> LOCAL_ONLY_SETTINGS = Set.of(
+            "spring.ai.deepseek.api-key",
+            "spring.ai.openai.api-key",
+            "spring.datasource.url",
+            "spring.datasource.username",
+            "spring.datasource.password",
+            "agenttrail.pgvector.url",
+            "agenttrail.pgvector.username",
+            "agenttrail.pgvector.password",
+            "tavily.api-key",
+            "agenttrail.minio.endpoint",
+            "agenttrail.minio.access-key",
+            "agenttrail.minio.secret-key");
 
     @Test
-    void sensitiveApplicationSettingsHaveNoCommittedDefaultValue() throws Exception {
-        Properties properties = load(APPLICATION_TEMPLATE);
-        Map<String, String> sensitiveSettings = Map.ofEntries(
-                Map.entry("deepseek.api-key", "${DEEPSEEK_API_KEY:}"),
-                Map.entry("spring.ai.deepseek.api-key", "${DEEPSEEK_API_KEY:}"),
-                Map.entry("spring.ai.openai.api-key", "${DASHSCOPE_API_KEY:}"),
-                Map.entry("spring.datasource.url", "${AGENTTRAIL_DB_URL:}"),
-                Map.entry("spring.datasource.username", "${AGENTTRAIL_DB_USERNAME:}"),
-                Map.entry("spring.datasource.password", "${AGENTTRAIL_DB_PASSWORD:}"),
-                Map.entry("agenttrail.pgvector.url", "${AGENTTRAIL_PGVECTOR_URL:}"),
-                Map.entry("agenttrail.pgvector.username", "${AGENTTRAIL_PGVECTOR_USERNAME:}"),
-                Map.entry("agenttrail.pgvector.password", "${AGENTTRAIL_PGVECTOR_PASSWORD:}"),
-                Map.entry("tavily.api-key", "${TAVILY_API_KEY:}"),
-                Map.entry("agenttrail.minio.endpoint", "${AGENTTRAIL_MINIO_ENDPOINT:}"),
-                Map.entry("agenttrail.minio.access-key", "${AGENTTRAIL_MINIO_ACCESS_KEY:}"),
-                Map.entry("agenttrail.minio.secret-key", "${AGENTTRAIL_MINIO_SECRET_KEY:}"),
-                Map.entry("agenttrail.ppt.image.api-key", "${DASHSCOPE_API_KEY:}"),
-                Map.entry("agenttrail.ppt.image.minio-endpoint", "${AGENTTRAIL_MINIO_ENDPOINT:}"),
-                Map.entry("agenttrail.ppt.image.minio-access-key", "${AGENTTRAIL_MINIO_ACCESS_KEY:}"),
-                Map.entry("agenttrail.ppt.image.minio-secret-key", "${AGENTTRAIL_MINIO_SECRET_KEY:}"));
+    void localTemplateContainsSensitiveSettingsButNoValues() {
+        Properties defaults = loadYaml(APPLICATION_DEFAULTS);
+        Properties local = loadYaml(LOCAL_TEMPLATE);
 
-        assertThat(properties).containsAllEntriesOf(sensitiveSettings);
+        assertThat(LOCAL_ONLY_SETTINGS).allSatisfy(key -> assertThat(local.getProperty(key))
+                .as(key + " 的示例值必须留空")
+                .isEmpty());
+        assertThat(LOCAL_ONLY_SETTINGS).allSatisfy(key -> {
+            assertThat(defaults).doesNotContainKey(key);
+            assertThat(local).containsKey(key);
+        });
     }
 
     @Test
-    void secretExampleContainsNamesButNoSecretValues() throws Exception {
-        Properties properties = load(Path.of("secrets.properties.example"));
+    void yamlUsesUtf8WithoutPropertyPlaceholderNoise() throws Exception {
+        String defaults = Files.readString(APPLICATION_DEFAULTS, StandardCharsets.UTF_8);
+        String local = Files.readString(LOCAL_TEMPLATE, StandardCharsets.UTF_8);
 
-        assertThat(properties)
-                .containsKeys("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "TAVILY_API_KEY",
-                        "AGENTTRAIL_DB_PASSWORD", "AGENTTRAIL_PGVECTOR_PASSWORD",
-                        "AGENTTRAIL_MINIO_ACCESS_KEY", "AGENTTRAIL_MINIO_SECRET_KEY");
-        assertThat(properties.stringPropertyNames())
-                .filteredOn(key -> key.contains("KEY") || key.contains("PASSWORD"))
-                .allSatisfy(key -> assertThat(properties.getProperty(key))
-                        .as(key + " 示例值必须留空")
-                        .isEmpty());
+        assertThat(defaults).contains("安全默认值");
+        assertThat(defaults + local)
+                .doesNotContain("${AGENTTRAIL_", "${DASHSCOPE_", "${DEEPSEEK_");
+        try (Stream<Path> resources = Files.list(Path.of("src/main/resources"))) {
+            assertThat(resources.map(path -> path.getFileName().toString()))
+                    .noneMatch(name -> name.startsWith("application") && name.endsWith(".properties"));
+        }
     }
 
     @Test
-    void everyValueInjectedRuntimeSettingIsDocumentedInTheTemplate() throws Exception {
+    void everyValueInjectedRuntimeSettingIsDocumentedInYaml() throws Exception {
         Set<String> injectedKeys = new LinkedHashSet<>();
         try (Stream<Path> sources = Files.walk(Path.of("src/main/java"))) {
             for (Path source : sources.filter(path -> path.toString().endsWith(".java")).toList()) {
@@ -74,17 +76,21 @@ class ConfigurationTemplateTest {
             }
         }
 
-        String template = Files.readString(APPLICATION_TEMPLATE, StandardCharsets.UTF_8);
-        assertThat(injectedKeys).allSatisfy(key -> assertThat(template)
-                .as(key + " 必须出现在 application-example.properties")
-                .contains(key + "="));
+        Properties documented = loadYaml(APPLICATION_DEFAULTS);
+        documented.putAll(loadYaml(LOCAL_TEMPLATE));
+        assertThat(documented.stringPropertyNames())
+                .as("所有 @Value 配置都必须出现在默认配置或本地模板中")
+                .containsAll(injectedKeys);
     }
 
-    private static Properties load(Path path) throws Exception {
-        Properties properties = new Properties();
-        try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-            properties.load(reader);
+    private static Properties loadYaml(Path path) {
+        YamlPropertiesFactoryBean loader = new YamlPropertiesFactoryBean();
+        loader.setResources(new FileSystemResource(path));
+        Properties loaded = loader.getObject();
+        Properties normalized = new Properties();
+        if (loaded != null) {
+            loaded.forEach((key, value) -> normalized.setProperty(key.toString(), value.toString()));
         }
-        return properties;
+        return normalized;
     }
 }

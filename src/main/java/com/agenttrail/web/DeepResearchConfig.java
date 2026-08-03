@@ -8,17 +8,21 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * DeepResearch（issue #25/#34/#35/#36/#37）的生产装配。默认模型是 {@code deepseek-chat}，不是
- * issue #20 的默认 {@code qwen-plus}——DeepResearch 的执行阶段必须真的调用联网搜索工具，而 issue #22
- * 联调时发现 qwen-plus 走 {@code spring-ai-openai:2.0.0} 合并流式 tool_call chunk 有个未修的第三方库
- * 兼容性问题（见踩坑点 #78a），deepseek-chat 不受影响，DeepResearch 不能默认踩这个坑。
+ * DeepResearch（issue #25/#34/#35/#36/#37）的生产装配。模型分两档，不是单一 {@code deepseek-chat}：
+ * {@code plainExecutor}（需求澄清/主题生成/plan/critique/综合报告，见 {@link DeepResearchService}
+ * 里对应调用点）不挂工具，默认落到更便宜的 {@code qwen-plus}——这几步占了 DeepResearch 绝大多数的
+ * LLM 调用次数，省 token 主要靠这里。{@code searchExecutor} 必须真的调用联网搜索工具，默认单独钉在
+ * {@code deepseek-chat}：issue #22 联调时发现 qwen-plus 走 {@code spring-ai-openai:2.0.0} 合并流式
+ * tool_call chunk 有个未修的第三方库兼容性问题（见踩坑点 #78a），deepseek-chat 不受影响——这一步
+ * 不能为了省 token 去踩这个坑，工具调用一旦失败整个检索任务就废了。
  */
 @Configuration
 public class DeepResearchConfig {
 
     @Bean
     public DeepResearchService deepResearchService(AgentLoopExecutorFactory executorFactory,
-            @Value("${agenttrail.deepresearch.model:deepseek-chat}") String modelId,
+            @Value("${agenttrail.deepresearch.model:qwen-plus}") String modelId,
+            @Value("${agenttrail.deepresearch.search-model:deepseek-chat}") String searchModelId,
             @Value("${agenttrail.deepresearch.max-concurrent-tasks-per-layer:3}") int maxConcurrentTasksPerLayer,
             @Value("${agenttrail.deepresearch.max-tasks-per-plan:20}") int maxTasksPerPlan,
             @Value("${agenttrail.deepresearch.max-task-retries:2}") int maxTaskRetries,
@@ -28,7 +32,8 @@ public class DeepResearchConfig {
             @Value("${agenttrail.deepresearch.context.token-threshold:60000}") int contextTokenThreshold) {
         // DeepResearch 专用的上下文压缩器（issue #37）——只压缩 critique()/summarize() 用到的
         // 累积检索结果 + 批判反馈这份文本，跟 executorFactory.forModel(...) 返回的执行器各自
-        // 内部 ReAct 子循环的上下文压缩是两回事，互不干扰、各自独立配置。
+        // 内部 ReAct 子循环的上下文压缩是两回事，互不干扰、各自独立配置。压缩本身不调用工具，
+        // 跟着 plainExecutor 走同一档便宜模型即可。
         ContextPolicy researchContextPolicy = ContextPolicy.builder()
                 .tokenThreshold(contextTokenThreshold)
                 .retainLatestOnlyMarkers(DeepResearchService.CRITIQUE_FEEDBACK_MARKER)
@@ -37,8 +42,8 @@ public class DeepResearchConfig {
                 researchContextPolicy, executorFactory.chatModelFor(modelId));
 
         return new DeepResearchService(
-                executorFactory.forModel(modelId, false),
-                executorFactory.forModel(modelId, true),
+                executorFactory.forInternalOrchestration(modelId, false),
+                executorFactory.forInternalOrchestration(searchModelId, true),
                 maxConcurrentTasksPerLayer, maxTasksPerPlan, maxTaskRetries, maxCritiqueRounds,
                 researchContextCompactor);
     }

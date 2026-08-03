@@ -15,6 +15,10 @@ import java.util.List;
  */
 public sealed interface AgentStreamEvent {
 
+    /** 一轮对话已被接收，前端据此固定本次会话标识并切换到生成态。 */
+    record AgentStart(String conversationId) implements AgentStreamEvent {
+    }
+
     /** 模型正文文本。 */
     record Text(String content) implements AgentStreamEvent {
     }

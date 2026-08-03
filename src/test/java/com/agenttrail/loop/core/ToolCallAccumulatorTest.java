@@ -26,6 +26,20 @@ class ToolCallAccumulatorTest {
     }
 
     @Test
+    void attachesAnIdLessIncrementalChunkToTheActiveToolCall() {
+        ToolCallAccumulator accumulator = new ToolCallAccumulator();
+
+        accumulator.accept(new ToolCall("call-1", "function", "echo", "{\"text\":"));
+        accumulator.accept(new ToolCall(null, "function", null, "\"ping\"}"));
+
+        assertThat(accumulator.toList()).singleElement().satisfies(call -> {
+            assertThat(call.id()).isEqualTo("call-1");
+            assertThat(call.name()).isEqualTo("echo");
+            assertThat(call.arguments()).isEqualTo("{\"text\":\"ping\"}");
+        });
+    }
+
+    @Test
     void keepsDistinctToolCallsSeparateInFirstSeenOrder() {
         ToolCallAccumulator accumulator = new ToolCallAccumulator();
 

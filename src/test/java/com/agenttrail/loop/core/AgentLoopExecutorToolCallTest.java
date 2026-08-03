@@ -31,6 +31,7 @@ class AgentLoopExecutorToolCallTest {
                 .block(Duration.ofSeconds(5));
 
         assertThat(events).containsExactly(
+                new AgentStreamEvent.AgentStart("conv-1"),
                 new AgentStreamEvent.ToolStart("echo", "call-1", "{\"text\":\"ping\"}"),
                 new AgentStreamEvent.ToolEnd("echo", "call-1", "pong"),
                 new AgentStreamEvent.Text("done: pong"),
@@ -82,4 +83,5 @@ class AgentLoopExecutorToolCallTest {
                 .contains("\"userId\":\"u-42\"")
                 .doesNotContain("someone-else");
     }
+
 }

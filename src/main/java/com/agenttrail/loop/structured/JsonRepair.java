@@ -88,6 +88,16 @@ public final class JsonRepair {
      * <p>字符串边界只能靠状态机按字符扫描——正则没法可靠区分"结构位置的单引号"和
      * "字符串内容里的单引号"，后者一旦被误替换，内容就变形了（比如某段代码里的
      * {@code $_SERVER['REQUEST_METHOD']}）。
+     *
+     * <p>同样地，模型在字符串值里直接写英文双引号（"丑角" 这种）会让 JSON 整个断掉——
+     * 状态机看到第一个未转义引号会按"字符串结束"处理，后续 token 全部错位。
+     * 启发式规则：字符串内出现未转义 {@code "} 时，跳过空白看下一字符——是 {@code ,}/ {@code }}/
+     * {@code ]}/ {@code :} 才视为字符串结束，否则视为字符串内容里的引号，替换为左中文引号
+     * （避免破坏 JSON 结构；对中文场景可读性也更好）。这种启发式对真实英文引号包裹的
+     * 短句会误转成中文引号，但 PPT 大纲这种以中文为主的场景可接受。
+     *
+     * <p>连续的成对裸引号（"丑角"）按出现顺序交替替换为左右中文引号（"丑角"），
+     * 比统一替换为左引号在视觉上更自然。
      */
     private static String normalizeQuotes(String text) {
         String withStraightQuotes = text.replace('“', '"').replace('”', '"')
@@ -96,19 +106,31 @@ public final class JsonRepair {
         StringBuilder rewritten = new StringBuilder(withStraightQuotes.length());
         boolean inString = false;
         boolean escaped = false;
+        boolean nextUnescapedIsOpen = true;
         for (int i = 0; i < withStraightQuotes.length(); i++) {
             char c = withStraightQuotes.charAt(i);
             if (inString) {
-                rewritten.append(c);
                 if (escaped) {
+                    rewritten.append(c);
                     escaped = false;
                 } else if (c == '\\') {
+                    rewritten.append(c);
                     escaped = true;
                 } else if (c == '"') {
-                    inString = false;
+                    if (looksLikeStringEnd(withStraightQuotes, i + 1)) {
+                        inString = false;
+                        rewritten.append(c);
+                    } else {
+                        // 字符串内未转义的引号：按出现顺序交替替换为左右中文引号
+                        rewritten.append(nextUnescapedIsOpen ? '“' : '”');
+                        nextUnescapedIsOpen = !nextUnescapedIsOpen;
+                    }
+                } else {
+                    rewritten.append(c);
                 }
             } else if (c == '"') {
                 inString = true;
+                nextUnescapedIsOpen = true;
                 rewritten.append(c);
             } else if (c == '\'') {
                 rewritten.append('"');
@@ -117,6 +139,22 @@ public final class JsonRepair {
             }
         }
         return rewritten.toString();
+    }
+
+    /**
+     * 字符串内出现未转义引号时，判断这是否就是字符串结束。
+     * 跳过空白后下一字符是 {@code ,}/ {@code }}/ {@code ]}/ {@code :}/ EOF 才算。
+     */
+    private static boolean looksLikeStringEnd(String text, int fromIdx) {
+        int i = fromIdx;
+        while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
+            i++;
+        }
+        if (i >= text.length()) {
+            return true;
+        }
+        char next = text.charAt(i);
+        return next == ',' || next == '}' || next == ']' || next == ':';
     }
 
     private static String wrapAsPlainContent(String rawOutput) {
