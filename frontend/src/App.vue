@@ -24,6 +24,7 @@ function openChat(id: string) {
 <template>
   <main :class="{ dark }" class="shell">
     <aside class="sidebar">
+      <nav class="analytics-nav" aria-label="Analytics navigation"><RouterLink class="nav-item" to="/analytics/schema">Schema</RouterLink><RouterLink class="nav-item" to="/analytics/glossary">Glossary</RouterLink></nav>
       <div class="sidebar-head"><RouterLink class="brand" to="/chat"><span class="brand-mark">A</span><span>AgentTrail</span></RouterLink><button class="sidebar-action" aria-label="Toggle theme" @click="dark = !dark">{{ dark ? '☀' : '◐' }}</button></div>
       <button class="new-chat" @click="createChat"><span>＋</span> New chat</button>
       <nav class="primary-nav" aria-label="Primary navigation"><RouterLink class="nav-item active" to="/chat"><span>✓</span> Assistant</RouterLink><RouterLink class="nav-item" to="/roles"><span>◈</span> Roles</RouterLink><RouterLink class="nav-item" to="/admin/users"><span>◎</span> Users</RouterLink></nav>
