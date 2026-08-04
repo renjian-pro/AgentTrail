@@ -1,5 +1,8 @@
 package com.agenttrail.web;
 
+import com.agenttrail.loop.file.FileQaService;
+import com.agenttrail.loop.file.FileStore;
+import com.agenttrail.loop.tools.FileContentTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
@@ -45,6 +48,19 @@ class AgentLoopExecutorConfigTest {
         @Bean("openAiChatModel")
         ChatModel openAiChatModel() {
             return mock(ChatModel.class);
+        }
+
+        // 真实构造而不是 mock(FileContentTool.class)：mock 的 toolCallback() 默认返回 null，
+        // 会在 AgentLoopExecutorFactory 里 List.of(null) 直接 NPE——这个类本身很轻量，
+        // 真实构造（配一个 mock 的 FileQaService）比再去 stub 一个 mock 更简单也更不容易踩坑。
+        @Bean
+        FileContentTool fileContentTool() {
+            return new FileContentTool(mock(FileQaService.class));
+        }
+
+        @Bean
+        FileStore fileStore() {
+            return mock(FileStore.class);
         }
     }
 }

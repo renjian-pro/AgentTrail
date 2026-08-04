@@ -24,6 +24,19 @@ spring:
       schema-locations: classpath:db/schema.sql
   autoconfigure:
     exclude: org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+  # Boot 默认 max-file-size/max-request-size 只有 1MB/10MB，文件问答（issue #21/#26）需要接收真实文档
+  # （PDF/Word 等），默认值太小；同时要避免一次放开限制到覆盖真实场景，而不是绕开自身体验。
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+# Tomcat 连接器自己也有一道独立的 POST 体积上限（默认 2MB），只调大 spring.servlet.multipart
+# 两项不够，两道限额必须一起放大，否则 2MB~50MB 之间的文件还是会撞到这道墙。
+server:
+  tomcat:
+    max-http-form-post-size: 50MB
+    max-swallow-size: 50MB
 
 # Token 通过 Authorization: Bearer <token> 传递，Sa-Token 的 Redis DAO 负责跨实例共享会话。
 sa-token:

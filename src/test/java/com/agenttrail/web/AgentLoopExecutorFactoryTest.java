@@ -3,9 +3,11 @@ package com.agenttrail.web;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
+import com.agenttrail.loop.file.FileQaService;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.loop.tools.chart.ChartToolCallback;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
@@ -19,6 +21,7 @@ import java.util.List;
 import static com.agenttrail.loop.core.support.ChatResponses.text;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 class AgentLoopExecutorFactoryTest {
 
@@ -180,6 +183,28 @@ class AgentLoopExecutorFactoryTest {
                 twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), fakeSearchProvider("web_search"));
 
         String answer = factory.forModel("qwen-plus", true).call("hi", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(answer).isEqualTo("from deepseek");
+        assertThat(qwen.roundCount()).isZero();
+    }
+
+    /**
+     * 回归测试：文件工具挂载在 {@code plainExecutorsByModelId}（{@link #forModel(String)} 走的
+     * 就是这条最常见路径，不需要开联网搜索），构造时如果不经过 {@code resolveToolCallingModel}
+     * 就直接用请求方自己的 qwen-plus ChatModel 建执行器，工具调用分片会真的打到
+     * {@code OpenAiChatModel} 里那个已知的 {@code Optional.get()} bug（踩坑点 #78a）——这个测试
+     * 用 {@link ScriptedChatModel} 顶替不了那个真实 SDK 里的 bug，但能保证"请求走的确实是
+     * deepseek-chat、不是 qwen-plus"这件事本身不会再回归。
+     */
+    @Test
+    void routesPlainQwenConversationsThroughTheNativeCompatibleModelWhenTheFileToolIsMounted() {
+        ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
+        ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
+        FileContentTool fileContentTool = new FileContentTool(mock(FileQaService.class));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null, null, null, fileContentTool);
+
+        String answer = factory.forModel("qwen-plus").call("hi", new RunnableParams("conv-1", "user-1"));
 
         assertThat(answer).isEqualTo("from deepseek");
         assertThat(qwen.roundCount()).isZero();

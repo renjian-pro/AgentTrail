@@ -32,7 +32,9 @@ public final class FilePromptFormatter {
         List<UploadedFile> currentRound = files.stream().filter(file -> file.turnId() == null).toList();
         List<UploadedFile> priorRounds = files.stream().filter(file -> file.turnId() != null).toList();
 
-        StringBuilder section = new StringBuilder("# 会话文件\n");
+        StringBuilder section = new StringBuilder("# 会话文件\n\n");
+        section.append("以下文件的内容必须通过 load_file_content 工具获取，禁止在没有调用工具的情况下");
+        section.append("凭空回答和文件相关的问题。\n");
         appendGroup(section, "本轮上传的文件", currentRound);
         appendGroup(section, "此前上传的文件", priorRounds);
         return section.toString();
