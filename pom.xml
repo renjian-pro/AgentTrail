@@ -230,6 +230,21 @@
 			<version>8.5.17</version>
 		</dependency>
 
+		<!-- DataAgent 的 SQL 只读安全边界：字符级正则无法可靠处理注释、子查询和函数嵌套，
+		     因此安全校验与权限改写统一基于同一个 AST 版本。 -->
+		<dependency>
+			<groupId>com.github.jsqlparser</groupId>
+			<artifactId>jsqlparser</artifactId>
+			<version>5.3</version>
+		</dependency>
+
+		<!-- 只允许数学表达式的白名单求值器；不要用能执行任意代码的 ScriptEngine。 -->
+		<dependency>
+			<groupId>net.objecthunter</groupId>
+			<artifactId>exp4j</artifactId>
+			<version>0.4.8</version>
+		</dependency>
+
 	</dependencies>
 
 	<!--
@@ -293,6 +308,12 @@
 				<groupId>org.jacoco</groupId>
 				<artifactId>jacoco-maven-plugin</artifactId>
 				<version>0.8.15</version>
+				<configuration>
+					<!-- JSqlParser ships a generated lexer method larger than JaCoCo can instrument. -->
+					<excludes>
+						<exclude>net/sf/jsqlparser/**</exclude>
+					</excludes>
+				</configuration>
 				<executions>
 					<execution>
 						<goals><goal>prepare-agent</goal></goals>
@@ -325,6 +346,34 @@
 								<include>**/*IT.java</include>
 							</includes>
 						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+		<profile>
+			<id>golden</id>
+			<properties>
+				<agenttrail.golden.enabled>true</agenttrail.golden.enabled>
+			</properties>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-failsafe-plugin</artifactId>
+						<version>3.5.3</version>
+						<configuration>
+							<systemPropertyVariables>
+								<agenttrail.golden.enabled>${agenttrail.golden.enabled}</agenttrail.golden.enabled>
+							</systemPropertyVariables>
+							<includes>
+								<include>**/GoldenTaskIT.java</include>
+							</includes>
+						</configuration>
+						<executions>
+							<execution>
+								<goals><goal>integration-test</goal><goal>verify</goal></goals>
+							</execution>
+						</executions>
 					</plugin>
 				</plugins>
 			</build>

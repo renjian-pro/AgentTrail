@@ -1,9 +1,12 @@
 package com.agenttrail.web;
 
+import com.agenttrail.capability.analytics.AnalyticsToolProvider;
+import com.agenttrail.loop.file.FileStore;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.persistence.JdbcSessionStore;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilyWebSearchResultParser;
@@ -11,6 +14,7 @@ import com.agenttrail.loop.tools.websearch.WebSearchResultParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -60,12 +64,12 @@ public class AgentLoopExecutorConfig {
 
     /** V1 对话的短期历史和单轮落库共用同一实现，避免读写两套会话语义发生漂移。 */
     @Bean
-    public TurnPersistenceHook turnPersistenceHook(DataSource dataSource) {
+    public TurnPersistenceHook turnPersistenceHook(@Qualifier("dataSource") DataSource dataSource) {
         return new JdbcSessionStore(dataSource);
     }
 
     @Bean
-    public ConversationHistoryService conversationHistoryService(DataSource dataSource) {
+    public ConversationHistoryService conversationHistoryService(@Qualifier("dataSource") DataSource dataSource) {
         return new ConversationHistoryService(dataSource);
     }
 
@@ -114,12 +118,16 @@ public class AgentLoopExecutorConfig {
             AgentTaskManager agentTaskManager,
             TavilySearchToolProvider tavilySearchToolProvider,
             ChartToolProvider chartToolProvider,
-            TurnPersistenceHook turnPersistenceHook) {
+            TurnPersistenceHook turnPersistenceHook,
+            ObjectProvider<FileContentTool> fileContentToolProvider,
+            ObjectProvider<FileStore> fileStoreProvider,
+            ObjectProvider<AnalyticsToolProvider> analyticsToolProvider) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
                 new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
         return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider,
-                chartToolProvider, turnPersistenceHook);
+                chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
+                analyticsToolProvider.getIfAvailable());
     }
 }

@@ -4,6 +4,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 工具入参的只读视图。
  *
@@ -12,7 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * 而不是直接 {@code node.get(x).asInt()} 然后等着 NPE——工具因为一个可选参数崩掉，
  * 对模型来说是一条没法自我纠正的错误。
  */
-final class ToolArguments {
+public final class ToolArguments {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -22,7 +25,7 @@ final class ToolArguments {
         this.node = node;
     }
 
-    static ToolArguments parse(String toolInput) throws JsonProcessingException {
+	public static ToolArguments parse(String toolInput) throws JsonProcessingException {
         if (toolInput == null || toolInput.isBlank()) {
             return new ToolArguments(JSON.createObjectNode());
         }
@@ -31,7 +34,7 @@ final class ToolArguments {
     }
 
     /** 字符串取值；字段缺失或为 null 时返回 null。数字/布尔也按文本读出来，模型经常传错类型。 */
-    String text(String field) {
+	public String text(String field) {
         JsonNode value = node.get(field);
         if (value == null || value.isNull()) {
             return null;
@@ -39,7 +42,7 @@ final class ToolArguments {
         return value.isTextual() ? value.textValue() : value.asText();
     }
 
-    Integer integer(String field) {
+	public Integer integer(String field) {
         JsonNode value = node.get(field);
         if (value == null || value.isNull()) {
             return null;
@@ -54,17 +57,33 @@ final class ToolArguments {
         }
     }
 
-    Long longValue(String field) {
+	public Long longValue(String field) {
         Integer asInteger = integer(field);
         return asInteger == null ? null : asInteger.longValue();
     }
 
     /** 布尔标志，缺失时按 false——所有带副作用的开关（覆盖、批量替换）都必须是显式打开的。 */
-    boolean flag(String field) {
+	public boolean flag(String field) {
         JsonNode value = node.get(field);
         if (value == null || value.isNull()) {
             return false;
         }
-        return value.isBoolean() ? value.booleanValue() : Boolean.parseBoolean(value.asText().trim());
-    }
+		return value.isBoolean() ? value.booleanValue() : Boolean.parseBoolean(value.asText().trim());
+	}
+
+	/** 字符串数组入参；字段缺失、不是数组或数组为空时统一返回空列表。 */
+	public List<String> textList(String field) {
+		JsonNode value = node.get(field);
+		if (value == null || !value.isArray()) {
+			return List.of();
+		}
+		List<String> items = new ArrayList<>();
+		for (JsonNode element : value) {
+			String text = element.isTextual() ? element.textValue() : element.asText();
+			if (text != null && !text.isBlank()) {
+				items.add(text.trim());
+			}
+		}
+		return List.copyOf(items);
+	}
 }

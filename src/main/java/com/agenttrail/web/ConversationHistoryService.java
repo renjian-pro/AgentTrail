@@ -1,6 +1,7 @@
 package com.agenttrail.web;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.util.Collections;
@@ -46,7 +47,7 @@ public class ConversationHistoryService {
 
     private final JdbcClient jdbcClient;
 
-    public ConversationHistoryService(DataSource dataSource) {
+    public ConversationHistoryService(@Qualifier("dataSource") DataSource dataSource) {
         this.jdbcClient = JdbcClient.create(dataSource);
     }
 

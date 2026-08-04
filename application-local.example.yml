@@ -24,3 +24,12 @@ agenttrail:
     secret-key: ""
   skills:
     directory: ""
+  analytics:
+    datasource:
+      enabled: false
+      # 与主库相同 database，但必须使用只能读取业务表的 analytics_ro 账号。
+      jdbc-url: "jdbc:mysql://127.0.0.1:3306/agenttrail?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8"
+      username: "analytics_ro"
+      password: ""
+      maximum-pool-size: 10
+      connection-timeout-ms: 5000

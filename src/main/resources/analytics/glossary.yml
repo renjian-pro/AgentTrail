@@ -1,0 +1,37 @@
+terms:
+  - term: 活跃客户
+    synonyms: [活跃用户, active customer]
+    description: 在统计时间范围内至少发生一笔已完成租赁或付款的客户。
+    sql_fragment: COUNT(DISTINCT rental.customer_id) WHERE rental.return_date IS NOT NULL
+    example: 查询最近 30 天活跃客户数
+  - term: 高价值客户
+    synonyms: [重点客户, VIP客户]
+    description: 统计范围内累计付款金额排名前 20% 的客户。
+    sql_fragment: 以 customer_id 聚合 payment.amount 后取 PERCENT_RANK() >= 0.8
+    example: 查询本季度高价值客户
+  - term: 付款金额
+    synonyms: [收入, 实收金额, payment amount]
+    description: payment.amount 的金额字段，默认按支付完成记录统计。
+    sql_fragment: SUM(payment.amount)
+    example: 按月统计付款金额
+  - term: 业绩归属
+    synonyms: [销售归属, 归属部门]
+    description: 优先按 rental.dept_id 关联 dim_dept；缺失时不猜测部门。
+    sql_fragment: rental.dept_id = dim_dept.dept_id
+    example: 按业绩归属部门汇总
+  - term: 租赁次数
+    synonyms: [订单数, 租借次数]
+    description: rental 表中符合筛选条件的租赁记录数。
+    sql_fragment: COUNT(rental.rental_id)
+    example: 统计每个客户的租赁次数
+  - term: 客户留存
+    synonyms: [留存率, customer retention]
+    description: 首次租赁后在后续观察窗口内再次租赁的客户占比。
+    sql_fragment: 复购客户数 / 首次租赁客户数
+    example: 计算月度客户留存率
+time_anchor:
+  term: 时间口径
+  synonyms: [统计时间, 时间范围, 观察窗口]
+  description: 未明确时间时默认使用最近 30 天；自然月、季度和财年必须按用户明确口径解释。
+  sql_fragment: created_at >= CURRENT_DATE - INTERVAL 30 DAY
+  example: “本月”按自然月，“最近 30 天”按滚动窗口

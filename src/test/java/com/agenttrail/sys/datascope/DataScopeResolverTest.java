@@ -1,7 +1,7 @@
 package com.agenttrail.sys.datascope;
 
-import com.agenttrail.sys.JdbcDeptStore;
-import com.agenttrail.sys.JdbcUserStore;
+import com.agenttrail.sys.store.JdbcDeptStore;
+import com.agenttrail.sys.store.JdbcUserStore;
 import com.agenttrail.sys.entity.SysRole;
 import org.junit.jupiter.api.Test;
 

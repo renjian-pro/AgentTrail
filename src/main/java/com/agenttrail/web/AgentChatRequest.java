@@ -8,17 +8,22 @@ package com.agenttrail.web;
  * @param webSearchEnabled 这次对话要不要挂联网搜索工具（issue #22）。不传按 false 处理——
  *                         "条件工具"的语义是关闭时工具列表里压根没有它，不是默认打开
  */
-public record AgentChatRequest(String message, String conversationId, String modelId, boolean webSearchEnabled) {
+public record AgentChatRequest(String message, String conversationId, String modelId,
+                               boolean webSearchEnabled, String mode) {
+
+    public AgentChatRequest(String message, String conversationId, String modelId, boolean webSearchEnabled) {
+        this(message, conversationId, modelId, webSearchEnabled, null);
+    }
 
     public AgentChatRequest(String message) {
-        this(message, null, null, false);
+        this(message, null, null, false, null);
     }
 
     public AgentChatRequest(String message, String modelId) {
-        this(message, null, modelId, false);
+        this(message, null, modelId, false, null);
     }
 
     public AgentChatRequest(String message, String modelId, boolean webSearchEnabled) {
-        this(message, null, modelId, webSearchEnabled);
+        this(message, null, modelId, webSearchEnabled, null);
     }
 }

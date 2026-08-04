@@ -7,6 +7,7 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 
@@ -53,7 +54,7 @@ public class JdbcSessionStore implements TurnPersistenceHook {
 
     private final JdbcClient jdbcClient;
 
-    public JdbcSessionStore(DataSource dataSource) {
+    public JdbcSessionStore(@Qualifier("dataSource") DataSource dataSource) {
         this.jdbcClient = JdbcClient.create(dataSource);
     }
 

@@ -52,8 +52,18 @@ public class AgentLoopController {
         String conversationId = (request.conversationId() == null || request.conversationId().isBlank())
                 ? UUID.randomUUID().toString() : request.conversationId();
         String userId = StpUtil.getLoginIdAsString();
-        RunnableParams params = new RunnableParams(conversationId, userId, Map.of("userId", userId), null);
-        return executorFactory.forModelWithCharts(request.modelId(), request.webSearchEnabled())
+        RunnableParams params = new RunnableParams(conversationId, userId,
+                Map.of("userId", userId, "conversation_id", conversationId), null);
+        AgentLoopExecutor executor;
+        try {
+            executor = "analytics".equalsIgnoreCase(request.mode())
+                    ? executorFactory.forAnalytics(request.modelId())
+                    : executorFactory.forModelWithCharts(request.modelId(), request.webSearchEnabled());
+        } catch (IllegalStateException failure) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, failure.getMessage(), failure);
+        }
+        return executor
                 .stream(request.message(), params)
                 .map(event -> ServerSentEvent.builder(event)
                         .event(event.getClass().getSimpleName())

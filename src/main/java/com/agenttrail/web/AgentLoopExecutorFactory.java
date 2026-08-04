@@ -1,10 +1,15 @@
 package com.agenttrail.web;
 
+import com.agenttrail.capability.analytics.AnalyticsToolProvider;
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.file.FileStore;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
+import com.agenttrail.loop.tools.search.ToolCatalog;
+import com.agenttrail.loop.tools.search.ToolSearchConfig;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
@@ -38,6 +43,7 @@ public class AgentLoopExecutorFactory {
     private final Map<String, RegisteredModel> modelsById;
     private final Map<String, AgentLoopExecutor> plainExecutorsByModelId;
     private final Map<String, AgentLoopExecutor> webSearchExecutorsByModelId = new ConcurrentHashMap<>();
+    private final Map<String, AgentLoopExecutor> analyticsExecutorsByModelId = new ConcurrentHashMap<>();
     /** key = modelId + "|" + webSearchEnabled，见 {@link #forModelWithCharts}。 */
     private final Map<String, AgentLoopExecutor> chartExecutorsByKey = new ConcurrentHashMap<>();
     private final String defaultModelId;
@@ -47,6 +53,21 @@ public class AgentLoopExecutorFactory {
     /** 传 null 表示这套装配完全不提供图表生成——{@link #forModelWithCharts} 时静默退化成不带图表。 */
     private final ChartToolProvider chartToolProvider;
     private final TurnPersistenceHook persistenceHook;
+    /**
+     * 不像 webSearch/chart 那样按会话/开关条件——文件内容读取没有隐私或成本上的权衡要留给调用方
+     * 决定，且是纯本地 DB 调用，不需要懒加载，所以每个执行器变体（plain/webSearch/chart）
+     * 都无条件带上它。传 null 表示这套装配完全不提供文件问答工具。
+     */
+    private final List<ToolCallback> baseTools;
+    /**
+     * 传 null 表示这套装配完全不提供文件问答——{@code AgentLoopExecutor.buildFileSection} 据此
+     * 短路返回空串，"会话文件"区块不会出现在系统提示词里，{@link FileContentTool} 就算挂着，
+     * 模型也无从知道有哪些 fileId 可以调用（这正是 {@code FileContentTool} 本身没问题、
+     * 但生产环境里模型一直"看不到文件"的真正原因——{@link #buildExecutor} 之前没把这个传给
+     * {@code AgentLoopExecutor.Builder}）。
+     */
+    private final FileStore fileStore;
+    private final AnalyticsToolProvider analyticsToolProvider;
 
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider) {
@@ -62,6 +83,30 @@ public class AgentLoopExecutorFactory {
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
             ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook, null);
+    }
+
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
+                fileContentTool, null);
+    }
+
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool, FileStore fileStore) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
+                fileContentTool, fileStore, null);
+    }
+
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool, FileStore fileStore,
+            AnalyticsToolProvider analyticsToolProvider) {
         if (models.stream().noneMatch(model -> model.id().equals(defaultModelId))) {
             throw new IllegalArgumentException("默认模型 " + defaultModelId + " 不在注册的模型列表里");
         }
@@ -74,9 +119,22 @@ public class AgentLoopExecutorFactory {
         this.webSearchToolProvider = webSearchToolProvider;
         this.chartToolProvider = chartToolProvider;
         this.persistenceHook = persistenceHook;
+        this.fileStore = fileStore;
+        this.analyticsToolProvider = analyticsToolProvider;
+        this.baseTools = fileContentTool != null ? List.of(fileContentTool.toolCallback()) : List.of();
+        // baseTools 现在可能非空（文件工具无条件挂载），所以这里也必须经过
+        // resolveToolCallingModel 那道 qwen-plus→deepseek-chat 的安全切换——之前这里直接
+        // buildExecutor(model, ...) 用的是请求方自己的 ChatModel，跳过了这道开关，
+        // 是踩坑点 #78a（OpenAiChatModel 合并流式 tool_call 分片时对 Optional 直接 get()，
+        // 第三方库兼容性 bug）復现的真正原因：qwen-plus 的 plain 执行器第一次真的带上工具，
+        // 但从没被换到 deepseek-chat。
         this.plainExecutorsByModelId = models.stream().collect(Collectors.toMap(
                 RegisteredModel::id,
-                model -> buildExecutor(model, List.of(), null, true)));
+                model -> {
+                    String effectiveId = resolveToolCallingModel(model.id(), !baseTools.isEmpty());
+                    RegisteredModel effectiveModel = modelsById.get(effectiveId);
+                    return buildExecutor(effectiveModel, baseTools, null, true);
+                }));
     }
 
     private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy) {
@@ -94,7 +152,8 @@ public class AgentLoopExecutorFactory {
         AgentLoopExecutor.Builder builder = AgentLoopExecutor.builder(model.chatModel(), tools, 10)
                 .taskManager(taskManager)
                 .thinkingMode(model.thinkingMode())
-                .persistenceHook(persist ? persistenceHook : null);
+                .persistenceHook(persist ? persistenceHook : null)
+                .fileStore(fileStore);
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
         }
@@ -104,6 +163,40 @@ public class AgentLoopExecutorFactory {
     /** @param modelId 为 null 或空串时使用默认模型；未注册的标识直接抛异常，不做静默兜底 */
     public AgentLoopExecutor forModel(String modelId) {
         return forModel(modelId, false);
+    }
+
+    /** DataAgent 专用执行器：只挂载分析白名单和图表工具，不复用文件/Shell 工具。 */
+    public AgentLoopExecutor forAnalytics(String modelId) {
+        if (analyticsToolProvider == null) {
+            throw new IllegalStateException("分析能力未启用，请联系管理员配置分析数据源");
+        }
+        String resolvedId = resolve(modelId);
+        AgentLoopExecutor cached = analyticsExecutorsByModelId.get(resolvedId);
+        if (cached != null) {
+            return cached;
+        }
+        List<ToolCallback> residentTools = chartToolProvider == null
+                ? List.of() : chartToolProvider.toolCallbacks();
+        String effectiveId = resolveToolCallingModel(resolvedId, true);
+        RegisteredModel model = modelsById.get(effectiveId);
+        if (model == null) {
+            throw new IllegalArgumentException("未知的模型标识: " + effectiveId);
+        }
+        ToolCatalog catalog = ToolCatalog.of(ToolSearchConfig.defaults(),
+                analyticsToolProvider.deferredTools(), model.chatModel());
+        ContextPolicy contextPolicy = residentTools.isEmpty() ? null : ContextPolicy.builder()
+                .protectedTools(residentTools.stream()
+                        .map(tool -> tool.getToolDefinition().name()).toArray(String[]::new))
+                .build();
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(model.chatModel(), residentTools, 20)
+                .taskManager(taskManager)
+                .thinkingMode(model.thinkingMode())
+                .persistenceHook(persistenceHook)
+                .toolCatalog(catalog)
+                .contextPolicy(contextPolicy)
+                .build();
+        analyticsExecutorsByModelId.put(resolvedId, executor);
+        return executor;
     }
 
     /**
@@ -128,7 +221,9 @@ public class AgentLoopExecutorFactory {
         if (model == null) {
             throw new IllegalArgumentException("未知的模型标识: " + effectiveModelId);
         }
-        AgentLoopExecutor executor = buildExecutor(model, webSearchTools, null);
+        List<ToolCallback> tools = new ArrayList<>(baseTools);
+        tools.addAll(webSearchTools);
+        AgentLoopExecutor executor = buildExecutor(model, tools, null);
         // 只缓存"搜索工具真的挂上了"的结果——如果这次是降级（工具列表为空），
         // 不缓存，让下一次请求有机会在 Tavily 恢复后重新拿到一个真正带搜索的执行器
         if (!webSearchTools.isEmpty()) {
@@ -159,7 +254,8 @@ public class AgentLoopExecutorFactory {
         String resolvedId = resolve(modelId);
         List<ToolCallback> webSearchTools = (webSearchEnabled && webSearchToolProvider != null)
                 ? webSearchToolProvider.toolCallbacks() : List.of();
-        List<ToolCallback> tools = new ArrayList<>(webSearchTools);
+        List<ToolCallback> tools = new ArrayList<>(baseTools);
+        tools.addAll(webSearchTools);
         tools.addAll(chartTools);
         String effectiveModelId = resolveToolCallingModel(resolvedId, !tools.isEmpty());
         String cacheKey = effectiveModelId + "|" + webSearchEnabled;

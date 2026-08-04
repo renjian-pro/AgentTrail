@@ -140,6 +140,18 @@ public class FileQaService {
         return fileStore.findById(fileId).map(file -> userId != null && userId.equals(file.userId())).orElse(false);
     }
 
+    /**
+     * {@link com.agenttrail.loop.tools.FileContentTool} 在读取正文前调用——工具调用层没有
+     * "当前登录用户"这个直接可信的边界（模型是在会话内部推理，不是一次独立的 HTTP 请求），
+     * 但会话本身是可信的（由 {@code ToolParamInjector} 强制覆盖，模型改不了），所以按会话
+     * 而不是按用户限定：只能读当前会话自己上传的文件，防止拿一个别的会话/别人的 fileId 探测内容。
+     */
+    public boolean belongsToConversation(long fileId, String conversationId) {
+        return fileStore.findById(fileId)
+                .map(file -> conversationId != null && conversationId.equals(file.conversationId()))
+                .orElse(false);
+    }
+
     /** 缓存命中直接返回；未命中才真的调多模态模型，并把结果写回缓存。 */
     private String contentForImage(UploadedFile file) {
         String cached = file.parsedText();

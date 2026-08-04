@@ -73,3 +73,33 @@ agenttrail:
     max-critique-rounds: 3
     context:
       token-threshold: 60000
+  analytics:
+    # Analytics data source is optional and disabled by default.
+    datasource:
+      enabled: false
+      jdbc-url: ""
+      username: ""
+      password: ""
+      # Recalculate this pool against MySQL max_connections per deployment.
+      maximum-pool-size: 10
+      connection-timeout-ms: 5000
+    schema:
+      provider: mschema
+      exclude-tables: []
+      sample-limit: 5
+      sample-timeout-ms: 5000
+      cache-ttl-hours: 24
+      refresh-cron: "0 0 3 * * *"
+    sql:
+      max-joins: 3
+      max-rows: 200
+    execution:
+      explain-timeout-seconds: 3
+      max-estimated-rows: 100000
+      query-timeout-seconds: 10
+      max-rows: 200
+      preview-rows: 20
+      transient-retries: 2
+    mask-fields:
+      - user_profile.id_card
+      - user_profile.home_address
