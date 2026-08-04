@@ -92,8 +92,13 @@ class AgentLoopExecutorFileTest {
                 .isEqualTo(7L);
     }
 
+    /**
+     * 回归测试：曾经这里是"没有文件就什么都不注入"，但沉默会被模型当成不确定而不是确实
+     * 没有，实测会让模型为了回答数据/图表类问题去猜一个不存在的 fileId 调用
+     * load_file_content。FileStore 配置了但这个会话没有文件时，必须显式声明这一点。
+     */
     @Test
-    void doesNotInjectASystemMessageWhenThereAreNoFilesForTheConversation() {
+    void statesExplicitlyThatThereAreNoFilesWhenFileStoreIsConfiguredButEmptyForTheConversation() {
         InMemoryFileStore fileStore = new InMemoryFileStore();
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("好的")));
         AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
@@ -102,7 +107,10 @@ class AgentLoopExecutorFileTest {
 
         executor.stream("你好", PARAMS).collectList().block(Duration.ofSeconds(5));
 
-        assertThat(chatModel.messagesAtRound(0).get(0)).isNotInstanceOf(SystemMessage.class);
+        assertThat(chatModel.messagesAtRound(0).get(0)).isInstanceOf(SystemMessage.class);
+        assertThat(chatModel.messagesAtRound(0).get(0).getText())
+                .contains("没有已上传的文件")
+                .contains("不要调用 load_file_content");
     }
 
     @Test

@@ -23,10 +23,15 @@ public final class FilePromptFormatter {
     private FilePromptFormatter() {
     }
 
-    /** @return 没有文件时返回空字符串，供调用方直接判断要不要插入这个区块。 */
+    /**
+     * @return 没有文件时也返回非空文本——沉默（空字符串）会被模型当成"不确定"，不是"确实没有"，
+     *         实测会导致模型为了回答数据/图表类问题去猜一个不存在的 fileId 调用
+     *         {@code load_file_content}（比如问"今天几号"都会猜 fileId=1）。显式声明"当前
+     *         没有文件、不要调用这个工具"，把沉默换成明确的否定信号。
+     */
     public static String formatSection(List<UploadedFile> files) {
         if (files == null || files.isEmpty()) {
-            return "";
+            return "# 会话文件\n\n当前会话没有已上传的文件，不要调用 load_file_content。\n";
         }
 
         List<UploadedFile> currentRound = files.stream().filter(file -> file.turnId() == null).toList();
