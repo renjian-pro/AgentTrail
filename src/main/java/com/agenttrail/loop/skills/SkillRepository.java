@@ -1,6 +1,7 @@
 package com.agenttrail.loop.skills;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -21,7 +22,7 @@ public class SkillRepository {
         this.jdbc = jdbc;
     }
 
-    public SkillRepository(DataSource dataSource) {
+    public SkillRepository(@Qualifier("dataSource") DataSource dataSource) {
         this(JdbcClient.create(dataSource));
     }
 

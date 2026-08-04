@@ -4,6 +4,7 @@ import com.agenttrail.sys.dto.SysUserPage;
 import com.agenttrail.sys.entity.SysRole;
 import com.agenttrail.sys.entity.SysUser;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 
@@ -45,7 +46,7 @@ public class JdbcUserStore {
 
     private final JdbcClient jdbc;
 
-    public JdbcUserStore(DataSource dataSource) {
+    public JdbcUserStore(@Qualifier("dataSource") DataSource dataSource) {
         this.jdbc = JdbcClient.create(dataSource);
     }
 

@@ -2,6 +2,7 @@ package com.agenttrail.sys.store;
 
 import com.agenttrail.sys.entity.SysDept;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -11,7 +12,7 @@ import java.util.Optional;
 public class JdbcDeptStore {
     private final JdbcClient jdbc;
 
-    public JdbcDeptStore(DataSource dataSource) { this.jdbc = JdbcClient.create(dataSource); }
+    public JdbcDeptStore(@Qualifier("dataSource") DataSource dataSource) { this.jdbc = JdbcClient.create(dataSource); }
 
     public List<SysDept> findAll() {
         return jdbc.sql("SELECT id, name, parent_id, ancestors, sort, status, created_at, updated_at FROM sys_dept ORDER BY sort, id")

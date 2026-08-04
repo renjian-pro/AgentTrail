@@ -2,6 +2,7 @@ package com.agenttrail.sys.store;
 
 import com.agenttrail.sys.entity.SysRole;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -11,7 +12,7 @@ import java.util.Optional;
 public class JdbcRoleStore {
     private final JdbcClient jdbc;
 
-    public JdbcRoleStore(DataSource dataSource) { this.jdbc = JdbcClient.create(dataSource); }
+    public JdbcRoleStore(@Qualifier("dataSource") DataSource dataSource) { this.jdbc = JdbcClient.create(dataSource); }
 
     public List<SysRole> findAll() {
         return jdbc.sql("SELECT id, code, name, data_scope, sort, status, created_at, updated_at FROM sys_role ORDER BY sort, id")

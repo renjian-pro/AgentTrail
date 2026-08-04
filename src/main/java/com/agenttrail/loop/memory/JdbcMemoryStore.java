@@ -1,6 +1,7 @@
 package com.agenttrail.loop.memory;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -25,7 +26,7 @@ public class JdbcMemoryStore implements MemoryStore {
 
     private final JdbcClient jdbcClient;
 
-    public JdbcMemoryStore(DataSource dataSource) {
+    public JdbcMemoryStore(@Qualifier("dataSource") DataSource dataSource) {
         this.jdbcClient = JdbcClient.create(dataSource);
     }
 

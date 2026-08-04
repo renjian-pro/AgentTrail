@@ -1,6 +1,7 @@
 package com.agenttrail.loop.file;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 
@@ -42,7 +43,7 @@ public class JdbcFileStore implements FileStore {
 
     private final JdbcClient jdbcClient;
 
-    public JdbcFileStore(DataSource dataSource) {
+    public JdbcFileStore(@Qualifier("dataSource") DataSource dataSource) {
         this.jdbcClient = JdbcClient.create(dataSource);
     }
 

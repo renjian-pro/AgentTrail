@@ -2,6 +2,7 @@ package com.agenttrail.sys.store;
 
 import com.agenttrail.sys.entity.SysPermission;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -10,7 +11,7 @@ import java.util.List;
 public class JdbcPermissionStore {
     private final JdbcClient jdbc;
 
-    public JdbcPermissionStore(DataSource dataSource) { this.jdbc = JdbcClient.create(dataSource); }
+    public JdbcPermissionStore(@Qualifier("dataSource") DataSource dataSource) { this.jdbc = JdbcClient.create(dataSource); }
 
     public List<SysPermission> findAll() {
         return jdbc.sql("SELECT id, code, name, module, created_at FROM sys_permission ORDER BY module, id")

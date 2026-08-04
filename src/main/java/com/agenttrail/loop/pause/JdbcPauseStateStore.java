@@ -1,6 +1,7 @@
 package com.agenttrail.loop.pause;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.util.Optional;
@@ -38,7 +39,7 @@ public class JdbcPauseStateStore implements PauseStateStore {
 
     private final JdbcClient jdbcClient;
 
-    public JdbcPauseStateStore(DataSource dataSource) {
+    public JdbcPauseStateStore(@Qualifier("dataSource") DataSource dataSource) {
         this.jdbcClient = JdbcClient.create(dataSource);
     }
 

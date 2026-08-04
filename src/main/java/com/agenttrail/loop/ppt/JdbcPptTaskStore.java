@@ -1,6 +1,7 @@
 package com.agenttrail.loop.ppt;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 
@@ -53,7 +54,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
 
     private final JdbcClient jdbcClient;
 
-    public JdbcPptTaskStore(DataSource dataSource) {
+    public JdbcPptTaskStore(@Qualifier("dataSource") DataSource dataSource) {
         this.jdbcClient = JdbcClient.create(dataSource);
     }
 

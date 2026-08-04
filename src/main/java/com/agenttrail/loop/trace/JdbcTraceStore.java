@@ -1,6 +1,7 @@
 package com.agenttrail.loop.trace;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -29,7 +30,7 @@ public class JdbcTraceStore implements TraceStore {
 
     private final JdbcClient jdbcClient;
 
-    public JdbcTraceStore(DataSource dataSource) {
+    public JdbcTraceStore(@Qualifier("dataSource") DataSource dataSource) {
         this.jdbcClient = JdbcClient.create(dataSource);
     }
 
