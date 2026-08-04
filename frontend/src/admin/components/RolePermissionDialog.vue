@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { sysApi, type SysPermission } from '../api/sys-api'
-import { toErrorMessage } from '../api/http'
+import { toErrorMessage } from '../../api/http'
 
 const props = defineProps<{ roleId: number }>()
 const emit = defineEmits<{ close: []; saved: [] }>()

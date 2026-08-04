@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { sysApi, type SysRole } from '../api/sys-api'
-import { toErrorMessage } from '../api/http'
-import { useAuthStore } from '../stores/auth'
+import { toErrorMessage } from '../../api/http'
+import { useAuthStore } from '../../stores/auth'
 import RolePermissionDialog from '../components/RolePermissionDialog.vue'
 
 const auth = useAuthStore()

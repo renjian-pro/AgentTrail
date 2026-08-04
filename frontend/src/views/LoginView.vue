@@ -5,7 +5,7 @@ import { toErrorMessage } from '../api/http'
 import { useAuthStore } from '../stores/auth'
 
 const username = ref('admin')
-const password = ref('password')
+const password = ref('admin123')
 const error = ref('')
 const auth = useAuthStore()
 const route = useRoute()

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { toErrorMessage } from '../api/http'
+import { toErrorMessage } from '../../api/http'
 import { sysApi, type SysRole, type UserCreate, type UserUpdate, type UserVO } from '../api/sys-api'
 import DeptTree from '../components/DeptTree.vue'
 import UserFormDialog from '../components/UserFormDialog.vue'

@@ -1,4 +1,4 @@
-import { jsonInit, request } from './http'
+import { jsonInit, request } from '../../api/http'
 
 export type SysRole = { id: number; code: string; name: string; dataScope: string; sort: number; status: string; createdAt: number; updatedAt: number }
 export type SysPermission = { id: number; code: string; name: string; module: string; createdAt: number }

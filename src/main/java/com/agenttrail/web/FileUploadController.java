@@ -56,8 +56,12 @@ public class FileUploadController {
     @GetMapping("/agent/v1/files/{fileId}/content")
     public FileContentResponse content(@PathVariable long fileId,
             @RequestParam(name = "question", required = false) String question) {
+        // Fail-closed: no userId (unauthenticated, or no Sa-Token request context at all) means
+        // no access — it must NOT be treated as "skip the ownership check". The global interceptor
+        // is expected to reject unauthenticated requests before they ever reach here, but this
+        // check has to hold on its own merit and not rely on that assumption never breaking.
         String userId = currentUserId();
-        if (userId != null && !fileQaService.belongsToUser(fileId, userId)) {
+        if (userId == null || !fileQaService.belongsToUser(fileId, userId)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件不存在: " + fileId);
         }
         try {
