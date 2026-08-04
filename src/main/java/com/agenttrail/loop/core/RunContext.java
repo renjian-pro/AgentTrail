@@ -3,9 +3,14 @@ package com.agenttrail.loop.core;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.tools.search.ToolSearchSession;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.Message;
 import reactor.core.publisher.Sinks;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -25,6 +30,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @param toolSearchSession 本次对话专属的延迟工具发现状态；未启用 ToolSearch 时为 null
  * @param mdcSnapshot   发起这次请求的线程的 MDC 快照；工具执行会跳到独立调度器的线程上，
  *                      跳之前拿这份快照还原一次，日志里的 conversationId 等字段才不会断线（见 MdcPropagation）
+ * @param toolTimeline  本轮工具调用的落库轨迹，按 toolCallId 索引、按发起顺序迭代；
+ *                      {@link #emit} 里随 ToolStart/ToolEnd 原地维护，收尾时序列化进 timeline 列
  */
 record RunContext(
         String question,
@@ -34,7 +41,18 @@ record RunContext(
         AtomicInteger roundCounter,
         long startTimeMillis,
         ToolSearchSession toolSearchSession,
-        Map<String, String> mdcSnapshot) {
+        Map<String, String> mdcSnapshot,
+        Map<String, ToolTimelineEntry> toolTimeline) {
+
+    private static final Logger log = LoggerFactory.getLogger(RunContext.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    RunContext(String question, RunnableParams params, List<Message> messages, Sinks.Many<AgentStreamEvent> sink,
+               AtomicInteger roundCounter, long startTimeMillis, ToolSearchSession toolSearchSession,
+               Map<String, String> mdcSnapshot) {
+        this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
+                new LinkedHashMap<>());
+    }
 
     String conversationId() {
         return params.conversationId();
@@ -50,10 +68,34 @@ record RunContext(
     }
 
     void emit(AgentStreamEvent event) {
+        switch (event) {
+            case AgentStreamEvent.ToolStart start ->
+                    toolTimeline.put(start.toolCallId(),
+                            new ToolTimelineEntry(start.toolName(), start.toolCallId(), start.arguments()));
+            case AgentStreamEvent.ToolEnd end -> {
+                ToolTimelineEntry entry = toolTimeline.get(end.toolCallId());
+                if (entry != null) entry.result = end.result();
+            }
+            default -> { }
+        }
         EventSinks.emit(sink, event);
     }
 
     void emitComplete() {
         sink.tryEmitComplete();
+    }
+
+    /** 序列化本轮工具调用轨迹给 {@code agent_session.timeline} 落库；没有工具调用时返回 null，
+     * 和"这轮没有 timeline"的既有语义保持一致，不写一个没意义的空数组。 */
+    String toolTimelineJson() {
+        if (toolTimeline.isEmpty()) {
+            return null;
+        }
+        try {
+            return JSON.writeValueAsString(toolTimeline.values());
+        } catch (JsonProcessingException serializationFailure) {
+            log.warn("工具调用时间线序列化失败，本轮 timeline 落库将为空", serializationFailure);
+            return null;
+        }
     }
 }

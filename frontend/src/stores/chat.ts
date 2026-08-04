@@ -104,12 +104,17 @@ export const useChatStore = defineStore('chat', () => {
 
   function turnToMessages(turns: HistoryTurn[]): ChatMessage[] {
     return turns.flatMap<ChatMessage>(turn => {
+      let tools: ChatTurn['tools']
       if (turn.timeline) {
         try {
           const timeline = JSON.parse(turn.timeline) as Array<{
             type?: string
             stage?: string
             data?: { payload?: DeepResearchReport | PptTask; error?: string | null }
+            toolName?: string
+            toolCallId?: string
+            arguments?: string
+            result?: string
           }>
           const capability = Array.isArray(timeline)
             ? timeline.find(event => event.type === 'StageOutput' && (event.stage === 'research' || event.stage === 'ppt'))
@@ -130,8 +135,22 @@ export const useChatStore = defineStore('chat', () => {
               error: capability.data?.error ?? undefined
             }]
           }
+          // 普通对话的 timeline 只存工具调用轨迹（ToolCall 条目）——按落库时同一份数据重建出
+          // 和直播时一样的 detail/argumentsText/result 形状，折叠卡片才能在历史回放里对得上。
+          if (Array.isArray(timeline)) {
+            const toolCalls = timeline
+              .filter(event => event.type === 'ToolCall')
+              .map(event => ({
+                name: event.toolName ?? '',
+                toolCallId: event.toolCallId ?? '',
+                argumentsText: event.arguments ?? '',
+                detail: event.result ? `${event.arguments ?? ''}\n\n结果：${event.result}` : (event.arguments ?? ''),
+                result: event.result
+              }))
+            if (toolCalls.length > 0) tools = toolCalls
+          }
         } catch {
-          // 老版本或普通对话的 timeline 不是能力快照，继续按标准问答重建。
+          // 老版本或格式异常的 timeline 解析不出结构化内容，继续按标准问答重建。
         }
       }
       return [
@@ -140,7 +159,8 @@ export const useChatStore = defineStore('chat', () => {
           kind: 'chat' as const,
           role: 'assistant' as const,
           content: turn.answer ?? '',
-          think: turn.think ?? undefined
+          think: turn.think ?? undefined,
+          tools
         }
       ]
     })

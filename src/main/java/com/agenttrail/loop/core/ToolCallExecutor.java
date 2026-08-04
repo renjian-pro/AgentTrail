@@ -8,12 +8,12 @@ import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -58,9 +58,9 @@ class ToolCallExecutor {
                 (first, duplicate) -> first));
     }
 
-    List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
+    List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
                                ToolParamInjector paramInjector) {
-        return execute(toolCalls, sink, paramInjector, null, null);
+        return execute(toolCalls, emit, paramInjector, null, null);
     }
 
     /**
@@ -68,9 +68,9 @@ class ToolCallExecutor {
      *                          ToolSearch 的检索元工具本身，每个会话各有一个独立实例）；
      *                          传 null 等价于不存在这类工具
      */
-    List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
+    List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
                                ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
-        return execute(toolCalls, sink, paramInjector, sessionScopedTool, null);
+        return execute(toolCalls, emit, paramInjector, sessionScopedTool, null);
     }
 
     /**
@@ -85,38 +85,40 @@ class ToolCallExecutor {
      * 的其它工作互相阻塞。
      *
      * @param toolCalls    已重组完成的工具调用
-     * @param sink         事件流，用于实时推送 ToolStart / ToolEnd
+     * @param emit         事件出口，用于实时推送 ToolStart / ToolEnd（正常轮次传 {@code context::emit}，
+     *                     落库轨迹的记录也发生在这一层；暂停恢复路径此时还没有 RunContext，
+     *                     传一个直接转发到原始 sink 的 lambda 即可）
      * @param mdcSnapshot  发起本次对话请求的线程的 MDC 快照；跳到 {@link #TOOL_EXECUTION_SCHEDULER}
      *                     的线程之前先还原一次，工具执行期间的日志才带得上 conversationId 这类字段
      *                     （见 {@link MdcPropagation}）。传 null 等价于不做任何还原
      * @return 与 {@code toolCalls} 一一对应、顺序一致的工具响应
      */
-    List<ToolResponse> execute(List<ToolCall> toolCalls, Sinks.Many<AgentStreamEvent> sink,
+    List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
                                ToolParamInjector paramInjector, ToolCallback sessionScopedTool,
                                Map<String, String> mdcSnapshot) {
         return Flux.fromIterable(toolCalls)
                 .flatMapSequential(toolCall -> Mono
                         .fromCallable(() -> MdcPropagation.call(mdcSnapshot,
-                                () -> executeOne(toolCall, sink, paramInjector, sessionScopedTool)))
+                                () -> executeOne(toolCall, emit, paramInjector, sessionScopedTool)))
                         .subscribeOn(TOOL_EXECUTION_SCHEDULER))
                 .collectList()
                 .block();
     }
 
-    private ToolResponse executeOne(ToolCall toolCall, Sinks.Many<AgentStreamEvent> sink,
+    private ToolResponse executeOne(ToolCall toolCall, Consumer<AgentStreamEvent> emit,
                                     ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
         ToolCallback tool = resolve(toolCall.name(), sessionScopedTool);
         if (tool == null) {
             // 模型幻觉出的工具：连参数都不必处理，直接把错误当结果喂回去
-            EventSinks.emit(sink, new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), toolCall.arguments()));
+            emit.accept(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), toolCall.arguments()));
             String result = errorPayload("unknown tool: " + toolCall.name());
-            EventSinks.emit(sink, new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
+            emit.accept(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
             return new ToolResponse(toolCall.id(), toolCall.name(), result);
         }
 
         // 先兜底参数合法性，再注入系统级参数——注入依赖参数是可解析的 JSON 对象
         String arguments = paramInjector.inject(sanitizeArguments(toolCall), tool.getToolDefinition());
-        EventSinks.emit(sink, new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), arguments));
+        emit.accept(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), arguments));
 
         String result;
         try {
@@ -129,10 +131,10 @@ class ToolCallExecutor {
             result = errorPayload("tool execution failed: " + detail);
         }
 
-        EventSinks.emit(sink, new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
+        emit.accept(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
         // 用模型原始的 toolCall.arguments()，不是上面刚注入过系统参数的 arguments——进度快照要和
         // 执行管道彻底解耦，见下面方法的说明
-        emitTodoProgressIfApplicable(toolCall.name(), toolCall.arguments(), sink);
+        emitTodoProgressIfApplicable(toolCall.name(), toolCall.arguments(), emit);
         return new ToolResponse(toolCall.id(), toolCall.name(), result);
     }
 
@@ -146,12 +148,12 @@ class ToolCallExecutor {
      * 参数撞了名，或者 sanitizeArguments 的兜底逻辑变了，这里都不该跟着悄悄改变快照内容。
      * 解析失败（结构不合法）就静默跳过，不影响这一轮工具调用本身的结果。
      */
-    private void emitTodoProgressIfApplicable(String toolName, String arguments, Sinks.Many<AgentStreamEvent> sink) {
+    private void emitTodoProgressIfApplicable(String toolName, String arguments, Consumer<AgentStreamEvent> emit) {
         if (!TodoWriteTool.TOOL_NAME.equals(toolName)) {
             return;
         }
         TodoWriteTool.parseSnapshot(arguments)
-                .ifPresent(items -> EventSinks.emit(sink, new AgentStreamEvent.TodoProgress(items)));
+                .ifPresent(items -> emit.accept(new AgentStreamEvent.TodoProgress(items)));
     }
 
     /** 先查固定表，查不到再看是不是这次会话专属的那一个（按名字比对，不假设调用方传对了）。 */

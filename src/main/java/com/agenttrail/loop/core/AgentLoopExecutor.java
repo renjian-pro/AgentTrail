@@ -497,7 +497,7 @@ public class AgentLoopExecutor {
         ToolCallback sessionScopedTool = (context.toolSearchSession() == null)
                 ? null : context.toolSearchSession().toolSearchCallback();
         List<ToolResponseMessage.ToolResponse> responses = toolCallExecutor.execute(
-                toolCalls, context.sink(), paramInjector, sessionScopedTool, context.mdcSnapshot());
+                toolCalls, context::emit, paramInjector, sessionScopedTool, context.mdcSnapshot());
         context.messages().add(ToolResponseMessage.builder().responses(responses).build());
 
         // 这一批工具调用（一轮可能并发跑多个）跑完了——不是每个工具单独触发一次，见 StageTiming.AFTER_TOOL_END
@@ -609,7 +609,10 @@ public class AgentLoopExecutor {
                 .map(pending -> new AssistantMessage.ToolCall(pending.id(), "function", pending.name(), pending.arguments()))
                 .toList();
         ToolParamInjector paramInjector = new ToolParamInjector(paused.params().toolParams());
-        return toolCallExecutor.execute(approvedCalls, sink, paramInjector);
+        // 这一步发生在恢复流程里还没建出新 RunContext 的时刻（见调用方），没有 context::emit
+        // 可用；直接转发到原始 sink，和改造前的行为一致——落库轨迹的记录从下面新建的
+        // RunContext 开始才生效，暂停前的工具调用不计入这一轮的 timeline，可接受。
+        return toolCallExecutor.execute(approvedCalls, event -> EventSinks.emit(sink, event), paramInjector);
     }
 
     /**
@@ -667,7 +670,7 @@ public class AgentLoopExecutor {
         String think = state.reasoning().isEmpty() ? null : state.reasoning();
         Long turnId = persistenceHook == null ? null : persistenceHook.onTurnComplete(new TurnRecord(
                 context.conversationId(), context.params().userId(), context.question(),
-                state.text(), think, null, null, context.elapsedMillis()));
+                state.text(), think, context.toolTimelineJson(), null, context.elapsedMillis()));
 
         // 上传发生在这一轮结束之前，那时候轮次 id 还不存在，只能等这里拿到 id 才回填（issue #28）
         if (fileStore != null && turnId != null) {

@@ -29,7 +29,7 @@ class ToolCallExecutorTest {
         RecordingToolCallback tool = new RecordingToolCallback("echo", "echoes", "ok");
         ToolCallExecutor executor = new ToolCallExecutor(List.of(tool));
 
-        executor.execute(List.of(call("call-1", "echo", "{\"text\":\"ping\"}")), sink, NO_INJECTION);
+        executor.execute(List.of(call("call-1", "echo", "{\"text\":\"ping\"}")), sink::tryEmitNext, NO_INJECTION);
 
         assertThat(tool.recordedArguments()).containsExactly("{\"text\":\"ping\"}");
     }
@@ -45,7 +45,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of(tool));
 
         List<ToolResponse> responses = executor.execute(
-                List.of(call("call-1", "echo", "{\"text\":\"pin")), sink, NO_INJECTION);
+                List.of(call("call-1", "echo", "{\"text\":\"pin")), sink::tryEmitNext, NO_INJECTION);
 
         assertThat(tool.recordedArguments()).containsExactly("{}");
         assertThat(responses).singleElement().extracting(ToolResponse::responseData).isEqualTo("ok");
@@ -56,7 +56,7 @@ class ToolCallExecutorTest {
         RecordingToolCallback tool = new RecordingToolCallback("noop", "does nothing", "ok");
         ToolCallExecutor executor = new ToolCallExecutor(List.of(tool));
 
-        executor.execute(List.of(call("call-1", "noop", null), call("call-2", "noop", "   ")), sink, NO_INJECTION);
+        executor.execute(List.of(call("call-1", "noop", null), call("call-2", "noop", "   ")), sink::tryEmitNext, NO_INJECTION);
 
         assertThat(tool.recordedArguments()).containsExactly("{}", "{}");
     }
@@ -67,7 +67,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of());
 
         List<ToolResponse> responses = executor.execute(
-                List.of(call("call-1", "does-not-exist", "{}")), sink, NO_INJECTION);
+                List.of(call("call-1", "does-not-exist", "{}")), sink::tryEmitNext, NO_INJECTION);
 
         assertThat(responses).singleElement().extracting(ToolResponse::responseData)
                 .asString().contains("does-not-exist");
@@ -82,7 +82,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of(timeout));
 
         List<ToolResponse> responses = executor.execute(
-                List.of(call("call-1", "search", "{}")), sink, NO_INJECTION);
+                List.of(call("call-1", "search", "{}")), sink::tryEmitNext, NO_INJECTION);
 
         assertThat(responses).singleElement().extracting(ToolResponse::responseData)
                 .asString().contains("error", "upstream timed out after 30s");
@@ -104,7 +104,7 @@ class ToolCallExecutorTest {
 
         List<ToolResponse> responses = executor.execute(List.of(
                 call("call-1", "slow", "{}"),
-                call("call-2", "fast", "{}")), sink, NO_INJECTION);
+                call("call-2", "fast", "{}")), sink::tryEmitNext, NO_INJECTION);
 
         assertThat(responses).extracting(ToolResponse::id).containsExactly("call-1", "call-2");
         assertThat(responses).extracting(ToolResponse::responseData)
@@ -125,7 +125,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of(first, second));
 
         long startedAt = System.currentTimeMillis();
-        executor.execute(List.of(call("call-1", "first", "{}"), call("call-2", "second", "{}")), sink, NO_INJECTION);
+        executor.execute(List.of(call("call-1", "first", "{}"), call("call-2", "second", "{}")), sink::tryEmitNext, NO_INJECTION);
         long elapsed = System.currentTimeMillis() - startedAt;
 
         assertThat(elapsed).isLessThan(250);
@@ -142,7 +142,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of(todoWrite));
         String todosJson = "{\"todos\":[{\"content\":\"c1\",\"activeForm\":\"doing c1\",\"status\":\"in_progress\"}]}";
 
-        executor.execute(List.of(call("call-1", TodoWriteTool.TOOL_NAME, todosJson)), sink, NO_INJECTION);
+        executor.execute(List.of(call("call-1", TodoWriteTool.TOOL_NAME, todosJson)), sink::tryEmitNext, NO_INJECTION);
         sink.tryEmitComplete();
 
         List<AgentStreamEvent> events = sink.asFlux().collectList().block(Duration.ofSeconds(2));
@@ -167,7 +167,7 @@ class ToolCallExecutorTest {
         ToolParamInjector injectingTodos = new ToolParamInjector(
                 Map.of("todos", List.of(Map.of("content", "被注入覆盖的", "activeForm", "?", "status", "completed"))));
 
-        executor.execute(List.of(call("call-1", TodoWriteTool.TOOL_NAME, modelSubmittedTodos)), sink, injectingTodos);
+        executor.execute(List.of(call("call-1", TodoWriteTool.TOOL_NAME, modelSubmittedTodos)), sink::tryEmitNext, injectingTodos);
         sink.tryEmitComplete();
 
         List<AgentStreamEvent> events = sink.asFlux().collectList().block(Duration.ofSeconds(2));
@@ -181,7 +181,7 @@ class ToolCallExecutorTest {
         RecordingToolCallback echo = new RecordingToolCallback("echo", "echoes", "pong");
         ToolCallExecutor executor = new ToolCallExecutor(List.of(echo));
 
-        executor.execute(List.of(call("call-1", "echo", "{}")), sink, NO_INJECTION);
+        executor.execute(List.of(call("call-1", "echo", "{}")), sink::tryEmitNext, NO_INJECTION);
         sink.tryEmitComplete();
 
         List<AgentStreamEvent> events = sink.asFlux().collectList().block(Duration.ofSeconds(2));
@@ -201,7 +201,7 @@ class ToolCallExecutorTest {
         });
         ToolCallExecutor executor = new ToolCallExecutor(List.of(probe));
 
-        executor.execute(List.of(call("call-1", "probe", "{}")), sink, NO_INJECTION);
+        executor.execute(List.of(call("call-1", "probe", "{}")), sink::tryEmitNext, NO_INJECTION);
 
         assertThat(observedThreadNames).singleElement().asString()
                 .as("必须跑在专属的 agent-tool-exec 池上，既不是调用方线程也不是默认的 boundedElastic")
@@ -224,7 +224,7 @@ class ToolCallExecutorTest {
             });
             ToolCallExecutor executor = new ToolCallExecutor(List.of(probe));
 
-            executor.execute(List.of(call("call-1", "probe", "{}")), sink, NO_INJECTION,
+            executor.execute(List.of(call("call-1", "probe", "{}")), sink::tryEmitNext, NO_INJECTION,
                     null, MDC.getCopyOfContextMap());
 
             assertThat(observedValues).containsExactly("conv-42");
@@ -240,7 +240,7 @@ class ToolCallExecutorTest {
         ToolCallExecutor executor = new ToolCallExecutor(List.of(echo));
 
         List<ToolResponse> responses = executor.execute(
-                List.of(call("call-1", "echo", "{}")), sink, NO_INJECTION, null, null);
+                List.of(call("call-1", "echo", "{}")), sink::tryEmitNext, NO_INJECTION, null, null);
 
         assertThat(responses).singleElement().extracting(ToolResponse::responseData).isEqualTo("pong");
     }
