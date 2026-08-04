@@ -33,7 +33,8 @@ class AgentLoopExecutorStructuredOutputTest {
 
         executor.stream("plan my day", params).collectList().block(Duration.ofSeconds(5));
 
-        UserMessage sentMessage = (UserMessage) chatModel.messagesAtRound(0).get(0);
+        // index 0 是无条件注入的当前日期系统消息，UserMessage 紧跟在它后面
+        UserMessage sentMessage = (UserMessage) chatModel.messagesAtRound(0).get(1);
         assertThat(sentMessage.getText()).startsWith("plan my day").contains("title").contains("priority");
     }
 
@@ -45,7 +46,7 @@ class AgentLoopExecutorStructuredOutputTest {
         executor.stream("plain question", new RunnableParams("conv-1", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
-        UserMessage sentMessage = (UserMessage) chatModel.messagesAtRound(0).get(0);
+        UserMessage sentMessage = (UserMessage) chatModel.messagesAtRound(0).get(1);
         assertThat(sentMessage.getText()).isEqualTo("plain question");
     }
 

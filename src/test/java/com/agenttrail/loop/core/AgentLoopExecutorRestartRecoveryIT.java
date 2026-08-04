@@ -66,8 +66,10 @@ class AgentLoopExecutorRestartRecoveryIT {
         instanceB.stream("还记得我吗", new RunnableParams(conversationId, "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
-        // "实例 B" 发给模型的第一轮消息里必须带着"实例 A"落的那一轮——历史穿越了重启
-        assertThat(secondInstanceModel.messagesAtRound(0)).extracting(Message::getText)
+        // "实例 B" 发给模型的第一轮消息里必须带着"实例 A"落的那一轮——历史穿越了重启。
+        // index 0 是无条件注入的当前日期系统消息（内容每天都变），跳过它只比对历史本身。
+        List<Message> withoutDateSection = secondInstanceModel.messagesAtRound(0);
+        assertThat(withoutDateSection.subList(1, withoutDateSection.size())).extracting(Message::getText)
                 .containsExactly("你好", "你好，我记住你了", "还记得我吗");
     }
 
@@ -81,6 +83,9 @@ class AgentLoopExecutorRestartRecoveryIT {
         executor.stream("你好", new RunnableParams("conv-never-seen", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
-        assertThat(chatModel.messagesAtRound(0)).extracting(Message::getText).containsExactly("你好");
+        // index 0 是无条件注入的当前日期系统消息，跳过它只比对历史本身
+        List<Message> withoutDateSection = chatModel.messagesAtRound(0);
+        assertThat(withoutDateSection.subList(1, withoutDateSection.size()))
+                .extracting(Message::getText).containsExactly("你好");
     }
 }

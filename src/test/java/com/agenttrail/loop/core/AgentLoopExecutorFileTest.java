@@ -107,8 +107,9 @@ class AgentLoopExecutorFileTest {
 
         executor.stream("你好", PARAMS).collectList().block(Duration.ofSeconds(5));
 
-        assertThat(chatModel.messagesAtRound(0).get(0)).isInstanceOf(SystemMessage.class);
-        assertThat(chatModel.messagesAtRound(0).get(0).getText())
+        // index 0 是无条件注入的当前日期系统消息，文件区块紧跟在它后面
+        assertThat(chatModel.messagesAtRound(0).get(1)).isInstanceOf(SystemMessage.class);
+        assertThat(chatModel.messagesAtRound(0).get(1).getText())
                 .contains("没有已上传的文件")
                 .contains("不要调用 load_file_content");
     }
@@ -120,7 +121,8 @@ class AgentLoopExecutorFileTest {
 
         executor.stream("你好", PARAMS).collectList().block(Duration.ofSeconds(5));
 
-        assertThat(chatModel.messagesAtRound(0).get(0)).isNotInstanceOf(SystemMessage.class);
+        // index 0 永远是日期消息；没有 FileStore 时它后面直接就是 UserMessage
+        assertThat(chatModel.messagesAtRound(0).get(1)).isNotInstanceOf(SystemMessage.class);
     }
 
     private static UploadedFile textFile(String conversationId, String fileName) {

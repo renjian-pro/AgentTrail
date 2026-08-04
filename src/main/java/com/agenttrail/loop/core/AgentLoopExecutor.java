@@ -42,8 +42,13 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -65,6 +70,8 @@ public class AgentLoopExecutor {
 
     /** 新一轮开始前预加载的历史上限——和单轮上下文压缩阈值是两码事，故意不复用同一个常量。 */
     private static final int HISTORY_TOKEN_BUDGET = 8_000;
+
+    private static final ZoneId APP_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final LlmInvoker llmInvoker;
     private final ToolCallExecutor toolCallExecutor;
@@ -316,6 +323,10 @@ public class AgentLoopExecutor {
         }
 
         List<Message> messages = new ArrayList<>();
+        // 模型没有别的途径知道"今天"是哪天——不注入的话，"今天几号"这类问题会被当成
+        // 需要工具才能回答的问题（曾经因此去猜一个不存在的 file_id 调用 load_file_content），
+        // 或者更糟：编一个听起来合理但完全瞎猜的日期，还在同一句话里自称"无法获取"。
+        messages.add(new SystemMessage(buildDateSection()));
         String memorySection = buildMemorySection(params.userId());
         if (!memorySection.isEmpty()) {
             // 放在最前面，定位是"背景信息"而不是这一轮问答本身——不跟 UserMessage 混在一起，
@@ -625,6 +636,15 @@ public class AgentLoopExecutor {
             return question;
         }
         return question + "\n" + outputType.formatInstruction();
+    }
+
+    /** 无条件注入，不像记忆/文件区块那样有"未启用"的情况——日期不是一个可选能力。 */
+    private static String buildDateSection() {
+        LocalDate today = LocalDate.now(APP_ZONE);
+        String weekday = today.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.CHINA);
+        return "当前日期：" + today.format(DateTimeFormatter.ofPattern("yyyy年M月d日")) + " " + weekday
+                + "。这是你获取当前日期的唯一途径——涉及“今天”“明天”“本周”“最近 N 天”等相对时间的问题，"
+                + "以这个日期为准直接回答，不要说自己无法获取当前时间，也不要编造另一个日期。";
     }
 
     /** 未启用（{@link #memoryStore} 为 null）或用户未知时返回空串——调用方直接据此判断要不要插入。 */

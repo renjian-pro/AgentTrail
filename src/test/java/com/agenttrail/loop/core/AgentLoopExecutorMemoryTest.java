@@ -37,9 +37,11 @@ class AgentLoopExecutorMemoryTest {
 
         executor.stream("你好", new RunnableParams("conv-1", "user-1")).collectList().block(Duration.ofSeconds(5));
 
+        // index 0 是无条件注入的当前日期系统消息（见 AgentLoopExecutor#buildDateSection），
+        // 记忆区块紧跟在它后面
         List<Message> sentMessages = chatModel.messagesAtRound(0);
-        assertThat(sentMessages.get(0)).isInstanceOf(SystemMessage.class);
-        assertThat(sentMessages.get(0).getText()).contains("长期记忆").contains("产品经理");
+        assertThat(sentMessages.get(1)).isInstanceOf(SystemMessage.class);
+        assertThat(sentMessages.get(1).getText()).contains("长期记忆").contains("产品经理");
     }
 
     @Test
@@ -52,7 +54,8 @@ class AgentLoopExecutorMemoryTest {
 
         executor.stream("你好", new RunnableParams("conv-1", "user-1")).collectList().block(Duration.ofSeconds(5));
 
-        assertThat(chatModel.messagesAtRound(0).get(0)).isNotInstanceOf(SystemMessage.class);
+        // index 0 永远是日期消息；没有记忆时它后面直接就是 UserMessage，不会插入第二条 SystemMessage
+        assertThat(chatModel.messagesAtRound(0).get(1)).isNotInstanceOf(SystemMessage.class);
     }
 
     @Test
@@ -89,6 +92,6 @@ class AgentLoopExecutorMemoryTest {
         executor.stream("你好", new RunnableParams("conv-1", "user-1")).collectList().block(Duration.ofSeconds(5));
 
         assertThat(chatModel.roundCount()).as("没配置记忆机制时不该触发额外的提取调用").isEqualTo(1);
-        assertThat(chatModel.messagesAtRound(0).get(0)).isNotInstanceOf(SystemMessage.class);
+        assertThat(chatModel.messagesAtRound(0).get(1)).isNotInstanceOf(SystemMessage.class);
     }
 }

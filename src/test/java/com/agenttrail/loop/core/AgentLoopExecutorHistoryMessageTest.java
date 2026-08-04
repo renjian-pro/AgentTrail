@@ -44,8 +44,9 @@ class AgentLoopExecutorHistoryMessageTest {
         executor.stream("please echo ping", new RunnableParams("conv-1", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
-        // 第 2 轮（index 1）发出去的历史里，第 2 条消息就是上一轮落进去的 assistant 消息
-        AssistantMessage historyMessage = (AssistantMessage) chatModel.messagesAtRound(1).get(1);
+        // index 0 是无条件注入的当前日期系统消息；第 2 轮（index 1）发出去的历史里，
+        // 第 3 条消息（index 2）才是上一轮落进去的 assistant 消息
+        AssistantMessage historyMessage = (AssistantMessage) chatModel.messagesAtRound(1).get(2);
         assertThat(historyMessage.getText()).isNotNull().isEmpty();
     }
 
@@ -66,7 +67,7 @@ class AgentLoopExecutorHistoryMessageTest {
         executor.stream("please echo ping", new RunnableParams("conv-1", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
-        AssistantMessage historyMessage = (AssistantMessage) chatModel.messagesAtRound(1).get(1);
+        AssistantMessage historyMessage = (AssistantMessage) chatModel.messagesAtRound(1).get(2);
         assertThat(historyMessage.getMetadata().get("reasoning_content")).isEqualTo("先想想要不要调用 echo");
     }
 
