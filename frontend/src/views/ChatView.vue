@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import AttachedFileList from '../components/AttachedFileList.vue'
 import CollapsibleChip from '../components/CollapsibleChip.vue'
+import SqlToolCard from '../components/SqlToolCard.vue'
 import FileUploadWidget from '../components/FileUploadWidget.vue'
 import MessageInput from '../components/MessageInput.vue'
 import PptTaskCard from '../components/PptTaskCard.vue'
@@ -13,10 +14,11 @@ import { fileApi, type AttachedFile } from '../api/file-api'
 import { toErrorMessage } from '../api/http'
 import { pptApi } from '../api/ppt-api'
 import { researchApi } from '../api/research-api'
+import { renderMarkdown } from '../utils/renderMarkdown'
 import { useChatStore, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
 /** 三种能力共用一个入口：默认发送走普通对话，先选中下面的模式再发送才会触发 Deep Research / PPT。 */
-type Mode = 'research' | 'ppt' | undefined
+type Mode = 'research' | 'ppt' | 'analytics' | undefined
 
 const chat = useChatStore()
 const { conversationId, messages, todos } = storeToRefs(chat)
@@ -28,22 +30,41 @@ const files = ref<AttachedFile[]>([])
 const uploadBusy = ref(false)
 const uploadError = ref('')
 const pendingMode = ref<Mode>(undefined)
+const initialMessage = ref('')
 let aborter: AbortController | undefined
+
+onMounted(() => {
+  if (typeof window === 'undefined' || window.location.pathname !== '/chat') return
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('mode')?.toLowerCase() === 'analytics') pendingMode.value = 'analytics'
+  initialMessage.value = params.get('q') ?? ''
+})
 
 // Only the chat SSE owns an AbortController. Synchronous Research/PPT calls
 // cannot be cancelled by the chat stop endpoint, so showing that control there
 // would promise an action the backend cannot perform.
 const canStop = computed(() => busy.value && aborter !== undefined)
-const modeLabel = computed(() => pendingMode.value === 'research' ? 'Deep Research' : pendingMode.value === 'ppt' ? 'PPT 生成' : '')
+const modeLabel = computed(() => pendingMode.value === 'research' ? 'Deep Research' : pendingMode.value === 'ppt' ? 'PPT 生成' : pendingMode.value === 'analytics' ? '数据分析' : '')
 
 function toggleMode(mode: Mode) {
   pendingMode.value = pendingMode.value === mode ? undefined : mode
 }
 
+const TOOL_LABELS: Record<string, string> = {
+  list_tables: '查看数据表',
+  describe_tables: '展开表结构',
+  lookup_glossary: '查询业务术语',
+  calculate: '计算',
+  tool_search: '查找可用工具'
+}
+const toolLabel = (name: string) => TOOL_LABELS[name] ?? name
+
 async function send(message: string) {
   if (pendingMode.value === 'research') return runResearch(message)
   if (pendingMode.value === 'ppt') return runPpt(message)
 
+  const mode = pendingMode.value
+  pendingMode.value = undefined
   error.value = ''
   busy.value = true
   messages.value.push({ kind: 'chat', role: 'user', content: message })
@@ -59,7 +80,8 @@ async function send(message: string) {
       message,
       conversationId: conversationId.value,
       modelId: modelId.value,
-      webSearchEnabled: webSearch.value
+      webSearchEnabled: webSearch.value,
+      mode
     }, aborter.signal)) {
       const failureMessage = chat.applyStreamEvent(event, assistant, message)
       if (failureMessage) error.value = failureMessage
@@ -129,9 +151,14 @@ async function upload(file: File) {
         <article v-if="message.kind === 'chat'" class="message-row" :class="message.role">
           <div class="avatar">{{ message.role === 'user' ? '你' : '✦' }}</div>
           <div class="bubble">
-            <p>{{ message.content || (busy && message.role === 'assistant' ? '正在思考…' : '') }}</p>
+            <p v-if="message.role === 'user'">{{ message.content }}</p>
+            <div v-else-if="message.content" class="markdown-body" v-html="renderMarkdown(message.content)" />
+            <p v-else class="thinking-placeholder">{{ busy ? '正在思考…' : '' }}</p>
             <CollapsibleChip v-if="message.think" label="Thought" :content="message.think" />
-            <CollapsibleChip v-for="tool in message.tools" :key="tool.toolCallId" :label="tool.name" :content="tool.detail" />
+            <template v-for="tool in message.tools" :key="tool.toolCallId">
+              <SqlToolCard v-if="tool.name === 'execute_sql' || tool.name === 'validate_sql'" :name="tool.name" :arguments-text="tool.argumentsText" :result="tool.result" />
+              <CollapsibleChip v-else :label="toolLabel(tool.name)" :content="tool.detail" />
+            </template>
           </div>
         </article>
         <PptTaskCard v-else-if="message.kind === 'ppt'" :entry="message" />
@@ -145,12 +172,13 @@ async function upload(file: File) {
         <div class="mode-picker">
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'research' }" @click="toggleMode('research')">⌕ 深度研究</button>
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'ppt' }" @click="toggleMode('ppt')">▣ 生成 PPT</button>
+          <button type="button" :disabled="busy" :class="{ active: pendingMode === 'analytics' }" @click="toggleMode('analytics')">⌁ 数据分析</button>
           <button type="button" :disabled="busy" :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         </div>
-        <FileUploadWidget @upload="upload" />
+        <FileUploadWidget @upload="upload" @rejected="uploadError = $event" />
       </div>
       <span v-if="pendingMode" class="mode-hint">下一条消息将使用 {{ modeLabel }}</span>
-      <MessageInput :busy="busy" @send="send" />
+      <MessageInput :busy="busy" :initial-value="initialMessage" @send="send" />
       <div class="controls">
         <span>当前模型</span>
         <select v-model="modelId" aria-label="当前模型"><option>qwen-plus</option><option>deepseek-chat</option></select>

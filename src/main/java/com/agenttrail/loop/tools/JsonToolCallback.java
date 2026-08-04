@@ -18,14 +18,14 @@ import java.util.function.Function;
  * 以"工具结果"的形式喂回模型，模型下一轮能看到错误、有机会改参数重试或换路子；
  * 抛出去则整轮对话直接死掉。区别只在于日志级别：越权访问是安全事件，单独记 warn。
  */
-final class JsonToolCallback implements ToolCallback {
+public final class JsonToolCallback implements ToolCallback {
 
     private static final Logger log = LoggerFactory.getLogger(JsonToolCallback.class);
 
     private final ToolDefinition definition;
     private final Function<ToolArguments, String> body;
 
-    JsonToolCallback(String name, String description, String inputSchema,
+	public JsonToolCallback(String name, String description, String inputSchema,
                      Function<ToolArguments, String> body) {
         this.definition = ToolDefinition.builder()
                 .name(name)

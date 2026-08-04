@@ -2,7 +2,7 @@ import type { StreamEvent } from '../types/stream-event'
 import { jsonInit, request } from './http'
 import { clearToken, readToken } from './auth-token'
 
-export type ChatRequest = { message: string; conversationId?: string; modelId?: string; webSearchEnabled: boolean }
+export type ChatRequest = { message: string; conversationId?: string; modelId?: string; webSearchEnabled: boolean; mode?: string }
 export type HistoryTurn = { id: number; question: string; answer: string; think: string | null; timeline: string | null; createdAtMillis: number }
 export type HistoryPage = { conversationId: string; page: number; size: number; hasMore: boolean; turns: HistoryTurn[] }
 export type ConversationSummary = { conversationId: string; title: string; lastActiveAtMillis: number }

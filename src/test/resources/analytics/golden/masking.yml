@@ -1,0 +1,5 @@
+cases:
+  - {id: mask-001, dimension: masking, question: "查询证件号", as_user: admin, reference_sql: "SELECT id_card FROM user_profile", assertions: [{type: output_not_contains, value: "110101"}]}
+  - {id: mask-002, dimension: masking, question: "证件号别名查询", as_user: admin, reference_sql: "SELECT id_card AS code FROM user_profile", assertions: [{type: output_not_contains, value: "110101"}]}
+  - {id: mask-003, dimension: masking, question: "地址查询", as_user: admin, reference_sql: "SELECT home_address FROM user_profile", assertions: [{type: output_contains_any, values: ["********", "脱敏"]}]}
+  - {id: mask-004, dimension: masking, question: "表达式中的证件号", as_user: admin, reference_sql: "SELECT CONCAT(id_card, '') AS code FROM user_profile", assertions: [{type: output_not_contains, value: "110101"}]}

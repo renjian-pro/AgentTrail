@@ -1,0 +1,3 @@
+cases:
+  - {id: cost-001, dimension: cost, question: "简单聚合成本", as_user: admin, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: rounds_at_most, value: 20}]}
+  - {id: cost-002, dimension: cost, question: "分页查询成本", as_user: admin, reference_sql: "SELECT * FROM rental ORDER BY rental_id LIMIT 20", assertions: [{type: rounds_at_most, value: 20}]}

@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 
-const props = defineProps<{ busy: boolean }>()
+const props = defineProps<{ busy: boolean; initialValue?: string }>()
 const emit = defineEmits<{ send: [string] }>()
-const message = ref('')
+const message = ref(props.initialValue ?? '')
+
+watch(() => props.initialValue, value => {
+  if (value != null) message.value = value
+})
 
 function submit() {
   if (message.value.trim() && !props.busy) {

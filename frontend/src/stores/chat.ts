@@ -11,7 +11,7 @@ export type ChatTurn = {
   role: 'user' | 'assistant'
   content: string
   think?: string
-  tools?: { name: string; toolCallId: string; detail: string }[]
+  tools?: { name: string; toolCallId: string; detail: string; argumentsText: string; result?: string }[]
 }
 export type PptEntry = { kind: 'ppt'; prompt: string; task?: PptTask; error?: string }
 export type ResearchEntry = { kind: 'research'; question: string; result?: DeepResearchReport; error?: string }
@@ -82,11 +82,14 @@ export const useChatStore = defineStore('chat', () => {
         assistant.think = (assistant.think ?? '') + event.content
         return undefined
       case 'ToolStart':
-        assistant.tools?.push({ name: event.toolName, toolCallId: event.toolCallId, detail: event.arguments })
+        assistant.tools?.push({ name: event.toolName, toolCallId: event.toolCallId, detail: event.arguments, argumentsText: event.arguments })
         return undefined
       case 'ToolEnd': {
         const tool = assistant.tools?.find(item => item.toolCallId === event.toolCallId)
-        if (tool) tool.detail += `\n\n结果：${event.result}`
+        if (tool) {
+          tool.result = event.result
+          tool.detail = tool.detail + '\n\n结果：' + event.result
+        }
         return undefined
       }
       case 'TodoProgress':

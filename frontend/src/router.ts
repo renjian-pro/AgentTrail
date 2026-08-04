@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ChatView from './views/ChatView.vue'
 import LoginView from './views/LoginView.vue'
+import AnalyticsSchemaView from './views/AnalyticsSchemaView.vue'
+import AnalyticsGlossaryView from './views/AnalyticsGlossaryView.vue'
 import RoleListView from './views/RoleListView.vue'
 import UserManagementView from './views/UserManagementView.vue'
 import { TOKEN_KEY } from './api/auth-token'
@@ -10,6 +12,8 @@ const router = createRouter({ history: createWebHistory(), routes: [
   { path: '/', redirect: '/chat' },
   { path: '/login', component: LoginView },
   { path: '/chat', component: ChatView },
+  { path: '/analytics/schema', component: AnalyticsSchemaView },
+  { path: '/analytics/glossary', component: AnalyticsGlossaryView },
   { path: '/roles', component: RoleListView },
   { path: '/admin/users', component: UserManagementView, meta: { requiresAdmin: true } }
 ] })
