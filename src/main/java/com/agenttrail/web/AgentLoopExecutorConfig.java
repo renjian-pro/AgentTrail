@@ -120,14 +120,14 @@ public class AgentLoopExecutorConfig {
             ChartToolProvider chartToolProvider,
             TurnPersistenceHook turnPersistenceHook,
             ObjectProvider<FileContentTool> fileContentToolProvider,
-            FileStore fileStore,
+            ObjectProvider<FileStore> fileStoreProvider,
             ObjectProvider<AnalyticsToolProvider> analyticsToolProvider) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
                 new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
         return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider,
-                chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStore,
+                chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
                 analyticsToolProvider.getIfAvailable());
     }
 }
