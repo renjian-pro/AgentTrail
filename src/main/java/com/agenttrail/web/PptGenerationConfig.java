@@ -26,6 +26,10 @@ import org.springframework.context.annotation.Configuration;
 import javax.sql.DataSource;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * PPT 生成状态机（issue #24）的生产装配。REQUIREMENT/OUTLINE/SCHEMA 三个状态共用同一个不挂
@@ -43,6 +47,23 @@ public class PptGenerationConfig {
     @Bean
     public PptTaskStore pptTaskStore(@Qualifier("dataSource") DataSource dataSource) {
         return new JdbcPptTaskStore(dataSource);
+    }
+
+    /**
+     * 生成一次 PPT 要跑完 8 个状态（含至少一次 LLM 调用、真实文生图请求、Python 子进程渲染），
+     * 是分钟级的操作——不能占着 HTTP 请求线程等它跑完（issue #24 的注释里也明确写了这是有意
+     * 留到后面做的事）。单独开一个命名池，和 {@code ToolCallExecutor} 给工具执行开专属调度器
+     * 是同一个理由：不跟 Tomcat 的请求线程池或别的阻塞代码共用，互不排队。
+     */
+    @Bean(name = "pptGenerationExecutor", destroyMethod = "shutdown")
+    public ExecutorService pptGenerationExecutor() {
+        AtomicInteger threadCount = new AtomicInteger();
+        ThreadFactory namedDaemonThreads = runnable -> {
+            Thread thread = new Thread(runnable, "ppt-generation-" + threadCount.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newFixedThreadPool(4, namedDaemonThreads);
     }
 
     @Bean

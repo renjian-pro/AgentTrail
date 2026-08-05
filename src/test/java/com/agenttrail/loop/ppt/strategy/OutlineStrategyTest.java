@@ -34,7 +34,8 @@ class OutlineStrategyTest {
         assertThat(result.outline().slides()).hasSize(2);
         assertThat(result.outline().slides().get(0).bullets()).contains("绕开 ChatClient 差异");
 
-        String promptSent = model.messagesAtRound(0).get(0).getText();
+        // index 0 是 AgentLoopExecutor 无条件注入的当前日期系统消息，真正的 prompt 紧跟在它后面
+        String promptSent = model.messagesAtRound(0).get(1).getText();
         assertThat(promptSent).contains("手写 ReAct Loop");
         assertThat(promptSent).contains("素材一：关于 ReAct Loop 的背景");
     }

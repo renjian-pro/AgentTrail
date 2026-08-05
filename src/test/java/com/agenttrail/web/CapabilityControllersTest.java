@@ -26,30 +26,39 @@ import static org.mockito.Mockito.when;
 
 class CapabilityControllersTest {
 
+    /** 测试用的直接执行器——同线程内联跑 Runnable，不像生产那样跳到独立线程池，
+     * 断言才能在 controller 方法返回后立即看到"后台任务"已经跑完的效果。 */
+    private static final java.util.concurrent.Executor DIRECT_EXECUTOR = Runnable::run;
+
     @Test
-    void deepResearchRecordsItsStructuredResultInTheRequestedConversation() {
+    void deepResearchRecordsItsStructuredResultInTheRequestedConversationOnceTheBackgroundRunCompletes() {
         DeepResearchService researchService = mock(DeepResearchService.class);
         CapabilityConversationService conversationService = mock(CapabilityConversationService.class);
         DeepResearchReport report = DeepResearchReport.completed("Java 就业趋势", List.of(), "研究结论");
         when(researchService.research("研究 Java")).thenReturn(report);
-        DeepResearchController controller = new DeepResearchController(researchService, conversationService);
+        DeepResearchController controller = new DeepResearchController(researchService, conversationService, DIRECT_EXECUTOR);
 
-        assertThat(controller.research(new DeepResearchRequest("conversation-1", "研究 Java"))).isEqualTo(report);
+        DeepResearchTaskResponse created = controller.research(new DeepResearchRequest("conversation-1", "研究 Java"));
+        // DIRECT_EXECUTOR 是同线程执行，research() 返回时后台任务其实已经跑完了——
+        // 轮询端点应该已经能读到 SUCCESS，不用真的等。
+        DeepResearchTaskResponse polled = controller.status(created.taskId());
 
+        assertThat(polled.status()).isEqualTo(DeepResearchTaskResponse.SUCCESS);
+        assertThat(polled.report()).isEqualTo(report);
         verify(conversationService).recordSuccess(eq("conversation-1"), eq("研究 Java"), eq("研究结论"),
                 eq("research"), eq(report), anyLong());
     }
 
     @Test
-    void pptRecordsItsTaskInTheRequestedConversation() throws IOException {
+    void pptRecordsItsTaskInTheRequestedConversationOnceTheBackgroundRunCompletes() throws IOException {
         PptGenerationService pptService = mock(PptGenerationService.class);
         CapabilityConversationService conversationService = mock(CapabilityConversationService.class);
         Path generatedPpt = Files.createTempFile("agenttrail-ppt-", ".pptx");
-        when(pptService.create("conversation-2", "生成季度汇报")).thenReturn(9L);
+        when(pptService.prepare("legacy", "conversation-2", "生成季度汇报")).thenReturn(9L);
         when(pptService.describe(9L)).thenReturn(Optional.of(
                 new PptTask(9L, "conversation-2", PptState.SUCCESS, null, "{}", 1L, 2L)));
         when(pptService.outputPathOf(9L)).thenReturn(generatedPpt.toString());
-        PptGenerationController controller = new PptGenerationController(pptService, conversationService);
+        PptGenerationController controller = new PptGenerationController(pptService, conversationService, DIRECT_EXECUTOR);
 
         try {
             PptGenerationResponse response = controller.create(
@@ -57,6 +66,7 @@ class CapabilityControllersTest {
 
             assertThat(response.taskId()).isEqualTo(9L);
             assertThat(response.outputPath()).isEqualTo("/agent/v1/ppt/9/download");
+            verify(pptService).run(9L);
             verify(conversationService).recordSuccess(eq("conversation-2"), eq("生成季度汇报"),
                     eq("PPT 任务状态：SUCCESS"), eq("ppt"), eq(response), anyLong());
         } finally {
@@ -71,7 +81,7 @@ class CapabilityControllersTest {
         Path generatedPpt = Files.createTempFile("agenttrail-download-", ".pptx");
         Files.writeString(generatedPpt, "pptx-test-content");
         when(pptService.outputPathOf(9L)).thenReturn(generatedPpt.toString());
-        PptGenerationController controller = new PptGenerationController(pptService, conversationService);
+        PptGenerationController controller = new PptGenerationController(pptService, conversationService, DIRECT_EXECUTOR);
 
         try {
             ResponseEntity<Resource> response = controller.download(9L);

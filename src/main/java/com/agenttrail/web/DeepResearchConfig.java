@@ -7,6 +7,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * DeepResearch（issue #25/#34/#35/#36/#37）的生产装配。模型分两档，不是单一 {@code deepseek-chat}：
  * {@code plainExecutor}（需求澄清/主题生成/plan/critique/综合报告，见 {@link DeepResearchService}
@@ -46,5 +51,21 @@ public class DeepResearchConfig {
                 executorFactory.forInternalOrchestration(searchModelId, true),
                 maxConcurrentTasksPerLayer, maxTasksPerPlan, maxTaskRetries, maxCritiqueRounds,
                 researchContextCompactor);
+    }
+
+    /**
+     * 一次 DeepResearch 是"需求澄清→主题生成→逐任务检索→综合报告"一整条链路，分钟级操作——
+     * 不能占着 HTTP 请求线程等它跑完，理由和 {@code PptGenerationConfig#pptGenerationExecutor}
+     * 完全一致：单独命名池，不跟 Tomcat 请求线程或别的阻塞代码共用。
+     */
+    @Bean(name = "deepResearchExecutor", destroyMethod = "shutdown")
+    public ExecutorService deepResearchExecutor() {
+        AtomicInteger threadCount = new AtomicInteger();
+        ThreadFactory namedDaemonThreads = runnable -> {
+            Thread thread = new Thread(runnable, "deep-research-" + threadCount.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newFixedThreadPool(4, namedDaemonThreads);
     }
 }

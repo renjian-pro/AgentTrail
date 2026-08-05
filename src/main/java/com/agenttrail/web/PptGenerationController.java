@@ -3,6 +3,9 @@ package com.agenttrail.web;
 import com.agenttrail.loop.ppt.PptGenerationService;
 import com.agenttrail.loop.ppt.PptTask;
 import cn.dev33.satoken.stp.StpUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
@@ -22,55 +25,47 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 /**
- * PPT 生成的 HTTP 入口（issue #24）。同步接口，和 {@code DeepResearchController} 一样——
- * 一次请求跑完整个状态机才返回，不做进度推送（那是这个"最小骨架"票之外的事）。
+ * PPT 生成的 HTTP 入口（issue #24，异步化见后续 bug 修复）。{@code /create}/{@code /resume}
+ * 只做"落库准备 + 把状态机丢到后台执行器"这一步就立即返回，真正的状态机推进
+ * （{@link PptGenerationService#run}）在 {@link #pptGenerationExecutor} 上跑；前端靠轮询
+ * {@code GET /agent/v1/ppt/{taskId}} 观察进度——状态机每完成一个状态就会落库一次
+ * checkpoint（见 {@link PptGenerationService} 类注释），轮询天然就能看到逐步推进的效果，
+ * 不需要另外搭一条 SSE 推送通道。
  *
- * <p>{@code /resume/{taskId}} 单独暴露断点续传：如果上一次 {@code /create} 因为某个状态失败
- * 而抛了异常，DB 里的任务停在那个失败的状态上，调用这个接口会从同一个状态重新跑，不是从头开始。
+ * <p>会话历史的记录时机也跟着从"请求返回时"挪到了"后台任务真正跑完时"——同步年代这两个
+ * 时刻是同一时刻，异步之后不再是，记录必须等真正有结果（成功或失败）才发生，否则历史里
+ * 存的只会是一句"正在运行中"，没有意义。
  */
 @RestController
 public class PptGenerationController {
 
+    private static final Logger log = LoggerFactory.getLogger(PptGenerationController.class);
+
     private final PptGenerationService pptGenerationService;
     private final CapabilityConversationService conversationService;
+    private final Executor pptGenerationExecutor;
 
     public PptGenerationController(PptGenerationService pptGenerationService,
-            CapabilityConversationService conversationService) {
+            CapabilityConversationService conversationService,
+            @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor) {
         this.pptGenerationService = pptGenerationService;
         this.conversationService = conversationService;
+        this.pptGenerationExecutor = pptGenerationExecutor;
     }
 
     @PostMapping("/agent/v1/ppt/create")
     public PptGenerationResponse create(@RequestBody PptGenerationRequest request) {
         long startedAt = System.nanoTime();
-        try {
-            String userId = currentUserId();
-            long taskId = userId == null
-                    ? pptGenerationService.create(request.conversationId(), request.message())
-                    : pptGenerationService.create(userId, request.conversationId(), request.message());
-            PptGenerationResponse response = toResponse(userId, taskId);
-            if (userId == null) {
-                conversationService.recordSuccess(request.conversationId(), request.message(),
-                        "PPT 任务状态：" + response.status(), "ppt", response, elapsedMillis(startedAt));
-            } else {
-                conversationService.recordSuccess(userId, request.conversationId(), request.message(),
-                        "PPT 任务状态：" + response.status(), "ppt", response, elapsedMillis(startedAt));
-            }
-            return response;
-        } catch (RuntimeException failure) {
-            String userId = currentUserId();
-            if (userId == null) {
-                conversationService.recordFailure(request.conversationId(), request.message(), "ppt",
-                        failure.getMessage(), elapsedMillis(startedAt));
-            } else {
-                conversationService.recordFailure(userId, request.conversationId(), request.message(), "ppt",
-                        failure.getMessage(), elapsedMillis(startedAt));
-            }
-            throw failure;
-        }
+        String userId = currentUserId();
+        long taskId = userId == null
+                ? pptGenerationService.prepare("legacy", request.conversationId(), request.message())
+                : pptGenerationService.prepare(userId, request.conversationId(), request.message());
+        runInBackgroundThenRecord(userId, taskId, request.conversationId(), request.message(), startedAt);
+        return toResponse(userId, taskId);
     }
 
     @PostMapping("/agent/v1/ppt/resume/{taskId}")
@@ -79,8 +74,51 @@ public class PptGenerationController {
         if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
         }
-        if (userId == null) pptGenerationService.run(taskId); else pptGenerationService.run(userId, taskId);
+        // /resume 原本就不记会话历史（只有 /create 记）——异步化不改变这一点，行为对齐旧实现。
+        pptGenerationExecutor.execute(() -> runAndSwallow(userId, taskId));
         return toResponse(userId, taskId);
+    }
+
+    /** 轮询端点：不驱动任何执行，纯读当前 checkpoint——前端靠反复调用这个来看到生成进度推进。 */
+    @GetMapping("/agent/v1/ppt/{taskId}")
+    public PptGenerationResponse status(@PathVariable long taskId) {
+        String userId = currentUserId();
+        if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
+        }
+        return toResponse(userId, taskId);
+    }
+
+    private void runInBackgroundThenRecord(String userId, long taskId, String conversationId, String message,
+            long startedAt) {
+        pptGenerationExecutor.execute(() -> {
+            RuntimeException failure = null;
+            try {
+                if (userId == null) pptGenerationService.run(taskId); else pptGenerationService.run(userId, taskId);
+            } catch (RuntimeException runFailure) {
+                failure = runFailure;
+            }
+            long elapsed = elapsedMillis(startedAt);
+            if (failure == null) {
+                PptGenerationResponse response = toResponse(userId, taskId);
+                String answer = "PPT 任务状态：" + response.status();
+                if (userId == null) conversationService.recordSuccess(conversationId, message, answer, "ppt", response, elapsed);
+                else conversationService.recordSuccess(userId, conversationId, message, answer, "ppt", response, elapsed);
+            } else {
+                if (userId == null) conversationService.recordFailure(conversationId, message, "ppt", failure.getMessage(), elapsed);
+                else conversationService.recordFailure(userId, conversationId, message, "ppt", failure.getMessage(), elapsed);
+            }
+        });
+    }
+
+    /** {@code run(taskId)} 失败时已经在内部把 errorMsg 落库了（{@code taskStore.markFailed}）——
+     * 轮询端点读得到；这里只需要不让异常从后台线程里裸抛出去，记一条日志留痕即可。 */
+    private void runAndSwallow(String userId, long taskId) {
+        try {
+            if (userId == null) pptGenerationService.run(taskId); else pptGenerationService.run(userId, taskId);
+        } catch (RuntimeException failure) {
+            log.warn("PPT 任务 {} 后台续跑失败（已落库 errorMsg，轮询可见）", taskId, failure);
+        }
     }
 
     /**

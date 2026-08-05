@@ -32,7 +32,8 @@ class RequirementStrategyTest {
         assertThat(result.requirement().title()).isEqualTo("Spring AI Agent 实战");
         assertThat(result.requirement().slideCount()).isEqualTo(3);
         assertThat(result.userRequirement()).isEqualTo(input.userRequirement());
-        assertThat(model.messagesAtRound(0).get(0).getText()).contains("帮我做一份关于 Spring AI Agent 的介绍");
+        // index 0 是 AgentLoopExecutor 无条件注入的当前日期系统消息，真正的 prompt 紧跟在它后面
+        assertThat(model.messagesAtRound(0).get(1).getText()).contains("帮我做一份关于 Spring AI Agent 的介绍");
     }
 
     @Test

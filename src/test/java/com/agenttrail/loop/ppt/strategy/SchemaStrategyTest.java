@@ -36,7 +36,8 @@ class SchemaStrategyTest {
         assertThat(result.schema().contentSlides()).hasSize(2);
         assertThat(result.schema().contentSlides().get(1).slideTitleText()).isEqualTo("模板填充生成 PPT");
 
-        String promptSent = model.messagesAtRound(0).get(0).getText();
+        // index 0 是 AgentLoopExecutor 无条件注入的当前日期系统消息，真正的 prompt 紧跟在它后面
+        String promptSent = model.messagesAtRound(0).get(1).getText();
         assertThat(promptSent).contains("为什么手写 ReAct Loop");
         assertThat(promptSent).contains("绕开 ChatClient 差异");
     }
@@ -58,7 +59,8 @@ class SchemaStrategyTest {
 
         strategy.execute(input);
 
-        String promptSent = model.messagesAtRound(0).get(0).getText();
+        // index 0 是 AgentLoopExecutor 无条件注入的当前日期系统消息，真正的 prompt 紧跟在它后面
+        String promptSent = model.messagesAtRound(0).get(1).getText();
         assertThat(promptSent).as("修改指令要真的传给模型，不能被丢在半路").contains("把标题改成《新标题》");
     }
 }

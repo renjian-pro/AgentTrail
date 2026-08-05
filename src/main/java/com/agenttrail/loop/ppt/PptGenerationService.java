@@ -66,19 +66,30 @@ public class PptGenerationService {
 
     /** HTTP 层使用的带归属入口；userId 在这里冻结，后续断点任务只接受同一归属。 */
     public long create(String userId, String conversationId, String userMessage) {
+        long taskId = prepare(userId, conversationId, userMessage);
+        run(taskId);
+        return taskId;
+    }
+
+    /**
+     * 只做"这次该新建/续传/修改哪个任务"的判定和落库准备——意图识别 + 建/找任务行（MODIFY
+     * 顺带把 checkpoint 快进到 SCHEMA），不跑状态机本身。{@link #create} 内部就是
+     * {@code prepare} 紧接着 {@link #run(long)}，拆开是为了给异步入口用：HTTP 层拿到 taskId
+     * 后可以立即把响应返回给前端，再把耗时的 {@code run(taskId)} 丢到后台执行器上——两种调用
+     * 方式复用同一份意图识别/建档逻辑，不是分叉维护两套。
+     */
+    public long prepare(String userId, String conversationId, String userMessage) {
         PptIntent intent = PptIntentRecognizer.recognize(userMessage);
         return switch (intent) {
-            case CREATE -> createNew(userId, conversationId, userMessage);
-            case RESUME -> resumeExisting(userId, conversationId);
-            case MODIFY -> modifyExisting(userId, conversationId, userMessage);
+            case CREATE -> prepareNew(userId, conversationId, userMessage);
+            case RESUME -> prepareResume(userId, conversationId);
+            case MODIFY -> prepareModify(userId, conversationId, userMessage);
         };
     }
 
-    private long createNew(String userId, String conversationId, String userMessage) {
+    private long prepareNew(String userId, String conversationId, String userMessage) {
         PptGenerationContext initialContext = PptGenerationContext.initial(conversationId, userMessage);
-        long taskId = taskStore.create(userId, conversationId, initialContext);
-        run(taskId);
-        return taskId;
+        return taskStore.create(userId, conversationId, initialContext);
     }
 
     /**
@@ -87,7 +98,7 @@ public class PptGenerationService {
      * 实现一套续传逻辑，{@code run(long)} 本身既是"第一次跑完"的执行体也是"断点恢复"的入口，
      * 这里只是补上"根据 conversationId 找到 taskId"这一步，调用方（聊天入口）不需要自己记 taskId。
      */
-    private long resumeExisting(String userId, String conversationId) {
+    private long prepareResume(String userId, String conversationId) {
         PptTask existing = taskStore.findLatestByConversationId(userId, conversationId)
                 .orElseThrow(() -> new IllegalStateException(
                         "会话 " + conversationId + " 下没有可以继续的 PPT 任务"));
@@ -95,7 +106,6 @@ public class PptGenerationService {
             throw new IllegalStateException(
                     "会话 " + conversationId + " 最近一条 PPT 任务（id=" + existing.id() + "）已经完成，没有可继续的中断状态");
         }
-        run(existing.id());
         return existing.id();
     }
 
@@ -108,7 +118,7 @@ public class PptGenerationService {
      * 每次 MODIFY 都新建一条任务，原始任务和历史修改记录都完整保留在 {@code ppt_generation_task}
      * 表里，不是原地覆盖。
      */
-    private long modifyExisting(String userId, String conversationId, String userMessage) {
+    private long prepareModify(String userId, String conversationId, String userMessage) {
         PptTask existing = taskStore.findLatestByConversationId(userId, conversationId)
                 .filter(task -> task.status() == PptState.SUCCESS)
                 .orElseThrow(() -> new IllegalStateException(
@@ -123,7 +133,6 @@ public class PptGenerationService {
         // SCHEMA——INIT/REQUIREMENT/SEARCH/TEMPLATE/OUTLINE 都不需要真的执行一遍，这一行本身就是
         // "定位到已有记录、在其基础上改，不重新走完整流程"这条验收标准的具体落地。
         taskStore.advance(newTaskId, PptState.SCHEMA, modifyContext);
-        run(newTaskId);
         return newTaskId;
     }
 
