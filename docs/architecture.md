@@ -3,7 +3,7 @@
 > 术语沿用 `CONTEXT.md` 已定义的词汇表（Runtime / Capability Pack / Tool / Skill / Hook / LlmClient / Gateway），不引入新概念。
 > 对应决策见 `adr/0001`（Runtime 定位）、`adr/0002`（手写 loop 为 V1 主线）；对应机制细节见 `roadmap.md`（Phase 0-11）与 `engineering-pitfalls-and-highlights.md`（踩坑点，部分机制在下文用 `#N` 标出）。issue 号（`#15`-`#19` 这类）指 GitHub issue，可用 `gh issue view <n> --json state,body` 查验收标准。
 >
-> **这一版已同步到 2026-08-05 的实际代码状态**：V1 的 SSE、会话持久化、历史查询与前端统一入口已经接线；`capability/`（analytics/auth/sys）已落地，DeepResearch/PPT 已异步化；`governance/`、`distributed/`、`mcp/` 等后续规划仍见 `roadmap.md`。
+> **这一版已同步到 2026-08-06 的实际代码状态**：V1 的 SSE、会话持久化、历史查询与前端统一入口已经接线；`capability/`（analytics/auth/sys）已落地，DeepResearch/PPT 已异步化并支持取消；治理层（Hooks/审批/预算熔断/审计哈希链/可观测性/评测/安全纵深）已落地，见 `loop.hook`/`loop.security`/`evaluation`/`observability` 几个包，不再是规划中的 `governance/`；`distributed/`、`mcp/` 等仍是后续规划，见 `roadmap.md`。
 
 ---
 
@@ -167,6 +167,11 @@ sequenceDiagram
     end
 ```
 
+**治理层（issue #63-#71）在这条链路上的接入点**（为保持图的可读性没有画进上面的时序图）：
+- `stream()` 一开始、`registerTask` 成功之后：`PromptInjectionGuard`（疑似注入直接拒绝本轮）→ `PiiMasker`（打码后的文本才继续往下走，落库/messages 都看不到原文）→ `fireSessionStart`。
+- 每轮 `finishRound` 里，`requiresApproval` 判到 `HIGH_RISK` 工具时先转 `PauseConfig` 走人工审批（在 `firePreToolUse` 之前拦下，根本不会执行）；剩下的调用先过 `firePreToolUse`（纯观察，不拦截），再由 `ToolRateLimiter` 做真正的放行/拒绝决策（超限的调用不送进 `ToolCallExecutor`，直接合成一条 `Error:` 开头的响应喂回模型），执行完再 `firePostToolUse`。
+- `fireBudget`（每轮）配合 `SessionBudgetTracker.overBudget()`（每轮末尾检查）实现会话级熔断，和 `PreToolUseHook` 是两套独立机制——`Hook` 全系是观察型 void 接口（#63 的既定设计），限速/预算这类需要"拦截并改变行为"的机制刻意没有塞进 Hook 契约，而是各自成一个直接参与决策的组件，理由见 `docs/specs/backend-phase3-governance-ticket-09.md` 第 2 节。
+
 **另一条入口**：`AgentLoopExecutor.call(question, params)`（issue #15）——不是另一套实现，是把 `stream()` 阻塞收集成一次性返回值，复用同一套单飞注册/上下文压缩/工具执行机制。声明了 `OutputType` 时，`call()` 会在返回前对文本做一次 `JsonRepair.fixJson` 兜底（`stream()` 不做，因为文本已经边生成边推给调用方了，没法事后再改）。
 
 ---
@@ -257,15 +262,37 @@ com.agenttrail
 │   │   └── idempotency/                       # issue #14：幂等工具模板
 │   │       └── IdempotencyStore.java / InMemoryIdempotencyStore.java / IdempotentToolCallback.java / IdempotencyKeyStrategy(ies).java / IdempotencyRecord.java
 │   │
-│   └── skills/                                # issue #7：Skills 渐进式披露
-│       ├── SkillsTool.java                    # 单 mega-tool 设计
-│       ├── SkillManager.java / SkillRepository.java / SkillReconciliation.java
-│       └── Skill.java / SkillDocument.java / SkillMetadata.java / SkillNames.java / SkillsConfiguration.java
+│   ├── skills/                                # issue #7：Skills 渐进式披露
+│   │   ├── SkillsTool.java                    # 单 mega-tool 设计
+│   │   ├── SkillManager.java / SkillRepository.java / SkillReconciliation.java
+│   │   └── Skill.java / SkillDocument.java / SkillMetadata.java / SkillNames.java / SkillsConfiguration.java
+│   │
+│   ├── hook/                                   # issue #63：Hooks SPI + 工具风险分级
+│   │   ├── AgentHooks.java                    # 六个拦截点的有序 Hook 列表（EMPTY = 全不启用）
+│   │   ├── SessionStartHook.java / PreToolUseHook.java / PostToolUseHook.java / BudgetHook.java / OnErrorHook.java / SessionEndHook.java
+│   │   ├── HookContext.java / ToolInvocation.java
+│   │   ├── ToolRiskLevel.java                 # READ_ONLY/HIGH_RISK 两档，故意不设第三档 WRITE
+│   │   ├── ToolRiskRegistry.java              # 工具名 → 风险等级
+│   │   └── SessionBudgetTracker.java          # issue #64：会话级 token 预算熔断，独立于 Hook（决策型组件，不是观察型）
+│   │
+│   └── security/                               # issue #71：安全纵深，均为可选机制（null = 不启用）
+│       ├── PromptInjectionGuard.java          # 同步小模型分类调用，接入点在 stream() 构造 UserMessage 之前
+│       ├── PiiMasker.java                     # 手机号/身份证号/银行卡号正则打码
+│       └── ToolRateLimiter.java               # Redisson RRateLimiter，无 Redis 时永远放行
+│
+├── evaluation/                                 # issue #69：Golden Set 评测，从 src/test/java 提升为生产能力
+│   ├── GoldenCase.java / GoldenTaskReport.java / GoldenAssertion.java / GoldenTaskRunner.java
+│   ├── GoldenCaseCandidateExtractor.java      # 从 agent_trace 筛候选样本，强制人工确认，不自动信任生产流量
+│   ├── LlmJudge.java                          # 结构化 LLM-as-Judge + 一致性方差校验
+│   └── GoldenEvaluationService.java           # 异步任务编排，供 GoldenEvaluationController 调用
 │
 ├── capability/                                 # 2026-08-05 更新：Phase 2 已落地，不再是空目录
 │   ├── analytics/                              # SQL 数据分析能力包（issue #52-#61）：schema/sql/permission/glossary/tools 子包
 │   ├── auth/                                   # 登录、Sa-Token 会话、密码校验
 │   └── sys/                                    # RBAC：sys_user/sys_role/sys_dept 及 controller/service/store 分层
+│
+├── observability/                              # issue #67：Micrometer + OTel 埋点
+│   └── AgentObservabilityConfig.java          # 自定义 Sampler（ParentBased(TraceIdRatioBased)）、TTFT/duration 独立 Timer
 │
 └── web/
     ├── AgentController.java                    # V0 入口：POST /agent/chat
@@ -274,7 +301,8 @@ com.agenttrail
     ├── AgentLoopExecutorConfig.java             # 装配模型、任务管理与 TurnPersistenceHook
     ├── ConversationHistoryService.java          # 会话列表/详情；首轮问题作稳定标题
     ├── CapabilityConversationService.java       # Research/PPT 复用 agent_session
-    ├── DeepResearchController.java / PptGenerationController.java  # 均已异步化：提交立即返回 taskId，后台线程池执行，前端轮询 /{taskId} 查状态
+    ├── DeepResearchController.java / PptGenerationController.java  # 均已异步化：提交立即返回 taskId，后台线程池执行，前端轮询 /{taskId} 查状态；均已支持取消（issue #65）
+    ├── GoldenEvaluationController.java          # issue #69/#70：/agent/v1/evaluation/{run,{taskId},history}，供前端评测页面轮询
     └── FileUploadController.java                # 文件上传/问答/删除，含向量库联动清理
 ```
 
@@ -320,6 +348,9 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 | `RunnableParams` 双通道 | #59 | prompt 参数模型可见，`toolParams` 模型不可见且执行前强制注入覆盖——userId 必须走后一条通道，否则等于把越权空子交给可被诱导的模型 |
 | 落库/记忆提取必须在 emitComplete 之前同步做完 | #63 | 挂在流关闭之后的回调里，进程退出时可能根本跑不到 |
 | 所有能力共用会话事实源 | #83 | 普通对话与同步能力都按“一轮一行”写入 `agent_session`；结构化结果放在 `TimelineEntry[]` 的 `StageOutput` 中，不另造历史表 |
+| 工具调用限速不塞进 `PreToolUseHook` | #71 | Hook 系全是观察型 void 接口，用异常做流程控制会拉伸这个契约；`ToolRateLimiter` 独立成一个直接返回布尔决策的组件，和 `SessionBudgetTracker` 是同一种取舍 |
+| 审计哈希链用 `SELECT ... FOR UPDATE` 而不是应用层锁 | #66 | 同一 `conversationId` 的哈希链必须严格有序，多实例部署下应用层锁不跨进程；行锁把"取上一条哈希 + 写入新哈希"这个临界区下推到数据库自己保证 |
+| Bash 工具的凭据隔离审查 | #71 | `ProcessBuilder` 默认继承整个 JVM 环境变量，`env`/`set` 能把数据库密码、模型 API Key（走 `${VAR}` 占位符注入的那些）原样打印出来——这是真实验证过的风险，不是假设性加固；修复是显式白名单化子进程环境，不是"假设模型不会想到调 `env`" |
 
 ### 统一会话存储契约
 
@@ -335,7 +366,7 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 
 ## 六、已知缺口（不阻塞现状，但用到对应机制时要记得处理）
 
-- **DeepResearch/PPT 已经异步化，但还不是完整的 Task**：`POST /agent/v1/{ppt,deepresearch}` 提交后立即返回 taskId，真正的执行丢到后台线程池，前端轮询 `GET .../{taskId}` 看进度（PPT 是 DB 落的逐状态 checkpoint，DeepResearch 只有 RUNNING/SUCCESS/FAILED 三态，无中间 checkpoint）。仍然缺两块：**没有取消端点**；**没有跨刷新恢复**——`recordSuccess/recordFailure` 只在任务真正跑完时才写 `agent_session`，没跑完之前刷新页面这条消息在历史里根本不存在，UI 侧看起来任务凭空消失（后台线程本身没死，跑完了下次进来才看得到）。DeepResearch 比 PPT 更脆：它的任务状态是纯内存 `ConcurrentHashMap`（见 `DeepResearchTaskRegistry`），应用重启会丢失所有进行中任务的记录；PPT 有 DB checkpoint，重启后还能凭 taskId 继续跑。
+- **DeepResearch/PPT 已经异步化，取消端点已补上（issue #65）**：`POST /agent/v1/{ppt,deepresearch}` 提交后立即返回 taskId，真正的执行丢到后台线程池，前端轮询 `GET .../{taskId}` 看进度（PPT 是 DB 落的逐状态 checkpoint，DeepResearch 只有 RUNNING/SUCCESS/FAILED 三态，无中间 checkpoint）。两个控制器都从 `Executor.execute()` 切成了 `ExecutorService.submit()` 拿 `Future`：PPT 走状态机级的 `CANCELLED` 状态（协作式，检查点之间才会真正停下来）；DeepResearch 用 `Future.cancel(true)`（尽力而为，中断点取决于当前在跑的子任务是否响应中断）。**跨刷新恢复仍然是缺口**——DeepResearch 的任务状态是纯内存 `ConcurrentHashMap`（见 `DeepResearchTaskRegistry`），应用重启会丢失所有进行中任务的记录；PPT 有 DB checkpoint，重启后还能凭 taskId 继续跑，但前端刷新页面本身不会自动重新接上一个还在跑的 taskId，这条留给以后再补。
 - **换模型供应商**：只要额外的模型（OpenAI/智谱等）也有 Spring AI starter 且和 DeepSeek 的 starter 不同时存在于 classpath，`AgentLoopExecutorConfig` 不用改一行代码——它认的是通用 `ChatModel` 接口。同时装多个供应商的 starter 时会有多个 `ChatModel` Bean，需要按 Spring 标准做法用 `@Qualifier`/`@Primary` 挑一个默认的。
 - `TraceStore`/`MemoryStore`/`PauseStateStore` 各有内存版和 JDBC 版两种实现（`JdbcTraceStore`/`JdbcMemoryStore`/`JdbcPauseStateStore`，表结构在 `db/schema.sql`）；`AgentLoopExecutorConfig` 目前装的是内存版，换成 JDBC 版只需要在装配时传对应的实例，不用改 `AgentLoopExecutor` 一行代码。
 - `AgentTaskManager` 默认不会定时续期已持有的 Redis 锁——`RedisTaskLock.startAutoRenewal()` 已经实现了这个能力，但要显式调用才开启（同一套"null/未调用=关闭"惯例）。
@@ -352,6 +383,6 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 | Capability Pack | `capability/*`（analytics/auth/sys 已落地，见第三节包结构）；`loop.deepresearch`/`loop.ppt`/`loop.file`/`loop.rag` 同样是业务能力包，只是历史上挂在 `loop/` 下没跟着搬——`architecture-refactor-blueprint-2026-08-03.md` 的 P0-1 已经指出这个命名/分层不一致，尚未落地迁移 |
 | Tool | `loop.tools.*`（FileSystem/Bash/Grep/TodoWrite 是 Runtime 内置 Tool），未来 Capability Pack 各自的 tools 子包 |
 | Skill | `loop.skills.*` |
-| Hook | 规划中（`governance/`），当前 V1 里最接近的是 `StageOutputProvider`（生命周期钩子，但语义是"产出附加内容"不是"治理拦截"） |
+| Hook | ✅ 已实现（`loop.hook`，issue #63）：`SessionStart`/`PreToolUse`/`PostToolUse`/`Budget`/`OnError`/`SessionEnd` 六个拦截点，纯观察型 void 接口，不做流程控制——真正的决策型机制（HITL 审批、Budget 熔断、限速）是独立于 Hook 之外的专用组件（`PauseConfig`/`SessionBudgetTracker`/`ToolRateLimiter`），见下方"治理层"小节。`StageOutputProvider` 仍然是它自己的东西，语义没变（"产出附加内容"不是"治理拦截"） |
 | LlmClient | V0：`legacy.V0.LlmClient` + `legacy.V0.DeepSeekLlmClient`；V1：直接用 Spring AI `ChatModel`，没有额外抽象层 |
 | Gateway | 未来独立部署服务，不在本仓库范围内 |

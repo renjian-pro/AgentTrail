@@ -157,23 +157,36 @@
 
 ---
 
-## Phase 3：治理层（Hooks + 可观测性 + 评测体系）
+## Phase 3：治理层（Hooks + 可观测性 + 评测体系）—— ✅ 已完成（issue #63-#71）
 
 > **2026-07-31 修正**：本 Phase 原本的定位是"不属于参考框架自带的 19 项能力，是本项目
 > 自己的增强"，这句话现在只对本表剩下的这几行成立——"审计日志"和"结构化输出校验"的**基础
 > 机制**其实是参考框架自己的 core/17、core/13，已经挪到上面 Phase 0 状态表的 0.14/0.15。
 > 这里两行改成明确"建立在 0.14/0.15 之上"的业务层增强，不是从零开始。
+>
+> **2026-08-06 更新**：9 张实现票（详细设计见 `docs/specs/backend-phase3-governance*.md`）全部
+> 落地并关闭。落地时顺带把上一轮"下一步"记录的四条技术债（Redis 任务锁未接线、DeepResearch/PPT
+> 无法取消、Analytics 无失败熔断、Golden Task 没跑过真实调用）一并清掉——这些原本是"进 Phase 3
+> 之前要还的债"，实际落地时发现和 Hooks/PauseConfig/TraceStore 生产接线是同一批代码改动，拆开
+> 反而要多接一次线，所以合并进了 Phase 3 的 ticket 里一起做。"结构化输出的业务审核层"（Reviewer
+> Agent 二次确认）本次**不在范围内**——评测体系里的 LLM-as-Judge 承担了类似的"自动裁决"角色，
+> 面向用户输出的二次审核留给有真实高风险输出场景（比如对外暴露的 SQL 建议）时再做，不是这次
+> 为了凑"治理层"名头而硬做的功能。
 
-| 机制 | 说明 |
-|---|---|
-| Hooks 生命周期 | SessionStart/PreToolUse/PostToolUse/Budget/OnError/SessionEnd，对齐研发效能 Agent 平台设计稿（`E:\study\AI\porject\wiki\projects\dev-efficiency-agent-portfolio.md`）已有的 Hooks 设计 |
-| 权限分级 + 人工审批 | 只读工具直接放行，写类/高危工具走 PreToolUse 拦截转人工确认 |
-| 审计日志防篡改 | **依赖 0.14 TraceAudit 先落地**——这里只加"每条记录存前一条哈希（哈希链），审计数据不可静默改写"这一层，基础的"每轮落库"属于 0.14 |
-| 可观测性闭环 | Micrometer + OpenTelemetry，Grafana 面板，按完整链路埋点：TTFT 独立于总耗时单独埋点（踩坑点 #38）、Reactor 跨线程上下文传播（踩坑点 #39）。**不止埋点，要闭环**：链路采样策略（正常流量按比例采样 + 错误请求 100% 采样，全量采样会打爆存储）、SLO 定义（TTFT P95 / 端到端首响应 / 工具调用成功率三个 SLI + 误差预算）、P95 阈值告警 |
-| 成本治理 | 按 sessionId 聚合 token 消耗，设单会话/单日预算上限，超限熔断（Budget Hook 的落地形态）——AI 项目特有的"成本也是可观测性维度" |
-| 评测体系 | Golden Set（50-200 条真实任务轨迹）+ LLM-as-Judge 离线评测；Agent 指标（工具选择准确率、参数准确率、不必要调用率）；压缩 trade-off 实测：固定 50 轮对话对照 micro/auto compact 两种压缩下的信息保留率（Golden QA 准确率）与延迟，画 trade-off 曲线 |
-| 结构化输出的业务审核层 | **依赖 0.15 结构化输出（JSON Schema 注入 + 自动修复）先落地**——这里只加"高风险输出（SQL 建议、代码评审结论）额外走 Reviewer Agent 二次确认才能对外展示"这一层业务判断 |
-| 安全纵深（AI 特有） | Prompt Injection 防护（用户输入进 prompt 前做意图检测，工具返回值做隔离标记）；工具调用速率限制（单会话单位时间上限，防 ReAct 死循环烧 token，Redis 滑动窗口）；PII 检测（用户输入进 LLM 前打码，避免敏感数据上送模型） |
+| 机制 | 说明 | 状态 |
+|---|---|---|
+| Hooks 生命周期 | SessionStart/PreToolUse/PostToolUse/Budget/OnError/SessionEnd，六个拦截点 + `ToolRiskLevel`/`ToolRiskRegistry` 工具风险分级（`loop.hook` 包） | ✅ #63 |
+| 权限分级 + 人工审批 | `PauseConfig` 首次接入生产装配（此前只有机制、从未真正启用），命中 `ToolRiskRegistry.toolsWithLevel(HIGH_RISK)` 的调用转人工确认；新增 `SessionBudgetTracker` 会话级 token 预算熔断 | ✅ #64 |
+| 断点续传收尾 | DeepResearch/PPT 补上取消端点（`Future.cancel`/状态机级 `CANCELLED`）+ 运行中任务查询；顺带修了 `DeepResearchController.status()` 缺失的越权校验 | ✅ #65 |
+| 审计日志防篡改 | **依赖 0.14 TraceAudit**——`TraceStore` 首次接入生产装配（同样此前只有机制从未启用），`JdbcTraceStore.save()` 内按 `conversationId` 算 SHA-256 哈希链（`SELECT ... FOR UPDATE` 保证并发安全），新增 `verifyChain()` 篡改检测 | ✅ #66 |
+| 可观测性闭环 | Micrometer + OpenTelemetry：TTFT 和总耗时用独立 `Timer.Sample`（踩坑点 #38）、`ParentBased(TraceIdRatioBased(0.1))` 自定义 Sampler、Reactor 跨线程 Observation 传播（踩坑点 #39） | ✅ #67 |
+| 部署 + SLO | 首个 `docker-compose.yml`（Prometheus/Grafana/Langfuse），三个 SLI（TTFT P95/端到端首响应/工具调用成功率）+ Grafana Alerting 阈值告警 | ✅ #68 |
+| 成本治理 | `SessionBudgetTracker` 见上（#64）——按 conversationId 聚合 token 消耗，超限熔断，不是独立一票 | ✅ 并入 #64 |
+| 评测体系 | `GoldenTaskRunner` 从 `src/test/java` 提升为生产可调用能力（此前不在生产 classpath 上，前端/后端都调不到）；新增真实样本筛选（强制人工确认，不自动信任生产流量）、LLM-as-Judge（含一致性方差校验）、Agent 指标（工具选择准确率/参数准确率/不必要调用率）、压缩 trade-off 实测 | ✅ #69 |
+| 评测前端页面 | `EvaluationView.vue`：触发评测、轮询进度、按 dimension 看通过率、失败 case 详情、历史报告两两对比 | ✅ #70 |
+| 结构化输出的业务审核层 | **不在这次范围内**——见上方 2026-08-06 更新说明 | ❌ 有意跳过 |
+| 安全纵深（AI 特有） | Prompt Injection 检测（小模型分类）、工具调用速率限制（Redisson `RRateLimiter`，防 ReAct 死循环烧 token）、PII 打码（手机号/身份证号/银行卡号）、Bash 工具凭据隔离审查（发现并修复了真实的环境变量泄露） | ✅ #71 |
+| A/B 测试 | 讨论过设计思路（模型/Prompt 版本分流 + 效果对比），本轮明确**不做**——见 `docs/specs/backend-phase3-governance.md` 的 Out of Scope | ❌ 有意跳过 |
 
 ---
 
@@ -341,26 +354,22 @@ Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版
 
 ## 下一步
 
-**2026-08-05 更新**：issue #1-#19（Phase 0+1）和 issue #52-#61（Phase 2 SQL 数据分析能力包）
-全部关闭。认证/RBAC、DeepResearch/PPT 异步轮询、文件问答生命周期（含删除）这几个能力包之外
-的横切机制也在最近几天补齐了。**下一步不是直接进 Phase 3，是先把前面几个阶段开发时留下的
-技术债还上**——这些是已验证仍然打开的具体缺口，不是"泛泛的重构冲动"：
+**2026-08-06 更新**：issue #1-#19（Phase 0+1）、issue #52-#61（Phase 2 SQL 数据分析能力包）、
+issue #63-#71（Phase 3 治理层）全部关闭。上一版"下一步"记录的四条技术债——`AgentTaskManager`
+未接 Redis 锁、DeepResearch/PPT 无法取消、Analytics 无失败熔断、Golden Task 没跑过真实调用——
+已经全部还清，具体见上方 Phase 3 表格的"2026-08-06 更新"说明（这四条实际上是和 Phase 3 的
+Hooks/PauseConfig/TraceStore 生产接线同一批改动，合并做掉了，不是单独还债）。
 
-1. **`AgentTaskManager` 生产装配没接 Redis 锁/广播器**（`security-and-gap-audit-2026-08-02.md` 的
-   P0，验证过仍成立）：`AgentLoopExecutorConfig.agentTaskManager()` 还是裸 `new AgentTaskManager()`，
-   `RedisTaskLock`/`RedisInterruptBroadcaster` 组件本身已经写好、也已经在 `AnalyticsSchemaConfig`
-   里用了，只是主线没装上。
-2. **DeepResearch/PPT 仍然"能提交、能查询，但不能取消、不能跨刷新恢复"**：async+轮询已经做了，
-   但没有 cancel 端点，前端刷新页面也不会重新接上一个还在跑的 taskId（`recordSuccess/Failure`
-   只在任务真正跑完时才写会话历史，没跑完之前是完全不可见的）。
-3. **Analytics 的 ReAct 自我修正没有失败预算**：对照 spring-ai-alibaba/DataAgent 的 Gate+maxRetries
-   图结构上限，我们这边只有粗粒度的 `maxRounds=20` 整轮硬顶，没有"同一个错误连续失败 N 次就提前
-   止损"的电路断路器（见上方 Phase 2 的 2026-08-05 补充）。
-4. **SQL Golden Task 只跑通了框架自测，没跑过真实调用**：`GoldenTaskRunner`/33 条 fixture 都已经
-   写好，但 `GoldenTaskRunnerTest` 喂的是纯 canned executor，从没接过真实的 `AnalyticsToolProvider`
-   执行链，没有任何可复现的准确率数字。
+**引擎 + 全部规划中的 Capability Pack + 治理层现在都已经落地**，剩下的是尚未开工的方向（按
+上面的阶段划分，没有硬性先后顺序约束，可按面试准备节奏或兴趣挑）：
 
-技术债清完、closed-loop 回归走完一遍之后再开始 Phase 3（治理层）。
+- Phase 8（多 Agent 编排）——`SubAgent` 机制本身随时可做，"拿真实业务 Agent 演示协作"需要至少
+  两个 Capability Pack（Phase 2/6/7 已经都有了，条件已满足）
+- Phase 9（MCP Server 化）——把 SQL 分析/代码评审封装成 MCP Server 对外暴露
+- Phase 10（框架迁移评估）——手写版本已经稳定跑过 Phase 0-3 全部阶段，可以着手评估 AgentScope
+  Java 2.0 迁移的成本/收益，产出一份新 ADR
+- Phase 11（部署与运维）——`docker-compose.yml`（#68）已经把 Prometheus/Grafana/Langfuse 起来了，
+  真正的 K8s 部署、CI 完整化、性能基线仍是空白
 
 已知的、故意留到后续的缺口（不阻塞 Phase 2，但动到对应机制时要记得补上）：
 - ~~`AgentTaskManager` 不会定时续期已持有的 Redis 锁~~ → 已补上：`RedisTaskLock.startAutoRenewal()`

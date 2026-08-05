@@ -532,6 +532,30 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **解法**：完成响应只返回基于任务号的受控 URL：`/agent/v1/ppt/{taskId}/download`。控制器在服务端核验产物仍是普通文件后，以带 UTF-8 文件名的 `Content-Disposition: attachment` 返回内容；缺失、清理或不可读的产物统一返回 404。前端只信任此 URL，绝不拼接或展示真实路径。
 - **测试要点**：除了断言完成响应的 URL，还要写入临时 `.pptx` 并断言下载响应包含 attachment 头和资源实体，避免“接口字段看似正确、实际无法下载”的假绿测试。
 
+## 十九点六、阶段三治理层落地的踩坑（对应路线图 Phase 3，issue #63-#71）
+
+落地 9 张治理层实现票时，代码走查和真实构建/测试跑出来的几类问题——都不是"设计阶段能想到"的坑，是"接上真实构建/真实序列化/真实子进程"才会暴露的那一类，和第十九节的思路一脉相承。
+
+### 86. `this(lambda)` 委托到两个都只有一个抽象方法的重载构造函数，javac 在检查 lambda 方法体之前就判二义性
+- **坑**：`LlmJudge(ChatModel chatModel)` 原本写成 `this(prompt -> { ... return text; })`，同一个类里还有一个 `LlmJudge(Function<String,String> structuredInvoker)`。`ChatModel` 恰好也只有一个抽象方法（`ChatResponse call(Prompt)`），是合法的函数式接口；`Function<String,String>` 当然也是。javac 做重载决议时，第一阶段只按"参数形状"（lambda 的形参个数）判断哪些重载"适用"，两个候选构造函数都通过这一关，进入"选最具体方法"阶段——但 `ChatModel` 和 `Function` 之间没有子类型关系，谁都不比谁更具体，编译器直接报"reference to LlmJudge is ambiguous"，**根本不会走到检查 lambda 方法体返回类型是否匹配这一步**（lambda 体里实际 `return` 的是 `String`，和 `ChatModel.call` 要求的 `ChatResponse` 返回类型对不上，人眼一看就知道不该匹配到 `ChatModel` 那个重载，但编译器的决议顺序不是这样工作的）。这个方法本身在 `src/test/java` 里从来没有单测覆盖过构造调用，直到治理层要复用 `LlmJudge` 时跑一次全量 `mvn test-compile` 才第一次暴露——是彻头彻尾的编译期问题，`git blame` 也追不出"什么时候开始编译不过"，因为这个方法自带这个仓库以来就没被完整编译过一次。
+- **解法**：把 lambda 提到一个具体返回类型的私有静态方法里（`private static Function<String,String> toStructuredInvoker(ChatModel)`），构造函数里 `this(toStructuredInvoker(chatModel))`——传进去的是一个已经有明确静态类型 `Function<String,String>` 的方法引用返回值，不再是一个需要目标类型推断的 lambda 表达式，重载决议不存在"两个候选都适用"的问题。
+- **Java 角度**：这是"函数式接口重载决议"这个八股题目里经常被简化成"lambda 会自动匹配到形参类型对的那个方法"的规则，在**多个候选都是单抽象方法接口**时的反例——很多人知道"两个重载都接受同一个函数式接口会二义性"，但不知道"两个**不同**的函数式接口，只要参数形状（个数/是否装箱）相容，一样会在决议的形状匹配阶段就判二义性，不会等到检查方法体返回类型"。这条也解释了为什么"能读懂代码逻辑"和"代码能编译"是两件事——这段代码逻辑上只可能匹配一个重载，但语法规则不这么看。
+
+### 87. 依赖库测试 API 变了但没人真正跑过测试：`RequiredSearch.timer(String, String, ...)` 这种重载从来不存在
+- **坑**：`AgentLoopExecutorHooksTest`/`ToolCallExecutorTest` 里断言 Micrometer 指标时写的是 `registry.get(name).timer("tag1", "v1", "tag2", "v2")`——直觉上像是"按 tag 键值对过滤"的自然写法，但 `RequiredSearch` 这个类根本没有带参数的 `timer(...)`/`counter(...)` 重载，它的过滤是链式的：先 `.tag(key, value)` 或 `.tags(key1, value1, key2, value2, ...)` 缩小范围，最后调无参的 `.timer()`/`.counter()` 拿到匹配到的唯一 Meter。这两个测试文件是 issue #67（Micrometer+OTel 埋点）落地时写的，但从写完到治理层收尾这段时间里没有人跑过一次完整的 `mvn test-compile`——`mvn test` 默认只在 IDE 里跑单个类，没人跑过项目根目录的全量构建，所以这个编译错误安然存在了一整个 Phase 都没被发现。
+- **解法**：改成 `registry.get(name).tags("tag1", "v1", "tag2", "v2").timer()`（或 `.counter()`）。更通用的教训：任何"看起来应该存在但没有编译器提示的 IDE 自动补全验证过"的第三方库 API 调用，落地后必须真的跑一次编译，不能凭直觉写完就当作测试已经覆盖到了。
+- **面试角度**：这条不是 Java 语言机制问题，是"CI/持续集成缺位"的真实后果——两个文件的编译错误能安然存在一整个 Phase 的开发周期，说明这段时间里没有任何自动化流程会真的跑一次 `mvn test-compile` 并卡住合并；面试被问"你们怎么保证代码质量"时，这是一个可以直接拿出来讲的反例："没有 CI 门禁"不是抽象的风险，是真实发生过的、持续了相当长时间都没被发现的具体后果。
+
+### 88. 应用自己手动 `new` 的 `ObjectMapper` 不会像 Spring Boot 自动装配的那样自动找 JSR-310 模块
+- **坑**：`GoldenEvaluationHistoryItem.startedAt` 最初声明成 `java.time.Instant`。这个应用的 JSON 序列化用的是 `AgentLoopExecutorConfig.objectMapper()` 里显式 `new ObjectMapper()` 的 Bean（工程里特意避开 JSON starter 的隐式自动装配，见该方法的注释），而不是 Spring Boot 用 `Jackson2ObjectMapperBuilder` 自动构建、并且会自动扫描注册 `jackson-datatype-jsr310` 等模块的那一份——`jackson-datatype-jsr310` 即使在 classpath 上，一个裸的 `new ObjectMapper()` 也**不会**自动发现并注册它（需要显式 `.registerModule(new JavaTimeModule())` 或 `.findAndRegisterModules()`）。结果是序列化 `Instant` 字段直接抛 `InvalidDefinitionException: Java 8 date/time type java.time.Instant not supported by default`，把 `/agent/v1/evaluation/history` 端点炸成 500——这个问题不是靠代码走查发现的，是写了一个直接用 `new ObjectMapper()`（刻意复刻生产装配方式，不是随手 new 一个默认的）序列化这个 record 的单测，第一次跑就实际复现了异常。
+- **解法**：把 `startedAt: Instant` 改成 `startedAtMillis: long`（`System.currentTimeMillis()`），和这个仓库里其它所有落库记录的约定完全一致（`TraceRecord.recordedAtMillis`、`TurnRecord`）——这些记录从一开始就没用过 `Instant`/`LocalDateTime` 这类需要额外模块支持的类型，不是巧合，是这个项目的既定约定；新代码违反这个约定，恰好又撞在"手动构造的 ObjectMapper 没找模块"这个具体陷阱上，两个问题叠在一起才炸出来。
+- **Java/Spring 角度**：这是"Spring Boot 自动装配到底替你做了什么"这个八股题目的一个具体反例——很多人知道"Spring Boot 会自动配置 Jackson"，但不知道这份自动配置的价值不只是"给你一个 ObjectMapper 实例"，还包括"自动扫描 classpath 上的 Jackson 模块并注册"这一步；一旦应用出于某种工程理由（这里是"不依赖 starter 的隐式行为"）绕开自动装配、自己 `new` 一个，这份"隐式的好处"也一并被绕开了，不会有任何编译期或启动期的信号提醒你少了什么，只有真正序列化到那个类型的字段时才会在运行时炸出来。
+
+### 89. `ProcessBuilder` 默认继承整个 JVM 进程的环境变量，bash 工具没做任何过滤就是一条真实可利用的凭据泄露路径
+- **坑**：`ShellSessionManager.run()` 起子进程用的是 `new ProcessBuilder(invocation).start()`，没有调用 `.environment()` 做任何处理——这是 Java 的默认行为：子进程默认继承父进程（这里是 JVM 本身）的**全部**环境变量。这个应用的部分敏感配置就是走环境变量注入的（`application.yml` 里 `${OTEL_EXPORTER_OTLP_HEADERS_AUTHORIZATION:}` 这类占位符，部署时如果真的把 Langfuse 的鉴权头设成 OS 环境变量），这些变量对 JVM 进程可见，也就对它拉起的任何子进程可见——模型只需要在对话里让 Bash 工具执行一条 `env`（或 Windows 下的 `set`），就能把这些值原样打印出来，读到之后转述给用户或者写进对话历史，是一条不需要额外权限、不需要绕过任何沙箱、单纯利用"默认行为没人特意收紧"就能触达的真实数据泄露路径。这条不是理论推演，是先写了一个测试实际执行 `set`/`env` 复现出问题（能在输出里看到本机真实存在的 `JAVA_HOME`），再验证修复后同一个变量确实从输出里消失，前后对照确认的。
+- **解法**：`ProcessBuilder.environment()` 返回的是一个可变 `Map`，起子进程前把它清到只剩一个白名单（`PATH`/`SystemRoot`/`ComSpec` 这类 shell 正常工作必需的变量，不含任何业务配置），而不是依赖"模型大概率不会想到调 `env`"这种基于行为概率的假设——凭据隔离这类安全边界的正确心智模型是"默认拒绝、显式放行"，不是"默认放行、指望攻击面永远不会被触达"。
+- **安全角度**：这条和第十九节 #40/#41 MCP Server 对外暴露的沙箱边界是同一个原则的另一种体现——工具能力越强（Bash 拥有和 JVM 进程同等的系统权限，本来就没有目录白名单），越不能依赖"调用方不会这么做"，必须靠代码强制收紧攻击面。也是一个"面试可以主动讲的真实发现"素材：不是被动等审计报告告诉你有这个问题，是在实现另一个功能（安全纵深的凭据隔离审查）时主动去验证一个此前从没人问过的假设，然后真的验证出了一个此前一直存在、只是没人触发过的真实风险。
+
 ## 二十、Java 八股文关联索引（反向查表：面试考点 → 项目里的具体场景）
 
 按标准 Java 面试八股分类整理，每个考点后面跟着能支撑它的踩坑点编号 + 一句"这道题在项目里对应哪个场景"的桥接语。面试被问到某个八股知识点时，直接从这张表找对应编号展开，而不是从头背定义——这张表是"从场景讲起"这套叙事方法论的索引层，和 `interview-narrative.md` 的三条主线互补（那边是按故事线组织，这里是按考点组织，两种导航方式）。
@@ -542,6 +566,7 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **反射性能与缓存**：#4——`Method` 对象按 Class 缓存 + 双重检查锁，避免每个流式 chunk 都重新反射查找
 - **字符编码**：#19——三级编码兜底（UTF-8→GBK→ISO-8859-1）是启发式尝试链，不是真正的编码检测算法，能对比讲清楚和 ICU4J 类真实检测库的差距
 - （补充）**虚拟线程（Java 21）**：#73
+- （补充）**函数式接口与重载决议**：#86——多个候选重载都是单抽象方法接口时，javac 在检查 lambda 方法体之前就按参数形状判二义性，不会等到发现返回类型不匹配
 
 ### 并发编程（线程池 / 锁 / 原子类 / ThreadLocal）
 - **`ConcurrentHashMap` 原子操作**：#10——`stopTask` 用 `remove` 的原子返回值判断而不是 check-then-act，避免删任务的竞态
@@ -559,6 +584,7 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - （补充）**AOP 切面执行顺序 + 事务回滚规则**：#65——`@Order(MIN_VALUE)` 保证锁在事务外；切面把 `Throwable` 包成受检 `Exception` 导致 `@Transactional` 静默不回滚
 - （补充）**事件监听与事务可见性**：#66——`@TransactionalEventListener(AFTER_COMMIT)` 的四个 phase 差异
 - （补充）**Bean 作用域（prototype vs singleton）**：#69——prototype bean 自注册白名单在集群下失效
+- （补充）**自动装配的隐式行为边界**：#88——Spring Boot 自动配置 `ObjectMapper` 时会顺带扫描注册 JSR-310 等模块，应用自己手动 `new` 一个绕开自动装配时，这份隐式好处也一起被绕开，序列化 `Instant` 直接运行时炸
 
 ### 数据库与事务（MySQL / JDBC）
 - **JDBC 高级用法**：#23（`setMaxRows(N+1)` 一次查询顺便判断是否截断，省一次 `COUNT(*)` 往返）、#25（`ResultSetMetaData.getColumnName/getTableName` 才是真实来源列，`getColumnLabel` 会被别名污染）
@@ -590,6 +616,7 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **对外暴露的安全边界收紧**：#40/#41——内部工具和对外 MCP Server 的威胁模型完全不同，高危操作审批不能依赖 Server 自己判断
 - （补充）**配置与密钥管理**：#72——硬编码密钥进父 POM 的爆炸半径 + Maven resource filtering 冷知识
 - （补充）**日志脱敏方案选型**：误报率（全文扫描误伤正常内容）vs 漏报率的权衡
+- （补充）**子进程环境变量隔离**：#89——`ProcessBuilder` 默认继承 JVM 进程的全部环境变量，对外暴露"能执行任意命令"的工具（Bash）如果不显式收紧，`env`/`set` 就是一条不需要额外权限的凭据泄露路径，"默认拒绝、显式放行"原则的具体案例
 
 ### 缓存（本项目主线暂未涉及，全部为补充素材）
 - （补充）**缓存三大问题的准确定义**：#67——源码注释把"缓存空值防穿透"写成"防击穿"，空值缓存不设 TTL 会永久挡住后续真实写入

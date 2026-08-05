@@ -40,6 +40,7 @@
 | SkillsTool/LookupGlossary 用 `FunctionToolCallback` 而不是 `@Tool` 注解——因为 description 需要运行时拼接 | 注解值必须编译期常量这个限制的工程绕法 |
 | 日志脱敏：自定义 logback `conversionRule` 白名单精确匹配，替换 houbb 全文扫描（误伤中文日志） | logback 扩展点、误报率 vs 漏报率权衡 |
 | 生产配置：`@RefreshScope` + 配置中心 + Vault；见过反面案例：根 pom 硬编码 key + resource filtering 打进 jar（#72） | 配置外部化、Maven filtering 副作用、密钥轮换 |
+| 手动 `new ObjectMapper()` 绕开 JSON starter 隐式装配，序列化 `Instant` 直接运行时炸——Boot 自动配置的 `ObjectMapper` 会自动扫描注册 JSR-310 模块，自己 `new` 的不会（#88） | Spring Boot 自动装配到底替你做了什么；"能编译≠能跑对"在序列化场景的具体案例 |
 
 ### 主线 C：数据与一致性（从会话/权限/补偿引出）
 
@@ -68,12 +69,15 @@
 | 上下文管理 | 截断保留最近 N 条 | micro/auto 两层压缩+保护名单+失败回退（#6-8），压缩 trade-off 有实测曲线计划 | 设计已验证 |
 | 会话持久化 | 内存 ChatMemory | JDBC 双 key（conversation/session）+ token 预算重建 + tryEmitComplete 前同步入库（#49/#63） | Phase 0.5 |
 | SQL 安全 | 正则黑名单 | AST Visitor + 六层防御 + `setMaxRows(N+1)` + 权限 AST 改写 + 别名防绕过脱敏（#22-26） | Phase 2 |
-| 并发控制 | 无 | 单飞注册 + Redis 分布式锁 + Lua 原子续期 + 幂等工具模板（#30/#34） | Phase 1 |
+| 并发控制 | 无 | 单飞注册 + Redis 分布式锁 + Lua 原子续期 + 幂等工具模板（#30/#34） | Phase 1，生产装配已接线（见下方"多实例任务管理"） |
 | 失败恢复 | 抛异常结束 | 分级：LLM 基础设施错误代码重试 / 工具错误喂回模型自愈 / HITL 暂停恢复 / maxRounds 熔断 | Phase 0/1 |
-| 可观测性 | print 日志 | OTel 链路 + TTFT 独立埋点 + 采样策略 + SLO/告警 + token 成本熔断（#38/#39） | Phase 3 |
+| 治理：审批 + 预算 | 无 | HITL 高危操作人工审批（`PauseConfig` 首次生产接线）+ 会话级 token 预算熔断（`SessionBudgetTracker`） | ✅ Phase 3（#64） |
+| 治理：审计 | print 日志 | `TraceStore` 首次生产接线 + SHA-256 哈希链防篡改（`verifyChain`） | ✅ Phase 3（#66） |
+| 可观测性 | print 日志 | OTel 链路 + TTFT 独立埋点 + 采样策略 + SLO/告警 + Prometheus/Grafana/Langfuse 部署（#38/#39） | ✅ Phase 3（#67/#68） |
+| 评测 | 手工试几个问题 | Golden Set 生产化 + LLM-as-Judge（含一致性方差校验）+ Agent 指标（工具选择/参数/不必要调用准确率）+ 压缩 trade-off 实测 | ✅ Phase 3（#69/#70） |
 | 测试 | 跑通 main | ScriptedLlmClient 确定性回放 + 分片重组模糊测试 + Testcontainers 真库（禁 H2） | Phase 0.0 |
-| 部署 | java -jar | Compose→K8s、liveness/readiness 分离、优雅停机接 PauseState、配置中心+Vault | Phase 11 |
-| 安全 | 无 | Prompt Injection 检测、工具速率限制、审计哈希链、PII 打码、MCP 暴露安全线（#40/#41） | Phase 3 |
+| 部署 | java -jar | Compose→K8s、liveness/readiness 分离、优雅停机接 PauseState、配置中心+Vault | Phase 11（本地 Compose 已有，K8s 未做） |
+| 安全 | 无 | Prompt Injection 检测（小模型分类）、工具速率限制（Redisson RRateLimiter）、PII 打码、Bash 工具凭据隔离（真实发现并修复了环境变量泄露，#89）、MCP 暴露安全线（#40/#41） | ✅ Phase 3（#71） |
 
 ---
 
@@ -119,4 +123,4 @@ PPT 是跨多个高失败概率步骤的长流程。任务状态和上下文快�
 
 ### 多实例任务管理的正确表述
 
-`RedisTaskLock` 和 `RedisInterruptBroadcaster` 已提供跨实例归属、广播停止和锁续期的实现与测试基础；但当前生产 `AgentLoopExecutorConfig` 仍装配的是无参 `AgentTaskManager`。因此当前部署只能保证**单实例内**的会话单飞与停止，不能宣称已完成跨实例互斥或跨实例取消。启用 Redis 装配、自动续期、广播订阅并完成多实例验收后，才能把这项能力作为已落地成果陈述。
+`RedisTaskLock` 和 `RedisInterruptBroadcaster` 已提供跨实例归属、广播停止和锁续期的实现与测试基础；2026-08-02 的安全审计发现生产 `AgentLoopExecutorConfig.agentTaskManager()` 当时确实还只是裸 `new AgentTaskManager()`，这个 P0 已经补上——现在按 `ObjectProvider<RedissonClient>.getIfAvailable()` 判断：没配 Redis（这台开发机默认如此）时降级成和以前完全一致的纯内存单实例行为；配了真实 Redis 地址（`agenttrail.redis.enabled=true`）之后才真正启用跨实例锁 + Pub/Sub 广播，并显式调用 `RedisTaskLock.startAutoRenewal()` 开启后台自动续期。表述上要精确：**机制已经生产接线**，但"跨实例互斥/跨实例取消"这个能力本身有没有在多实例环境里真正验收过，仍然要看部署时是否配置了 Redis 并做过实测——`RedisTaskLockIT`/`AgentTaskManagerCrossInstanceIT` 覆盖的是"机制在真实 Redis 上行为正确"，不等于"生产多实例部署已经跑过"。

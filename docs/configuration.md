@@ -47,6 +47,15 @@ git check-ignore -v application-local.yml
 
 图表和 PPT 图片复用一组 MinIO 连接，只在安全默认配置中使用不同 bucket，不再重复连接凭据。
 
+## 可观测性栈（可选）
+
+`docker-compose.yml` 起 Prometheus/Grafana/Langfuse（含 Langfuse 自己的 Postgres），应用侧默认走
+`http://localhost:3001/api/public/otel/v1/traces`（`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 默认值），
+鉴权头走 `OTEL_EXPORTER_OTLP_HEADERS_AUTHORIZATION`——本机不起这套栈时留空即可，`management.otlp.tracing.*`
+是安全默认值，不配不影响应用启动。工具调用限速（`agenttrail.tool-rate-limit.*`）和会话预算
+（`agenttrail.budget.*`）同理，都有安全默认值，只有配了真实 Redis（`agenttrail.redis.enabled=true`）
+限速才会真正生效，未配时永远放行。
+
 ## CI 与生产
 
 GitHub Actions 只运行普通构建和单元测试，不启动或连接本机 MySQL、PgVector、MinIO、MCP，

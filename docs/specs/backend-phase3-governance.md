@@ -1,6 +1,7 @@
 # AgentTrail 后端 — Phase 3 治理层（Hooks + 审计 + 可观测性 + 评测 + 安全纵深）需求 Spec
 
-> 状态：草案，按 `to-spec` 模板整理，尚未发布为 GitHub issue。
+> **状态：✅ 已完成（2026-08-06）**。9 张实现票（[#63](https://github.com/renjian-pro/AgentTrail/issues/63)-[#71](https://github.com/renjian-pro/AgentTrail/issues/71)）全部落地并关闭，详见本文件末尾"Further Notes"的 ticket 表格；落地状态同步进了 `docs/roadmap.md` Phase 3 表格和 `docs/architecture.md`。以下正文保留写票时的原始设计意图，不做事后改写；和实际落地有出入的地方以 roadmap/architecture 为准。
+>
 > 前提：Phase 0-2 已全部完成并关闭（issue #1-#61）。`docs/roadmap.md` 原定"技术债清完再进 Phase 3"的四项里，
 > Redis 任务锁生产装配、ReAct 失败预算、Golden Task 真实执行链三项已经核实完成；只剩
 > **DeepResearch/PPT 不能取消、刷新页面接不回正在跑的任务**这一项还没还，这次并入本 spec 一起交付（见下方 3a）。
