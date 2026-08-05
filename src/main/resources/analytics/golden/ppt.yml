@@ -1,0 +1,4 @@
+cases:
+  - {id: ppt-001, dimension: ppt, question: "create a three-slide executive summary", as_user: admin, expected: "three slides", expected_tool_calls: [create_ppt], assertions: [{type: rounds_at_most, value: 20}]}
+  - {id: ppt-002, dimension: ppt, question: "turn this outline into a presentation", as_user: admin, expected: "presentation", expected_tool_calls: [create_ppt], assertions: [{type: rounds_at_most, value: 20}]}
+  - {id: ppt-003, dimension: ppt, question: "make a quarterly results deck", as_user: admin, expected: "quarterly deck", expected_tool_calls: [create_ppt], assertions: [{type: rounds_at_most, value: 20}]}

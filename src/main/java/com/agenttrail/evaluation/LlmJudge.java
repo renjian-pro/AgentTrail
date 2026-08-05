@@ -1,0 +1,100 @@
+package com.agenttrail.evaluation;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Function;
+
+/**
+ * Structured LLM-as-Judge. The invoker must return the JSON object described by
+ * {@link #RESPONSE_SCHEMA}; free-form prose is rejected instead of being heuristically scored.
+ */
+public final class LlmJudge {
+    public static final String RESPONSE_SCHEMA = """
+            {"type":"object","additionalProperties":false,"required":["accuracy","completeness","compliance"],"properties":{
+              "accuracy":{"type":"integer","minimum":0,"maximum":5},
+              "completeness":{"type":"integer","minimum":0,"maximum":5},
+              "compliance":{"type":"integer","minimum":0,"maximum":5},
+              "reason":{"type":"string"}
+            }}
+            """;
+
+    private static final String SYSTEM_PROMPT = """
+            You are an evaluation judge. Return JSON only and follow this JSON Schema exactly:
+            %s
+            Score accuracy, completeness, and compliance from 0 to 5. Do not treat an actual
+            production trace as a human-confirmed expected answer. Keep reason concise.
+            """.formatted(RESPONSE_SCHEMA);
+
+    private final Function<String, String> structuredInvoker;
+    private final ObjectMapper objectMapper;
+
+    public LlmJudge(Function<String, String> structuredInvoker) {
+        this(structuredInvoker, new ObjectMapper());
+    }
+
+    public LlmJudge(Function<String, String> structuredInvoker, ObjectMapper objectMapper) {
+        this.structuredInvoker = structuredInvoker;
+        this.objectMapper = objectMapper;
+    }
+
+    public LlmJudge(ChatModel chatModel) {
+        this(prompt -> {
+            ChatResponse response = chatModel.call(new Prompt(List.of(
+                    new SystemMessage(SYSTEM_PROMPT), new UserMessage(prompt))));
+            return response.getResult().getOutput().getText();
+        });
+    }
+
+    public JudgeScore judge(GoldenCase testCase, GoldenTaskReport.GoldenObservation observation) {
+        String request = "CASE_ID=" + testCase.id() + "\nQUESTION=" + testCase.question()
+                + "\nEXPECTED=" + String.valueOf(testCase.expected())
+                + "\nACTUAL_RESULT=" + observation.actualResult()
+                + "\nACTUAL_SQL=" + observation.actualSql()
+                + "\nMETRICS=" + observation.metrics();
+        try {
+            JsonNode node = objectMapper.readTree(structuredInvoker.apply(request));
+            validate(node, "accuracy");
+            validate(node, "completeness");
+            validate(node, "compliance");
+            return new JudgeScore(node.get("accuracy").intValue(), node.get("completeness").intValue(),
+                    node.get("compliance").intValue(), node.path("reason").asText(""));
+        } catch (Exception failure) {
+            throw new IllegalStateException("Structured LLM judge response is invalid", failure);
+        }
+    }
+
+    public static JudgeVariance variance(List<JudgeScore> scores) {
+        if (scores == null || scores.isEmpty()) return new JudgeVariance(0, 0, 0);
+        return new JudgeVariance(range(scores, JudgeScore::accuracy), range(scores, JudgeScore::completeness),
+                range(scores, JudgeScore::compliance));
+    }
+
+    private static void validate(JsonNode node, String field) {
+        JsonNode value = node == null ? null : node.get(field);
+        if (value == null || !value.isIntegralNumber() || value.intValue() < 0 || value.intValue() > 5) {
+            throw new IllegalArgumentException("field " + field + " must be an integer between 0 and 5");
+        }
+    }
+
+    private static double range(List<JudgeScore> scores, Function<JudgeScore, Integer> value) {
+        int min = scores.stream().map(value).min(Integer::compareTo).orElse(0);
+        int max = scores.stream().map(value).max(Integer::compareTo).orElse(0);
+        return max - min;
+    }
+
+    public record JudgeScore(int accuracy, int completeness, int compliance, String reason) { }
+
+    public record JudgeVariance(double accuracy, double completeness, double compliance) {
+        public boolean within(double threshold) {
+            return accuracy <= threshold && completeness <= threshold && compliance <= threshold;
+        }
+    }
+}

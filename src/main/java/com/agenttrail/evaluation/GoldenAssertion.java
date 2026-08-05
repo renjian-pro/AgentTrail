@@ -1,4 +1,4 @@
-package com.agenttrail.analytics.golden;
+package com.agenttrail.evaluation;
 
 import java.util.Collection;
 import java.util.List;
@@ -6,10 +6,10 @@ import java.util.Locale;
 import java.util.Map;
 
 /** Deterministic assertions for Golden observations; safety dimensions fail closed. */
-final class GoldenAssertion {
+public final class GoldenAssertion {
     private GoldenAssertion() { }
 
-    static List<String> failures(GoldenCase testCase, GoldenTaskReport.GoldenObservation observation) {
+    public static List<String> failures(GoldenCase testCase, GoldenTaskReport.GoldenObservation observation) {
         return testCase.assertions().stream()
                 .map(assertion -> evaluate(assertion, observation))
                 .filter(result -> result != null)

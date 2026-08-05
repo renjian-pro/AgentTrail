@@ -1,0 +1,4 @@
+cases:
+  - {id: research-001, dimension: deepresearch, question: "research the current market context and cite sources", as_user: admin, expected: "cited report", expected_tool_calls: [web_search], assertions: [{type: rounds_at_most, value: 20}]}
+  - {id: research-002, dimension: deepresearch, question: "compare two technology approaches with evidence", as_user: admin, expected: "comparison", expected_tool_calls: [web_search], assertions: [{type: rounds_at_most, value: 20}]}
+  - {id: research-003, dimension: deepresearch, question: "write a concise evidence-based briefing", as_user: admin, expected: "briefing", expected_tool_calls: [web_search], assertions: [{type: rounds_at_most, value: 20}]}

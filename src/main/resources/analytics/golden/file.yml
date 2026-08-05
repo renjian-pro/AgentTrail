@@ -1,0 +1,4 @@
+cases:
+  - {id: file-001, dimension: file_qa, question: "summarize the attached policy document", as_user: admin, expected: "summary", expected_tool_calls: [read_file], assertions: [{type: tool_called, name: read_file}]}
+  - {id: file-002, dimension: file_qa, question: "find the retention period in the uploaded document", as_user: admin, expected: "retention period", expected_tool_calls: [read_file], assertions: [{type: tool_called, name: read_file}]}
+  - {id: file-003, dimension: file_qa, question: "compare the two uploaded files", as_user: admin, expected: "comparison", expected_tool_calls: [read_file], assertions: [{type: rounds_at_most, value: 20}]}

@@ -1,5 +1,7 @@
 package com.agenttrail.analytics.golden;
 
+import com.agenttrail.evaluation.GoldenCase;
+import com.agenttrail.evaluation.GoldenTaskRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
