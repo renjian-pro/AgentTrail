@@ -4,6 +4,7 @@ import LoginView from './views/LoginView.vue'
 import AdminLayout from './admin/layouts/AdminLayout.vue'
 import RoleListView from './admin/views/RoleListView.vue'
 import UserManagementView from './admin/views/UserManagementView.vue'
+import EvaluationView from './admin/views/EvaluationView.vue'
 import AnalyticsSchemaView from './views/AnalyticsSchemaView.vue'
 import AnalyticsGlossaryView from './views/AnalyticsGlossaryView.vue'
 import { TOKEN_KEY } from './api/auth-token'
@@ -25,7 +26,8 @@ const router = createRouter({ history: createWebHistory(), routes: [
     meta: { requiresAdmin: true },
     children: [
       { path: 'users', component: UserManagementView },
-      { path: 'roles', component: RoleListView }
+      { path: 'roles', component: RoleListView },
+      { path: 'evaluation', component: EvaluationView }
     ]
   }
 ] })

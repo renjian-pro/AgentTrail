@@ -7,7 +7,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -100,7 +99,7 @@ public class GoldenEvaluationService {
 
     private static final class EvaluationTask {
         private final String taskId;
-        private final Instant startedAt = Instant.now();
+        private final long startedAt = System.currentTimeMillis();
         private final int totalCases;
         private final AtomicInteger completedCases = new AtomicInteger();
         private volatile String status = GoldenEvaluationTaskResponse.RUNNING;

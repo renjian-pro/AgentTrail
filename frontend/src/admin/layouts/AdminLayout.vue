@@ -7,6 +7,7 @@ import { RouterLink, RouterView } from 'vue-router'
     <nav class="admin-subnav" aria-label="Admin navigation">
       <RouterLink class="admin-subnav-item" to="/admin/users">Users</RouterLink>
       <RouterLink class="admin-subnav-item" to="/admin/roles">Roles</RouterLink>
+      <RouterLink class="admin-subnav-item" to="/admin/evaluation">Evaluation</RouterLink>
     </nav>
     <RouterView />
   </div>
