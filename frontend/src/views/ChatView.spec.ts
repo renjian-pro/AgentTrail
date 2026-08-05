@@ -6,6 +6,7 @@ import { useChatStore } from '../stores/chat'
 import { pptApi } from '../api/ppt-api'
 import { researchApi } from '../api/research-api'
 import { streamChat } from '../api/chat-api'
+import { fileApi } from '../api/file-api'
 
 vi.mock('../api/chat-api', () => ({
   chatApi: { stop: vi.fn(), history: vi.fn() },
@@ -13,6 +14,7 @@ vi.mock('../api/chat-api', () => ({
 }))
 vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn() } }))
 vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn(), status: vi.fn() } }))
+vi.mock('../api/file-api', () => ({ fileApi: { upload: vi.fn() } }))
 
 describe('ChatView', () => {
   beforeEach(() => {
@@ -176,5 +178,26 @@ describe('ChatView', () => {
     })
     await flushPromises()
     expect(wrapper.text()).toContain('研究完成')
+  })
+
+  /**
+   * 回归测试：拖放的接收范围曾经只有"添加文件"按钮那一小条（~160×30px），不是整个输入区——
+   * 用户很自然地会往下面那个大输入框拖，那里毫无反应，体感上就是"拖放根本不能用"。
+   * 现在整个 .chat-bottom（工具栏 + 输入框）都是拖放目标。
+   */
+  it('accepts a dropped file anywhere in the composer, not just on the small "添加文件" button', async () => {
+    vi.mocked(fileApi.upload).mockResolvedValue(
+      { fileId: 1, fileName: 'brief.pdf', kind: 'TEXT', sizeBytes: 8, parsedTextLength: 3, routedToRag: false })
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+    const file = new File(['hello'], 'brief.pdf', { type: 'application/pdf' })
+    const dataTransfer = { files: [file], items: [{ webkitGetAsEntry: () => ({ isDirectory: false }) }] }
+
+    // 故意丢在 textarea 上，而不是 FileUploadWidget 的按钮/文字——这正是用户会去尝试、
+    // 之前完全没反应的地方。
+    await wrapper.find('textarea').trigger('drop', { dataTransfer })
+    await flushPromises()
+
+    expect(fileApi.upload).toHaveBeenCalledWith(expect.any(String), file)
+    expect(wrapper.text()).toContain('brief.pdf')
   })
 })

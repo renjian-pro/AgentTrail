@@ -217,8 +217,13 @@ button { cursor: pointer; }
   margin-top: auto;
   padding: 18px 20px 2px;
   background: linear-gradient(transparent 0, var(--canvas) 20px);
+  border: 1px dashed transparent;
+  border-radius: 18px;
+  transition: border-color .12s ease, background-color .12s ease;
 }
 .chat-view:not(.is-empty) .chat-bottom { position: sticky; bottom: 0; }
+/* 拖一个文件到输入区任何位置都算数，不只是"添加文件"按钮那一小条——整个区域给出反馈。 */
+.chat-bottom.dragging { border-color: var(--accent); background-color: color-mix(in srgb, var(--accent) 6%, transparent); }
 .capability-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 5px 10px; }
 .mode-picker { display: flex; flex-wrap: wrap; gap: 7px; }
 .mode-picker button,
@@ -237,7 +242,6 @@ button { cursor: pointer; }
 .mode-picker button:disabled { opacity: .42; cursor: not-allowed; }
 .mode-hint { display: block; margin: -3px 8px 8px; color: var(--accent); font-size: 11px; }
 .file-upload { display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 11px; }
-.file-upload.dragging { color: var(--accent); }
 
 .composer {
   min-height: 104px;

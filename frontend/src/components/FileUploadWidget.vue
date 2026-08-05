@@ -1,48 +1,24 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
-const emit = defineEmits<{ upload: [File]; rejected: [string] }>()
+const emit = defineEmits<{ upload: [File] }>()
 const input = ref<HTMLInputElement>()
-const dragging = ref(false)
 
 function pick() {
   input.value?.click()
 }
 
-function receive(files: FileList | null) {
-  const file = files?.[0]
-  if (file) emit('upload', file)
-}
-
 function selected(event: Event) {
-  receive((event.target as HTMLInputElement).files)
-}
-
-/**
- * Dropping a folder still lands one zero-byte File in dataTransfer.files (browsers don't refuse
- * it outright), which used to sail past this component and get rejected server-side with a bare
- * "Unprocessable Content" — technically correct, useless to the person who just dragged something in.
- * DataTransferItem.webkitGetAsEntry() is the only way to see "this is a directory" before that
- * happens, so the drop handler checks entries first and never even builds a FormData for one.
- */
-function drop(event: DragEvent) {
-  dragging.value = false
-  const items = event.dataTransfer?.items
-  if (items) {
-    for (const item of items) {
-      const entry = item.webkitGetAsEntry?.()
-      if (entry?.isDirectory) {
-        emit('rejected', '不支持上传文件夹，请选择单个文件')
-        return
-      }
-    }
-  }
-  receive(event.dataTransfer?.files ?? null)
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (file) emit('upload', file)
 }
 </script>
 
 <template>
-  <div class="file-upload" :class="{ dragging }" @dragover.prevent="dragging = true" @dragleave="dragging = false" @drop.prevent="drop">
+  <!-- 拖放本身由外层整个输入区（见 ChatView 的 .chat-bottom）接住，不只是这一小条——之前
+       拖放监听只挂在这一个小组件上，实际可拖放的区域只有这颗按钮那么大，用户很自然地会往
+       下面那个大输入框拖，那里毫无反应，体感上就是"拖放根本不能用"。这里只保留点击选择文件。 -->
+  <div class="file-upload">
     <input ref="input" type="file" hidden @change="selected">
     <button type="button" @click="pick">＋ 添加文件</button>
     <span>也可拖放文件</span>

@@ -15,6 +15,7 @@ import { toErrorMessage } from '../api/http'
 import { pptApi, type PptTask } from '../api/ppt-api'
 import { researchApi, type ResearchTask } from '../api/research-api'
 import { renderMarkdown } from '../utils/renderMarkdown'
+import { resolveDroppedFile } from '../utils/fileDrop'
 import { useChatStore, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
 /** 三种能力共用一个入口：默认发送走普通对话，先选中下面的模式再发送才会触发 Deep Research / PPT。 */
@@ -29,6 +30,7 @@ const modelId = ref('qwen-plus')
 const files = ref<AttachedFile[]>([])
 const uploadBusy = ref(false)
 const uploadError = ref('')
+const composerDragging = ref(false)
 const pendingMode = ref<Mode>(undefined)
 const initialMessage = ref('')
 let aborter: AbortController | undefined
@@ -210,6 +212,14 @@ async function upload(file: File) {
     uploadBusy.value = false
   }
 }
+
+/** 整个底部输入区（工具栏 + 输入框）都是拖放目标，不只是"添加文件"按钮那一小条。 */
+function onComposerDrop(event: DragEvent) {
+  composerDragging.value = false
+  const result = resolveDroppedFile(event)
+  if (result.kind === 'rejected') uploadError.value = result.reason
+  else if (result.kind === 'file') void upload(result.file)
+}
 </script>
 
 <template>
@@ -239,7 +249,8 @@ async function upload(file: File) {
       </template>
     </div>
     <TodoProgressBar :items="todos" />
-    <div class="chat-bottom">
+    <div class="chat-bottom" :class="{ dragging: composerDragging }"
+        @dragover.prevent="composerDragging = true" @dragleave="composerDragging = false" @drop.prevent="onComposerDrop">
       <AttachedFileList :files="files" :busy="uploadBusy" :error="uploadError" @remove="files = files.filter(file => file.fileId !== $event)" />
       <div class="capability-bar">
         <div class="mode-picker">
@@ -250,7 +261,7 @@ async function upload(file: File) {
               :title="pendingMode === 'ppt' || pendingMode === 'research' ? 'PPT 生成和深度研究都会自己做资料检索，这个开关对它们不生效' : ''"
               :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         </div>
-        <FileUploadWidget @upload="upload" @rejected="uploadError = $event" />
+        <FileUploadWidget @upload="upload" />
       </div>
       <span v-if="pendingMode" class="mode-hint">下一条消息将使用 {{ modeLabel }}</span>
       <MessageInput :busy="busy" :initial-value="initialMessage" @send="send" />
