@@ -3,7 +3,7 @@
 > 术语沿用 `CONTEXT.md` 已定义的词汇表（Runtime / Capability Pack / Tool / Skill / Hook / LlmClient / Gateway），不引入新概念。
 > 对应决策见 `adr/0001`（Runtime 定位）、`adr/0002`（手写 loop 为 V1 主线）；对应机制细节见 `roadmap.md`（Phase 0-11）与 `engineering-pitfalls-and-highlights.md`（踩坑点，部分机制在下文用 `#N` 标出）。issue 号（`#15`-`#19` 这类）指 GitHub issue，可用 `gh issue view <n> --json state,body` 查验收标准。
 >
-> **这一版对齐的是 2026-07-31（V0 收敛 + V1 接线之后）的实际代码状态**（issue #1-#19 已关闭），不是规划态——`capability/`、`governance/`、`distributed/`、`mcp/` 这些包目前都还不存在，规划内容见 `roadmap.md` Phase 2 起。
+> **这一版已同步到 2026-08-05 的实际代码状态**：V1 的 SSE、会话持久化、历史查询与前端统一入口已经接线；`capability/`（analytics/auth/sys）已落地，DeepResearch/PPT 已异步化；`governance/`、`distributed/`、`mcp/` 等后续规划仍见 `roadmap.md`。
 
 ---
 
@@ -12,7 +12,7 @@
 这是理解这份文档时最容易搞反的一点，先单独说清楚：
 
 - **`com.agenttrail.legacy.V0`（V0）**：项目最早期的两条探索性路径——手写的极简 `AgentLoop` 原型和基于 AgentScope Java 2.0 框架的 `AgentScopeRuntime`——已经收敛进这一个文件，不再演进，纯粹作为"决策是怎么一步步演进过来的"这段历史保留（不删除）。`AgentController`（`POST /agent/chat`）仍然装配它、仍然能跑，只是不再是开发重点。
-- **`com.agenttrail.loop.core.AgentLoopExecutor`（V1）**：手写 ReAct 引擎，issue #1-#19 全部完成，`mvn test` 372/372 绿。现在已经有独立的 HTTP 入口：`AgentLoopExecutorConfig` 装配一个只带裸引擎（无工具/暂停恢复/追踪审计/分层记忆）的 `AgentLoopExecutor` Bean，`AgentLoopController`（`POST /agent/v1/chat`）通过同步的 `call()` 暴露出去——先用同步接口把装配跑通，流式 SSE 是这之上很小的一步（换返回类型即可，见该类 javadoc）。
+- **`com.agenttrail.loop.core.AgentLoopExecutor`（V1）**：手写 ReAct 引擎。`AgentLoopController` 的 `POST /agent/v1/chat` 直接暴露 `stream()` 为 SSE；`AgentLoopExecutorConfig` 接入 `TurnPersistenceHook`，正常完成的轮次写入 `agent_session`。浏览器通过同一个 `conversationId` 完成多轮对话与历史恢复。
 - 能接上的前提是解决了 `ChatModel` 从哪来的问题：`spring-ai-deepseek` 原来只在 `test` scope 声明，已经换成 `spring-ai-starter-model-deepseek`（Spring AI 官方 starter，正常 scope），由 `spring.ai.deepseek.*` 配置项（`application.properties`）自动装配出生产可用的 `DeepSeekChatModel` Bean，不用手写代码去 `new` 它。
 
 两个入口的关系是"并存"，不是"新的替换旧的"：`/agent/chat` 继续走 V0，`/agent/v1/chat` 走 V1，各自独立装配，谁都不依赖谁。
@@ -24,13 +24,13 @@
 ```mermaid
 graph TB
     subgraph Client["客户端"]
-        CURL["curl / Postman"]
+        CURL["Vue SPA / curl / Postman"]
     end
 
     subgraph Web["web/ —— 两个独立入口，互不依赖"]
         AC["AgentController<br/>POST /agent/chat"]
         ARC["AgentRuntimeConfig<br/>@Bean AgentRuntime"]
-        ALC["AgentLoopController<br/>POST /agent/v1/chat"]
+        ALC["AgentLoopController<br/>POST /agent/v1/chat SSE"]
         ALEC["AgentLoopExecutorConfig<br/>@Bean AgentLoopExecutor"]
     end
 
@@ -68,14 +68,14 @@ graph TB
     end
 
     subgraph Infra["基础设施"]
-        MYSQL[("MySQL<br/>会话表 + sakila（规划）")]
+        MYSQL[("MySQL<br/>agent_session / PPT / 文件等")]
         REDIS[("Redis<br/>分布式锁 + Pub/Sub")]
     end
 
-    subgraph CapPacks["capability/ —— Phase 2 起，当前 0 实现"]
-        DATA["Phase 2: SQL 数据分析<br/>无前置依赖，可第一个做"]
-        FILE["Phase 4: 文件问答 RAG<br/>依赖向量库"]
-        OTHERS["Phase 5-8: 搜索/图表/PPT/DeepResearch/多Agent"]
+    subgraph CapPacks["capability/ —— Phase 2 已落地"]
+        DATA["Phase 2: SQL 数据分析<br/>✅ 已完成（issue #52-#61）"]
+        FILE["Phase 4: 文件问答 RAG<br/>✅ 已完成，含删除联动清理"]
+        OTHERS["Phase 6-7: PPT/DeepResearch<br/>✅ 已异步化（提交+轮询），取消/跨重启恢复仍是缺口"]
     end
 
     CURL --> AC
@@ -112,7 +112,7 @@ graph TB
 
 **读图要点**：
 - 实线箭头 = 当前真实存在的调用关系；虚线 = 规划中（`CapPacks`）。
-- `AgentLoopExecutorConfig` 目前只把裸引擎接上——`ALE -.按需注入.-> V1Opt/V1Tools` 那两条虚线是"机制存在、可以传，但当前生产装配没传"，不是"还没实现"。
+- `AgentLoopExecutorConfig` 已接会话持久化；其它 `V1Opt/V1Tools` 仍按场景装配，虚线表达"可选依赖"而不是"未实现"。
 - `V1Opt` 那一层全部是**同一种模式**："这个参数传 null，行为和没有这个机制时完全一致"——不是"未实现的占位符"，是刻意设计成可插拔。第四节详细讲这个模式怎么用。
 - `CapPacks` 目前是纯规划，代码里连包目录都没建。
 
@@ -120,7 +120,7 @@ graph TB
 
 ## 二、V1 引擎一次完整请求的调用链路（`AgentLoopExecutor.stream()`）
 
-这是引擎内部真实发生的事，来自 `AgentLoopExecutor.java` 当前代码，不是规划——但要注意：这是 `stream()` 的完整能力面，`AgentLoopController` 当前走的是同步的 `call()`（内部就是阻塞收集 `stream()`），且生产装配没开任何可选机制，所以下图里标"可选"的那几个参与者在当前生产环境里实际上都不生效，只有测试代码会真的配上它们：
+这是引擎内部真实发生的事，来自 `AgentLoopExecutor.java` 当前代码，不是规划。`AgentLoopController` 直接订阅 `stream()` 并返回 SSE；持久化在 `Complete` 和流关闭之前完成。图里其余标为"可选"的参与者是否生效取决于生产装配：
 
 ```mermaid
 sequenceDiagram
@@ -262,18 +262,24 @@ com.agenttrail
 │       ├── SkillManager.java / SkillRepository.java / SkillReconciliation.java
 │       └── Skill.java / SkillDocument.java / SkillMetadata.java / SkillNames.java / SkillsConfiguration.java
 │
-├── capability/                                 # Phase 2 起——当前不存在，规划见 roadmap.md
+├── capability/                                 # 2026-08-05 更新：Phase 2 已落地，不再是空目录
+│   ├── analytics/                              # SQL 数据分析能力包（issue #52-#61）：schema/sql/permission/glossary/tools 子包
+│   ├── auth/                                   # 登录、Sa-Token 会话、密码校验
+│   └── sys/                                    # RBAC：sys_user/sys_role/sys_dept 及 controller/service/store 分层
 │
 └── web/
     ├── AgentController.java                    # V0 入口：POST /agent/chat
     ├── AgentRuntimeConfig.java                  # @Bean 装配 V0.AgentScopeRuntime
-    ├── AgentLoopController.java                 # V1 入口：POST /agent/v1/chat（同步 call()）
-    ├── AgentLoopExecutorConfig.java              # @Bean 装配 AgentLoopExecutor（裸引擎，无可选机制）
-    └── AgentChatRequest.java / AgentChatResponse.java   # 两个入口共用同一套请求/响应 DTO
+    ├── AgentLoopController.java                 # V1 入口：POST /agent/v1/chat（SSE）
+    ├── AgentLoopExecutorConfig.java             # 装配模型、任务管理与 TurnPersistenceHook
+    ├── ConversationHistoryService.java          # 会话列表/详情；首轮问题作稳定标题
+    ├── CapabilityConversationService.java       # Research/PPT 复用 agent_session
+    ├── DeepResearchController.java / PptGenerationController.java  # 均已异步化：提交立即返回 taskId，后台线程池执行，前端轮询 /{taskId} 查状态
+    └── FileUploadController.java                # 文件上传/问答/删除，含向量库联动清理
 ```
 
 **分包原则（不变）**：
-- `loop/` 只装 Runtime 通用机制，不含任何业务知识——`capability/` 落地后不需要改动 `loop/`。
+- `loop/` 只装 Runtime 通用机制，不含任何业务知识——`capability/` 是它之上的业务层，不反向依赖。
 - `loop.core` 之外的每个子包都是"一个可选机制 + 它的存取接口"，`AgentLoopExecutor` 只认接口，不关心是内存实现还是将来的 JDBC/Redis 实现。
 - 当前仍是单 Maven 模块。
 
@@ -313,12 +319,23 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 | 记忆提取时机 | #19 | 放在 `completeRun` 里同步做（会增加一次 LLM 调用的延迟），理由是要在 emitComplete 前完成，避免进程退出后悄悄丢失——这是一个已知的、有意识做出的延迟/一致性取舍，还没有做成异步 |
 | `RunnableParams` 双通道 | #59 | prompt 参数模型可见，`toolParams` 模型不可见且执行前强制注入覆盖——userId 必须走后一条通道，否则等于把越权空子交给可被诱导的模型 |
 | 落库/记忆提取必须在 emitComplete 之前同步做完 | #63 | 挂在流关闭之后的回调里，进程退出时可能根本跑不到 |
+| 所有能力共用会话事实源 | #83 | 普通对话与同步能力都按“一轮一行”写入 `agent_session`；结构化结果放在 `TimelineEntry[]` 的 `StageOutput` 中，不另造历史表 |
+
+### 统一会话存储契约
+
+- `agent_session` 一行表示一轮交互；`conversation_id` 负责把普通问答、DeepResearch、PPT 聚合成同一会话。
+- `question` 与 `answer` 保存人可读摘要；`timeline` 根节点固定为事件数组。同步能力的结构化响应写成 `{"type":"StageOutput","stage":"research|ppt","data":{"payload":...}}`，因此旧的时间线解析器仍可读取。
+- 会话列表的标题取首轮问题，不会因为后续追问发生跳变；最近活动时间与排序取最后一轮。
+- 前端 Pinia store 只消费会话列表/详情接口，再把 `StageOutput` 恢复成研究报告或 PPT 任务卡片。组件卸载、刷新页面都不会成为数据边界。
+- `AgentLoopExecutorConfig` 显式提供 `ObjectMapper`：当前精简 MVC 依赖不保证自动装配该 Bean，而能力时间线需要稳定地序列化结构化载荷；不能把应用能否启动寄托在某个 starter 的传递行为上。
+- PPT 产物路径只保留在服务端；`PptGenerationController` 将完成任务映射为 `/agent/v1/ppt/{taskId}/download`，并以 attachment 输出文件内容。这样前端不会暴露或误用运行机器上的文件系统路径，产物被清理后会明确返回 404。
+- Runtime 保持流式 Tool Calling 闭环：`processChunk()` 按 `toolCallId` 累加 arguments 分片，`finishRound()` 在本轮完整响应后并行执行工具，并按原始 Tool Call 顺序回填 Tool Response；半截参数不会暴露给用户，也不会提前执行。由于当前 OpenAI 兼容客户端在合并省略 id 的后续分片时存在 `Optional.get()` 缺陷，工厂把带工具的 `qwen-plus` 请求路由到已验证兼容的原生 `deepseek-chat` 客户端；不挂工具的 Qwen 执行器仍使用用户选择的模型并保持 SSE 流式输出。
 
 ---
 
 ## 六、已知缺口（不阻塞现状，但用到对应机制时要记得处理）
 
-- **V1 只接了裸引擎**：`AgentLoopExecutorConfig` 没开工具/暂停恢复/追踪审计/分层记忆任何一个可选机制，也没有会话持久化（每次请求都是全新 conversationId，没有多轮记忆）；`AgentLoopController` 用的是同步 `call()`，不是 SSE 流式——这两点都是"先跑通装配"的最小切片，不是最终形态，第四节的扩展模式随时可以往上叠。
+- **DeepResearch/PPT 已经异步化，但还不是完整的 Task**：`POST /agent/v1/{ppt,deepresearch}` 提交后立即返回 taskId，真正的执行丢到后台线程池，前端轮询 `GET .../{taskId}` 看进度（PPT 是 DB 落的逐状态 checkpoint，DeepResearch 只有 RUNNING/SUCCESS/FAILED 三态，无中间 checkpoint）。仍然缺两块：**没有取消端点**；**没有跨刷新恢复**——`recordSuccess/recordFailure` 只在任务真正跑完时才写 `agent_session`，没跑完之前刷新页面这条消息在历史里根本不存在，UI 侧看起来任务凭空消失（后台线程本身没死，跑完了下次进来才看得到）。DeepResearch 比 PPT 更脆：它的任务状态是纯内存 `ConcurrentHashMap`（见 `DeepResearchTaskRegistry`），应用重启会丢失所有进行中任务的记录；PPT 有 DB checkpoint，重启后还能凭 taskId 继续跑。
 - **换模型供应商**：只要额外的模型（OpenAI/智谱等）也有 Spring AI starter 且和 DeepSeek 的 starter 不同时存在于 classpath，`AgentLoopExecutorConfig` 不用改一行代码——它认的是通用 `ChatModel` 接口。同时装多个供应商的 starter 时会有多个 `ChatModel` Bean，需要按 Spring 标准做法用 `@Qualifier`/`@Primary` 挑一个默认的。
 - `TraceStore`/`MemoryStore`/`PauseStateStore` 各有内存版和 JDBC 版两种实现（`JdbcTraceStore`/`JdbcMemoryStore`/`JdbcPauseStateStore`，表结构在 `db/schema.sql`）；`AgentLoopExecutorConfig` 目前装的是内存版，换成 JDBC 版只需要在装配时传对应的实例，不用改 `AgentLoopExecutor` 一行代码。
 - `AgentTaskManager` 默认不会定时续期已持有的 Redis 锁——`RedisTaskLock.startAutoRenewal()` 已经实现了这个能力，但要显式调用才开启（同一套"null/未调用=关闭"惯例）。
@@ -332,7 +349,7 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 | CONTEXT.md 术语 | 代码位置（当前实际） |
 |---|---|
 | Runtime | `loop.core` + `loop.context`/`stage`/`stageoutput`/`trace`/`structured`/`memory`/`persistence`/`pause`/`task`/`tools`/`skills`/`model`（V1，已接线，`/agent/v1/chat`）；`legacy.V0`（V0，`/agent/chat`，不再演进） |
-| Capability Pack | 规划中，`capability/*`，当前不存在 |
+| Capability Pack | `capability/*`（analytics/auth/sys 已落地，见第三节包结构）；`loop.deepresearch`/`loop.ppt`/`loop.file`/`loop.rag` 同样是业务能力包，只是历史上挂在 `loop/` 下没跟着搬——`architecture-refactor-blueprint-2026-08-03.md` 的 P0-1 已经指出这个命名/分层不一致，尚未落地迁移 |
 | Tool | `loop.tools.*`（FileSystem/Bash/Grep/TodoWrite 是 Runtime 内置 Tool），未来 Capability Pack 各自的 tools 子包 |
 | Skill | `loop.skills.*` |
 | Hook | 规划中（`governance/`），当前 V1 里最接近的是 `StageOutputProvider`（生命周期钩子，但语义是"产出附加内容"不是"治理拦截"） |
