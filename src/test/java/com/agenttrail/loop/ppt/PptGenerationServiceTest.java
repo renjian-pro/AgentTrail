@@ -50,6 +50,36 @@ class PptGenerationServiceTest {
         assertThat(service.describe(taskId)).isPresent();
         assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
         assertThat(service.describe(taskId).orElseThrow().errorMsg()).isNull();
+        assertThat(service.runningTaskIdsFor("legacy")).isEmpty();
+    }
+
+    @Test
+    void cancellationIsAppliedAtTheNextStateBoundary() {
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        long taskId = taskStore.create("user-1", "conv-1", PptGenerationContext.initial("conv-1", "做一份 PPT"));
+        List<String> log = new ArrayList<>();
+        List<PptGenerationStrategy> strategies = allStates(log);
+        strategies.removeIf(strategy -> strategy.handledState() == PptState.INIT);
+        strategies.add(new PptGenerationStrategy() {
+            @Override
+            public PptState handledState() {
+                return PptState.INIT;
+            }
+
+            @Override
+            public PptGenerationContext execute(PptGenerationContext context) {
+                log.add("INIT#1");
+                taskStore.requestCancel(taskId);
+                return context;
+            }
+        });
+        PptGenerationService service = new PptGenerationService(taskStore, strategies);
+
+        service.run(taskId);
+
+        assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.CANCELLED);
+        assertThat(log).containsExactly("INIT#1");
+        assertThat(service.runningTaskIdsFor("user-1")).isEmpty();
     }
 
     @Test

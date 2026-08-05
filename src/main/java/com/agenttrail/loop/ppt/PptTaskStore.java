@@ -1,5 +1,6 @@
 package com.agenttrail.loop.ppt;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -46,4 +47,15 @@ public interface PptTaskStore {
 
     /** 某个状态执行失败：{@code status} 保持是这个失败的状态本身（下次重新跑它整个状态），只更新 errorMsg。 */
     void markFailed(long id, PptState failedState, String errorMsg);
+
+    /** 请求取消：只写标记，由状态机在下一个状态边界完成终态切换。 */
+    void requestCancel(long id);
+
+    /** 在状态边界把任务标记为取消完成。 */
+    void markCancelled(long id, PptState atState);
+
+    boolean isCancelRequested(long id);
+
+    /** 返回指定用户当前仍可继续推进的任务，匿名用户不应调用此查询。 */
+    List<Long> runningTaskIdsFor(String userId);
 }

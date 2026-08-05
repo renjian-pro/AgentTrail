@@ -14,7 +14,11 @@ import org.springframework.web.server.ResponseStatusException;
 import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.http.HttpStatus;
 
+import java.util.List;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -33,7 +37,7 @@ public class DeepResearchController {
 
     private final DeepResearchService deepResearchService;
     private final CapabilityConversationService conversationService;
-    private final Executor deepResearchExecutor;
+    private final ExecutorService deepResearchExecutor;
     private final DeepResearchTaskRegistry taskRegistry = new DeepResearchTaskRegistry();
 
     public DeepResearchController(DeepResearchService deepResearchService,
@@ -41,15 +45,15 @@ public class DeepResearchController {
             @Qualifier("deepResearchExecutor") Executor deepResearchExecutor) {
         this.deepResearchService = deepResearchService;
         this.conversationService = conversationService;
-        this.deepResearchExecutor = deepResearchExecutor;
+        this.deepResearchExecutor = asExecutorService(deepResearchExecutor);
     }
 
     @PostMapping("/agent/v1/deepresearch")
     public DeepResearchTaskResponse research(@RequestBody DeepResearchRequest request) {
         long startedAt = System.nanoTime();
-        long taskId = taskRegistry.start();
         String userId = currentUserId();
-        deepResearchExecutor.execute(() -> {
+        long taskId = taskRegistry.start(userId);
+        Future<?> future = deepResearchExecutor.submit(() -> {
             try {
                 DeepResearchReport report = deepResearchService.research(request.question());
                 taskRegistry.complete(taskId, report);
@@ -73,15 +77,46 @@ public class DeepResearchController {
                 }
             }
         });
+        taskRegistry.attachFuture(taskId, future);
         return DeepResearchTaskResponse.running(taskId);
     }
 
     /** 轮询端点：不驱动任何执行，纯读内存里记的当前状态。 */
     @GetMapping("/agent/v1/deepresearch/{taskId}")
     public DeepResearchTaskResponse status(@PathVariable long taskId) {
+        String userId = currentUserId();
+        if (userId != null && !taskRegistry.belongsTo(taskId, userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "DeepResearch 任务不存在: " + taskId);
+        }
         return taskRegistry.find(taskId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "DeepResearch 任务不存在（可能是应用重启丢失了进行中任务的记录）: " + taskId));
+    }
+
+    @PostMapping("/agent/v1/deepresearch/{taskId}/cancel")
+    public DeepResearchTaskResponse cancel(@PathVariable long taskId) {
+        String userId = currentUserId();
+        if (userId != null && !taskRegistry.belongsTo(taskId, userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "DeepResearch 任务不存在: " + taskId);
+        }
+        if (!taskRegistry.cancel(taskId)) {
+            DeepResearchTaskResponse current = taskRegistry.find(taskId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                            "DeepResearch 任务不存在: " + taskId));
+            if (!DeepResearchTaskResponse.RUNNING.equals(current.status())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "DeepResearch 任务已结束，无法取消: " + taskId);
+            }
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "DeepResearch 任务尚未准备好取消，请稍后重试: " + taskId);
+        }
+        return taskRegistry.find(taskId).orElseThrow();
+    }
+
+    @GetMapping("/agent/v1/deepresearch/running")
+    public List<Long> runningTaskIds() {
+        return taskRegistry.runningTaskIdsFor(currentUserId());
     }
 
     private static long elapsedMillis(long startedAt) {
@@ -91,5 +126,54 @@ public class DeepResearchController {
     private static String currentUserId() {
         try { return StpUtil.isLogin() ? StpUtil.getLoginIdAsString() : null; }
         catch (RuntimeException noHttpContext) { return null; }
+    }
+
+    private static ExecutorService asExecutorService(Executor executor) {
+        return executor instanceof ExecutorService service ? service : new InlineExecutorService(executor);
+    }
+
+    /** 兼容直接执行 Runnable 的单元测试替身；生产环境注入的 bean 本身是 ExecutorService。 */
+    private static final class InlineExecutorService extends AbstractExecutorService {
+
+        private final Executor delegate;
+        private volatile boolean shutdown;
+
+        private InlineExecutorService(Executor delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void shutdown() {
+            shutdown = true;
+        }
+
+        @Override
+        public java.util.List<Runnable> shutdownNow() {
+            shutdown();
+            return java.util.List.of();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, TimeUnit unit) {
+            return shutdown;
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            if (shutdown) {
+                throw new java.util.concurrent.RejectedExecutionException("executor is shut down");
+            }
+            delegate.execute(command);
+        }
     }
 }

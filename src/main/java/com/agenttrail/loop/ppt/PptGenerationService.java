@@ -146,7 +146,11 @@ public class PptGenerationService {
         PptGenerationContext context = PptContextJson.fromJson(task.contextJson());
         PptState current = task.status();
 
-        while (current != PptState.SUCCESS) {
+        while (current != PptState.SUCCESS && current != PptState.CANCELLED) {
+            if (taskStore.isCancelRequested(taskId)) {
+                taskStore.markCancelled(taskId, current);
+                return;
+            }
             PptGenerationStrategy strategy = strategiesByState.get(current);
             if (strategy == null) {
                 throw new IllegalStateException("没有登记状态 " + current + " 对应的 Strategy 实现");
@@ -180,6 +184,15 @@ public class PptGenerationService {
 
     public Optional<PptTask> describe(String userId, long taskId) {
         return taskStore.findById(userId, taskId);
+    }
+
+    /** 请求在下一个状态边界停止；实际终态由 {@link #run(long)} 写入。 */
+    public void requestCancel(long taskId) {
+        taskStore.requestCancel(taskId);
+    }
+
+    public List<Long> runningTaskIdsFor(String userId) {
+        return taskStore.runningTaskIdsFor(userId);
     }
 
     /** 从任务当前的上下文快照里取出已产出的 pptx 路径；还没跑到 RENDER 完成时为 {@code null}。 */

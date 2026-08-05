@@ -1,7 +1,9 @@
 package com.agenttrail.loop.ppt;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -9,6 +11,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class InMemoryPptTaskStore implements PptTaskStore {
 
     private final Map<Long, PptTask> tasks = new ConcurrentHashMap<>();
+    private final Set<Long> cancelRequested = ConcurrentHashMap.newKeySet();
     private final AtomicLong idSequence = new AtomicLong(1);
 
     @Override
@@ -54,5 +57,44 @@ public class InMemoryPptTaskStore implements PptTaskStore {
             return new PptTask(id, existing.userId(), existing.conversationId(), failedState, errorMsg,
                     existing.contextJson(), existing.createdAtMillis(), System.currentTimeMillis());
         });
+    }
+
+    @Override
+    public void requestCancel(long id) {
+        if (!tasks.containsKey(id)) {
+            throw new IllegalArgumentException("PPT 任务不存在: " + id);
+        }
+        cancelRequested.add(id);
+    }
+
+    @Override
+    public void markCancelled(long id, PptState atState) {
+        tasks.compute(id, (ignored, existing) -> {
+            if (existing == null) {
+                throw new IllegalArgumentException("PPT 任务不存在: " + id);
+            }
+            return new PptTask(id, existing.userId(), existing.conversationId(), PptState.CANCELLED, null,
+                    existing.contextJson(), existing.createdAtMillis(), System.currentTimeMillis());
+        });
+        cancelRequested.remove(id);
+    }
+
+    @Override
+    public boolean isCancelRequested(long id) {
+        return cancelRequested.contains(id);
+    }
+
+    @Override
+    public List<Long> runningTaskIdsFor(String userId) {
+        if (userId == null) {
+            return List.of();
+        }
+        return tasks.values().stream()
+                .filter(task -> userId.equals(task.userId()))
+                .filter(task -> task.status() != PptState.SUCCESS && task.status() != PptState.CANCELLED)
+                .filter(task -> task.errorMsg() == null && !cancelRequested.contains(task.id()))
+                .map(PptTask::id)
+                .sorted()
+                .toList();
     }
 }

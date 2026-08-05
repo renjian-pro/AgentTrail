@@ -89,6 +89,25 @@ public class PptGenerationController {
         return toResponse(userId, taskId);
     }
 
+    @PostMapping("/agent/v1/ppt/{taskId}/cancel")
+    public PptGenerationResponse cancel(@PathVariable long taskId) {
+        String userId = currentUserId();
+        if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
+        }
+        try {
+            pptGenerationService.requestCancel(taskId);
+        } catch (IllegalArgumentException missingTask) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, missingTask.getMessage(), missingTask);
+        }
+        return toResponse(userId, taskId);
+    }
+
+    @GetMapping("/agent/v1/ppt/running")
+    public java.util.List<Long> runningTaskIds() {
+        return pptGenerationService.runningTaskIdsFor(currentUserId());
+    }
+
     private void runInBackgroundThenRecord(String userId, long taskId, String conversationId, String message,
             long startedAt) {
         pptGenerationExecutor.execute(() -> {

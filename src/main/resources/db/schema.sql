@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS ppt_generation_task
     conversation_id VARCHAR(100) NOT NULL COMMENT '发起这个任务的会话标识',
     status          VARCHAR(20)  NOT NULL COMMENT '当前状态（PptState 枚举名），即断点续传的 checkpoint',
     error_msg       LONGTEXT     NULL COMMENT 'status 对应状态上一次执行失败的错误信息；成功推进到这个状态时为 NULL',
+    cancel_requested BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '用户请求取消，状态机在下一个状态边界转为 CANCELLED',
     context_json    LONGTEXT     NOT NULL COMMENT 'PptGenerationContext 完整快照 JSON，恢复时从这里重建上下文',
     created_at      BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
     updated_at      BIGINT       NOT NULL COMMENT '最近一次状态推进/失败记录的时刻（epoch millis）',

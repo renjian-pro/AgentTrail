@@ -16,6 +16,7 @@ public record DeepResearchTaskResponse(long taskId, String status, DeepResearchR
     public static final String RUNNING = "RUNNING";
     public static final String SUCCESS = "SUCCESS";
     public static final String FAILED = "FAILED";
+    public static final String CANCELLED = "CANCELLED";
 
     static DeepResearchTaskResponse running(long taskId) {
         return new DeepResearchTaskResponse(taskId, RUNNING, null, null);
@@ -27,5 +28,9 @@ public record DeepResearchTaskResponse(long taskId, String status, DeepResearchR
 
     static DeepResearchTaskResponse failed(long taskId, String errorMsg) {
         return new DeepResearchTaskResponse(taskId, FAILED, null, errorMsg);
+    }
+
+    static DeepResearchTaskResponse cancelled(long taskId) {
+        return new DeepResearchTaskResponse(taskId, CANCELLED, null, null);
     }
 }

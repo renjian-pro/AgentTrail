@@ -6,6 +6,7 @@ import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 
 import javax.sql.DataSource;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -20,8 +21,8 @@ public class JdbcPptTaskStore implements PptTaskStore {
 
     private static final String INSERT_SQL = """
             INSERT INTO ppt_generation_task
-                (user_id, conversation_id, status, error_msg, context_json, created_at, updated_at)
-            VALUES (?, ?, ?, NULL, ?, ?, ?)
+                (user_id, conversation_id, status, error_msg, cancel_requested, context_json, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, FALSE, ?, ?, ?)
             """;
 
     private static final String SELECT_BY_ID_SQL = """
@@ -50,6 +51,29 @@ public class JdbcPptTaskStore implements PptTaskStore {
             UPDATE ppt_generation_task
             SET status = ?, error_msg = ?, updated_at = ?
             WHERE id = ?
+            """;
+
+    private static final String REQUEST_CANCEL_SQL = """
+            UPDATE ppt_generation_task
+            SET cancel_requested = TRUE, updated_at = ?
+            WHERE id = ?
+            """;
+
+    private static final String MARK_CANCELLED_SQL = """
+            UPDATE ppt_generation_task
+            SET status = ?, error_msg = NULL, cancel_requested = FALSE, updated_at = ?
+            WHERE id = ?
+            """;
+
+    private static final String IS_CANCEL_REQUESTED_SQL = """
+            SELECT cancel_requested FROM ppt_generation_task WHERE id = ?
+            """;
+
+    private static final String RUNNING_TASK_IDS_SQL = """
+            SELECT id FROM ppt_generation_task
+            WHERE user_id = ? AND status NOT IN ('SUCCESS', 'CANCELLED')
+              AND error_msg IS NULL AND cancel_requested = FALSE
+            ORDER BY id
             """;
 
     private final JdbcClient jdbcClient;
@@ -107,6 +131,49 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 .param(System.currentTimeMillis())
                 .param(id)
                 .update();
+    }
+
+    @Override
+    public void requestCancel(long id) {
+        int updated = jdbcClient.sql(REQUEST_CANCEL_SQL)
+                .param(System.currentTimeMillis())
+                .param(id)
+                .update();
+        if (updated == 0) {
+            throw new IllegalArgumentException("PPT 任务不存在: " + id);
+        }
+    }
+
+    @Override
+    public void markCancelled(long id, PptState atState) {
+        int updated = jdbcClient.sql(MARK_CANCELLED_SQL)
+                .param(PptState.CANCELLED.name())
+                .param(System.currentTimeMillis())
+                .param(id)
+                .update();
+        if (updated == 0) {
+            throw new IllegalArgumentException("PPT 任务不存在: " + id);
+        }
+    }
+
+    @Override
+    public boolean isCancelRequested(long id) {
+        return jdbcClient.sql(IS_CANCEL_REQUESTED_SQL)
+                .param(id)
+                .query(Boolean.class)
+                .optional()
+                .orElse(false);
+    }
+
+    @Override
+    public List<Long> runningTaskIdsFor(String userId) {
+        if (userId == null) {
+            return List.of();
+        }
+        return jdbcClient.sql(RUNNING_TASK_IDS_SQL)
+                .param(userId)
+                .query(Long.class)
+                .list();
     }
 
     private static PptTask mapRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {

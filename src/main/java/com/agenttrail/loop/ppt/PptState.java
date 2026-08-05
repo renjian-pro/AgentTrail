@@ -20,5 +20,7 @@ public enum PptState {
     SCHEMA,
     IMAGE,
     RENDER,
-    SUCCESS
+    SUCCESS,
+    /** 由用户取消，终态，不参与正常状态推进。 */
+    CANCELLED
 }
