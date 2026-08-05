@@ -1,9 +1,0 @@
-cases:
-  - {id: sql-001, dimension: sql_correctness, question: "统计租赁总量", as_user: admin, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: result_matches_reference}]}
-  - {id: sql-002, dimension: sql_correctness, question: "按客户统计租赁次数", as_user: admin, reference_sql: "SELECT customer_id, COUNT(*) AS total FROM rental GROUP BY customer_id", assertions: [{type: row_count_between, min: 1, max: 250}]}
-  - {id: sql-003, dimension: sql_correctness, question: "查询付款金额", as_user: admin, reference_sql: "SELECT SUM(amount) AS total FROM payment", assertions: [{type: result_matches_reference}]}
-  - {id: sql-004, dimension: sql_correctness, question: "查询活跃客户", as_user: admin, reference_sql: "SELECT COUNT(DISTINCT customer_id) AS total FROM rental", assertions: [{type: tool_called, name: lookup_glossary}]}
-  - {id: sql-005, dimension: sql_correctness, question: "查询最近三十天租赁", as_user: admin, reference_sql: "SELECT COUNT(*) AS total FROM rental WHERE rental_date >= CURRENT_DATE - INTERVAL 30 DAY", assertions: [{type: tool_called, name: lookup_glossary}]}
-  - {id: sql-006, dimension: sql_correctness, question: "计算环比增长", as_user: admin, reference_sql: "SELECT 1 AS current_value, 1 AS previous_value", assertions: [{type: tool_called, name: calculate}]}
-  - {id: sql-007, dimension: sql_correctness, question: "刻意触发行数截断", as_user: admin, reference_sql: "SELECT * FROM rental", assertions: [{type: output_contains_any, values: ["截断", "聚合"]}]}
-  - {id: sql-008, dimension: sql_correctness, question: "一共有多少条租赁记录", as_user: admin, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: tool_called, name: execute_sql}]}

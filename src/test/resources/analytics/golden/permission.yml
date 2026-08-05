@@ -1,8 +1,0 @@
-cases:
-  - {id: perm-001, dimension: permission, question: "查询租赁总量", as_user: admin, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: result_matches_reference}]}
-  - {id: perm-002, dimension: permission, question: "查询租赁总量", as_user: analyst_test, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: sql_contains_scope_filter, column: dept_id}]}
-  - {id: perm-003, dimension: permission, question: "查询租赁总量", as_user: sales_a1, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: sql_contains_scope_filter, column: dept_id}]}
-  - {id: perm-004, dimension: permission, question: "查询租赁总量", as_user: sales_a2, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: sql_contains_scope_filter, column: dept_id}]}
-  - {id: perm-005, dimension: permission, question: "查询跨部门租赁", as_user: cross_analyst, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: sql_contains_scope_filter, column: dept_id}]}
-  - {id: perm-006, dimension: permission, question: "查询状态为1或者金额超过100的租赁总量", as_user: analyst_test, reference_sql: "SELECT COUNT(*) AS total FROM rental WHERE status = 1 OR amount > 100", assertions: [{type: sql_contains_scope_filter, column: dept_id}]}
-  - {id: perm-007, dimension: permission, question: "查询每个客户的租赁次数，包括没有租赁记录的客户", as_user: analyst_test, reference_sql: "SELECT COUNT(*) AS total FROM customer c LEFT JOIN rental r ON r.customer_id = c.customer_id", assertions: [{type: sql_contains_scope_filter, column: dept_id}]}

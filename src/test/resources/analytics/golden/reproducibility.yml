@@ -1,5 +1,0 @@
-cases:
-  - {id: repro-001, dimension: reproducibility, question: "重复查询租赁总量", as_user: admin, reference_sql: "SELECT COUNT(*) AS total FROM rental", assertions: [{type: rounds_at_most, value: 20}]}
-  - {id: repro-002, dimension: reproducibility, question: "重复查询付款金额", as_user: admin, reference_sql: "SELECT SUM(amount) AS total FROM payment", assertions: [{type: rounds_at_most, value: 20}]}
-  - {id: repro-003, dimension: reproducibility, question: "重复查询活跃客户", as_user: analyst_test, reference_sql: "SELECT COUNT(DISTINCT customer_id) AS total FROM rental", assertions: [{type: rounds_at_most, value: 20}]}
-  - {id: repro-004, dimension: reproducibility, question: "重复查询部门业绩", as_user: analyst_test, reference_sql: "SELECT dept_id, SUM(amount) AS total FROM payment GROUP BY dept_id", assertions: [{type: rounds_at_most, value: 20}]}

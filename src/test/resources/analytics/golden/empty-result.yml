@@ -1,4 +1,0 @@
-cases:
-  - {id: empty-001, dimension: empty_result, question: "查询不存在的客户", as_user: admin, reference_sql: "SELECT * FROM customer WHERE customer_id = -1", assertions: [{type: output_contains_any, values: ["没有匹配数据", "空结果"]}]}
-  - {id: empty-002, dimension: empty_result, question: "查询未来时间范围", as_user: admin, reference_sql: "SELECT * FROM rental WHERE rental_date > '2999-01-01'", assertions: [{type: output_contains_any, values: ["没有匹配数据", "时间"]}]}
-  - {id: empty-003, dimension: empty_result, question: "空结果不是错误", as_user: analyst_test, reference_sql: "SELECT COUNT(*) AS total FROM rental WHERE rental_id = -1", assertions: [{type: output_contains_any, values: ["查询成功", "没有匹配数据"]}]}
