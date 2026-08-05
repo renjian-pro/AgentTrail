@@ -27,7 +27,10 @@
    `search_tools`（有的还加一次 `lookup_glossary`），**从没有真正调用到 `execute_sql`**——模型
    反而回答"目前没有找到能查询数据的工具"，或转而向用户反问澄清问题。这不是 SQL 生成质量问题，
    是延迟工具发现（issue #0.6 ToolSearch，HYBRID 关键词优先+LLM 兜底）没有稳定地把 `execute_sql`
-   召回给模型看。
+   召回给模型看。**根因已经用真实捕获到的查询词直接跑生产代码验证过（不是靠读代码猜的）：
+   关键词打分对这几类真实中文分析查询全部是 0 分，HYBRID 100% 落进 LLM 语义兜底，是这次独立
+   的、被采样的 LLM 检索调用本身不稳定——不是关键词打分算法误伤了它**（完整机制、以及中途
+   推翻过一次的错误猜测，见 `docs/engineering-pitfalls-and-highlights.md` 踩坑点 #85）。
 3. **4 轮之间同一条 fixture 的结果大幅波动，这本身就是"reproducibility"维度测出来的真实信号，
    不是测试噪音**——这是这次评测第二重要的发现：
    - `perm-002`（analyst_test，之前 3 轮全过）在第 4 轮突然失败；`perm-007`（改措辞后）第 4 轮
@@ -45,8 +48,10 @@
 
 ## 未来的最小后续动作（不在本次范围内，如实记录留痕）
 
-- 调查 ToolSearch 对 `execute_sql` 的召回稳定性本身（关键词打分阈值？候选池大小？）——这是比
-  继续修 fixture 更有价值的下一步，`sql-008` 只是一个持续暴露这个问题的探针，不是修复。
+- ~~调查 ToolSearch 对 `execute_sql` 的召回稳定性本身~~ → 根因已定位（踩坑点 #85）：关键词
+  打分对这类中文查询全是 0 分，问题在 `llmSearch()` 这次独立 LLM 判断本身不稳定。还没做的是
+  修复方向：① 给 `execute_sql` 补领域关键词；② 给检索用的 LLM 调用调低采样温度；③ SKILL.md
+  补一条"查完术语口径后必须继续查数据，不能拿口径说明当最终答案"——`sql-008` 继续留作长期探针。
 - `GoldenTaskLiveIT` 的 `executor failed: null` 分支需要改成打印完整异常堆栈（不只是
   `getMessage()`），下次复现时才有材料查根因。
 - `perm-006` 涉及 `WHERE status = 1 OR amount > 100` 这种 OR 条件——roadmap 里 #26 号踩坑点
