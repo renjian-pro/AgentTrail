@@ -11,8 +11,8 @@ vi.mock('../api/chat-api', () => ({
   chatApi: { stop: vi.fn(), history: vi.fn() },
   streamChat: vi.fn()
 }))
-vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn() } }))
-vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn() } }))
+vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn() } }))
+vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn(), status: vi.fn() } }))
 
 describe('ChatView', () => {
   beforeEach(() => {
@@ -66,6 +66,9 @@ describe('ChatView', () => {
 
   it('routes the next message to PPT generation instead of chat when that mode is selected, then reverts to chat', async () => {
     vi.mocked(pptApi.create).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
+    // create() 现在只提交任务，本身没跑完（RENDER 不是终态）——runPpt 提交后会立即再轮询一次
+    // pptApi.status()，让它原地停在同一个状态即可，这个用例不关心后续轮询本身。
+    vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
     await wrapper.findAll('.mode-picker button')[1].trigger('click')
@@ -84,12 +87,19 @@ describe('ChatView', () => {
   })
 
   it('renders the Deep Research clarification card inline instead of dumping raw JSON', async () => {
+    // 需要澄清也是"跑完了"（研究服务调用本身没抛异常），status 是 SUCCESS 不是 FAILED——
+    // run() 直接返回终态时 runResearch 不会再去轮询 status()。
     vi.mocked(researchApi.run).mockResolvedValue({
-      needsClarification: true,
-      clarifyingQuestion: '你希望研究哪个行业？',
-      researchTopic: null,
-      taskResults: [],
-      report: null
+      taskId: 1,
+      status: 'SUCCESS',
+      report: {
+        needsClarification: true,
+        clarifyingQuestion: '你希望研究哪个行业？',
+        researchTopic: null,
+        taskResults: [],
+        report: null
+      },
+      errorMsg: null
     })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
@@ -102,9 +112,15 @@ describe('ChatView', () => {
     expect(wrapper.find('pre').exists()).toBe(false)
   })
 
-  it('keeps the research question visible and locks capability controls while research is running', async () => {
-    let finishResearch!: (value: Awaited<ReturnType<typeof researchApi.run>>) => void
-    vi.mocked(researchApi.run).mockReturnValue(new Promise(resolve => { finishResearch = resolve }))
+  /**
+   * 回归测试：曾经 busy 会一直锁到研究整个跑完（同步阻塞调用），切换会话时这个悬空的
+   * busy 会卡住新会话的工具栏、任务本身也从界面消失。现在提交（拿到 taskId）就该解锁，
+   * 报告本身靠轮询在后台推进，不占着输入框和工具栏。
+   */
+  it('unlocks capability controls right after research is submitted, while the report keeps polling in the background', async () => {
+    vi.mocked(researchApi.run).mockResolvedValue({ taskId: 7, status: 'RUNNING', report: null, errorMsg: null })
+    let resolveStatus!: (value: Awaited<ReturnType<typeof researchApi.status>>) => void
+    vi.mocked(researchApi.status).mockReturnValue(new Promise(resolve => { resolveStatus = resolve }))
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
     await wrapper.findAll('.mode-picker button')[0].trigger('click')
@@ -114,17 +130,25 @@ describe('ChatView', () => {
 
     expect(wrapper.get('.research-question').text()).toContain('研究 Java 工程师就业趋势')
     expect(wrapper.get('.research-loading').text()).toContain('深度研究进行中')
-    expect(wrapper.findAll('.mode-picker button').every(button => button.attributes('disabled') !== undefined)).toBe(true)
+    // 提交已经完成（拿到了 taskId），不该继续锁住工具栏——报告还在后台轮询，界面不该跟着卡死。
+    expect(wrapper.findAll('.mode-picker button').every(button => button.attributes('disabled') === undefined)).toBe(true)
     expect(wrapper.find('.stop').exists()).toBe(false)
     expect(researchApi.run).toHaveBeenCalledWith(expect.any(String), '研究 Java 工程师就业趋势')
+    expect(researchApi.status).toHaveBeenCalledWith(7)
 
-    finishResearch({
-      needsClarification: false,
-      clarifyingQuestion: null,
-      researchTopic: 'Java 工程师就业趋势',
-      taskResults: [],
-      report: '研究完成。'
+    resolveStatus({
+      taskId: 7,
+      status: 'SUCCESS',
+      report: {
+        needsClarification: false,
+        clarifyingQuestion: null,
+        researchTopic: 'Java 工程师就业趋势',
+        taskResults: [],
+        report: '研究完成。'
+      },
+      errorMsg: null
     })
     await flushPromises()
+    expect(wrapper.text()).toContain('研究完成')
   })
 })

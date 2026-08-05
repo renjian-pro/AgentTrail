@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import AttachedFileList from '../components/AttachedFileList.vue'
 import CollapsibleChip from '../components/CollapsibleChip.vue'
@@ -12,8 +12,8 @@ import TodoProgressBar from '../components/TodoProgressBar.vue'
 import { chatApi, streamChat } from '../api/chat-api'
 import { fileApi, type AttachedFile } from '../api/file-api'
 import { toErrorMessage } from '../api/http'
-import { pptApi } from '../api/ppt-api'
-import { researchApi } from '../api/research-api'
+import { pptApi, type PptTask } from '../api/ppt-api'
+import { researchApi, type ResearchTask } from '../api/research-api'
 import { renderMarkdown } from '../utils/renderMarkdown'
 import { useChatStore, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
@@ -40,6 +40,19 @@ onMounted(() => {
   initialMessage.value = params.get('q') ?? ''
 })
 
+// PPT/Research 提交后立即解锁 busy、靠轮询在后台推进（见 runPpt/runResearch），不会再让 busy
+// 跨会话悬空；但普通聊天的 SSE 流仍然可能在切换会话那一刻正流着。ChatView 是同一个组件实例
+// 跨会话复用的（路由没变，只是 conversationId 这个 store 里的值变了），不重置的话上一个会话
+// 遗留的 busy/pendingMode/error 会继续锁住新会话的输入框和工具栏——这正是切换会话后 PPT 任务
+// "消失"、界面卡死的根因。切会话时顺手把还挂着的 SSE 流也中断掉，没有理由让它继续跑。
+watch(conversationId, () => {
+  aborter?.abort()
+  aborter = undefined
+  busy.value = false
+  error.value = ''
+  pendingMode.value = undefined
+})
+
 // Only the chat SSE owns an AbortController. Synchronous Research/PPT calls
 // cannot be cancelled by the chat stop endpoint, so showing that control there
 // would promise an action the backend cannot perform.
@@ -48,6 +61,9 @@ const modeLabel = computed(() => pendingMode.value === 'research' ? 'Deep Resear
 
 function toggleMode(mode: Mode) {
   pendingMode.value = pendingMode.value === mode ? undefined : mode
+  // PPT 状态机和 DeepResearch 各自内部都无条件做自己的资料检索，都不接收/不使用这个开关——
+  // 勾着它在这两种模式下纯粹是摆设，还会让人以为真的多做了一次联网搜索。
+  if (pendingMode.value === 'ppt' || pendingMode.value === 'research') webSearch.value = false
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -94,29 +110,80 @@ async function send(message: string) {
   }
 }
 
-/** Research 和 PPT 共享同一套忙碌态/会话兜底/错误处理流程，只有发起调用的方式不同。 */
-async function runCapability(seedTitle: string, entry: ResearchEntry | PptEntry, invoke: (conversationId: string) => Promise<void>) {
-  pendingMode.value = undefined
-  busy.value = true
-  chat.ensureConversation(seedTitle)
-  messages.value.push(entry)
-  try {
-    await invoke(conversationId.value!)
-  } catch (failure) {
-    entry.error = toErrorMessage(failure)
-  } finally {
-    busy.value = false
+/**
+ * 提交后反复轮询直到终态——PPT/DeepResearch 都是"提交即返回，后台跑"，这是唯一能看到进度
+ * 推进的办法（PPT 每完成一个状态就有新 checkpoint 可看；DeepResearch 只有 RUNNING→终态一步跳）。
+ * 不在 busy 里等它：调用方在提交成功后就该解锁 UI，轮询循环只管更新 entry 本身。
+ */
+async function pollUntilTerminal<T>(fetchStatus: () => Promise<T>, isTerminal: (task: T) => boolean,
+    onUpdate: (task: T) => void, intervalMs = 1500): Promise<void> {
+  let task = await fetchStatus()
+  onUpdate(task)
+  while (!isTerminal(task)) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+    task = await fetchStatus()
+    onUpdate(task)
   }
 }
 
 async function runResearch(question: string) {
+  pendingMode.value = undefined
   const entry = reactive<ResearchEntry>({ kind: 'research', question })
-  await runCapability(question, entry, async id => { entry.result = await researchApi.run(id, question) })
+  chat.ensureConversation(question)
+  messages.value.push(entry)
+  busy.value = true
+  let created: ResearchTask | undefined
+  try {
+    created = await researchApi.run(conversationId.value!, question)
+  } catch (failure) {
+    entry.error = toErrorMessage(failure)
+    return
+  } finally {
+    // 提交成功（或失败）这一刻就解锁——真正的报告在后台跑，不该占着输入框和工具栏。
+    busy.value = false
+  }
+  applyResearchTask(entry, created)
+  if (created.status !== 'RUNNING') return
+  try {
+    await pollUntilTerminal(
+      () => researchApi.status(created!.taskId),
+      task => task.status !== 'RUNNING',
+      task => applyResearchTask(entry, task))
+  } catch (failure) {
+    entry.error = toErrorMessage(failure)
+  }
+}
+
+function applyResearchTask(entry: ResearchEntry, task: ResearchTask) {
+  if (task.status === 'SUCCESS') entry.result = task.report ?? undefined
+  else if (task.status === 'FAILED') entry.error = task.errorMsg ?? '深度研究失败，请重试'
 }
 
 async function runPpt(prompt: string) {
+  pendingMode.value = undefined
   const entry = reactive<PptEntry>({ kind: 'ppt', prompt })
-  await runCapability(prompt, entry, async id => { entry.task = await pptApi.create(id, prompt) })
+  chat.ensureConversation(prompt)
+  messages.value.push(entry)
+  busy.value = true
+  let created: PptTask | undefined
+  try {
+    created = await pptApi.create(conversationId.value!, prompt)
+    entry.task = created
+  } catch (failure) {
+    entry.error = toErrorMessage(failure)
+    return
+  } finally {
+    busy.value = false
+  }
+  if (created.status === 'SUCCESS' || created.errorMsg) return
+  try {
+    await pollUntilTerminal(
+      () => pptApi.status(created!.taskId),
+      task => task.status === 'SUCCESS' || !!task.errorMsg,
+      task => { entry.task = task })
+  } catch (failure) {
+    entry.error = toErrorMessage(failure)
+  }
 }
 
 async function stop() {
@@ -173,7 +240,9 @@ async function upload(file: File) {
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'research' }" @click="toggleMode('research')">⌕ 深度研究</button>
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'ppt' }" @click="toggleMode('ppt')">▣ 生成 PPT</button>
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'analytics' }" @click="toggleMode('analytics')">⌁ 数据分析</button>
-          <button type="button" :disabled="busy" :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
+          <button type="button" :disabled="busy || pendingMode === 'ppt' || pendingMode === 'research'"
+              :title="pendingMode === 'ppt' || pendingMode === 'research' ? 'PPT 生成和深度研究都会自己做资料检索，这个开关对它们不生效' : ''"
+              :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         </div>
         <FileUploadWidget @upload="upload" @rejected="uploadError = $event" />
       </div>
