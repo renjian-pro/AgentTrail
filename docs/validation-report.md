@@ -98,7 +98,7 @@
 **现状**：Phase 11「视要求决定云主机 vs K8s」，但无配置中心、无密钥轮换、无蓝绿/灰度、无健康探针设计。
 
 **补充工程细节（建议补入 Phase 11）**：
-- **配置中心**：secrets.properties 是开发期方案，生产应 Nacos/Apollo + `@RefreshScope`，API Key 走 Vault/KMS 而非明文配置（LLMentor 硬编码 API Key + 钉钉 appSecret 是反面教材，面试可主动讲「我看到参考项目这么做了，但我用 Vault 改造」）。
+- **配置中心**：`application-local.yml` 是开发期方案，生产应 Nacos/Apollo + `@RefreshScope`，API Key 走 Vault/KMS 而非明文配置（硬编码 API Key 与 appSecret 是反面教材）。
 - **健康探针**：`/actuator/health` 要分 liveness/readiness——readiness 检 Redis/PgVector/LLM 连通性，liveness 只检 JVM；K8s `livenessProbe` 失败重启会丢内存会话，所以 Phase 1 的会话持久化是 K8s 部署的前置依赖（依赖关系图要补这条）。
 - **优雅停机**：agentx 的 `SmartLifecycle` + `terminationGracePeriodSeconds` 方向对，但要保证进行中的 ReAct 轮次能跑完——`PauseState` 持久化 + 重启后从断点续执，这是 HITL 跨进程恢复的延伸价值。
 - **镜像分层**：Spring Boot 4.1 用 `bootBuildImage`（Buildpacks）分层，依赖层缓存，改代码只重建应用层。

@@ -5,8 +5,9 @@
 ## 一、ReAct Loop 核心
 
 ### 1. 流式 tool_call 参数分片重组
-- **坑**：Provider 流式返回时，一次工具调用的 JSON 参数被拆成多个 chunk（第一个带 id/name/半截参数，后续只带同 id 的参数续片）。逐个 chunk 单独 JSON.parse 必然失败——半截 JSON 本来就不合法。
-- **解法**：按 `id` 做累加器（`Map`/线性扫描均可），纯字符串拼接 `arguments`，**校验放到整轮结束后统一做一次**，不做增量校验。
+- **坑**：Provider 流式返回时，一次工具调用的 JSON 参数被拆成多个 chunk（第一个带 id/name/半截参数，后续可能只带参数、把 id 省略）。逐个 chunk 单独 JSON.parse 必然失败——半截 JSON 本来就不合法。
+- **解法**：按 `id` 做累加器（`Map`/线性扫描均可）；协议省略 id 时，单个活动调用沿用最近的 id，多工具则必须依赖 provider 保留的调用索引/标识，不能凭顺序猜。纯字符串拼接 `arguments`，**校验放到整轮结束后统一做一次**，不做增量校验。
+- **当前取舍**：本项目保留 Runtime 自己的流式分片累加器和并行工具执行；但走 OpenAI 兼容端点的 `qwen-plus` 不直接进入这条有缺陷的 SDK 合并器，而是把挂工具的执行器路由到原生 `deepseek-chat` 客户端。不挂工具的正文轮仍然流式，用户体验不受影响。
 - **Java 角度**：这是"流式协议 + 结构化数据"组合的通用问题（对应 SAX 解析大 XML、gRPC streaming 反序列化都是同一类模式），面试可以直接类比讲清楚。
 
 ### 2. 工具调用参数校验失败的降级策略
@@ -131,6 +132,12 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **坑**：如果每次工具调用后就把"已发现"状态清掉，模型在同一个任务里反复需要同一批工具（比如 SQL 探索：listTables→describeTables→executeSql 循环好几次）时，会不停地重新触发 `tool_search`，浪费轮次。
 - **解法**：一旦被发现，在本次请求生命周期内**只增不减**，直到整个请求结束才整体丢弃。
 - **面试角度**："设计取舍"的好例子——不是没考虑动态回收，而是评估后发现"按需披露但不过度动态回收"的收益更高。
+
+### 85. HYBRID 检索对真实中文查询几乎全靠 LLM 兜底，兜底本身就不稳定（2026-08-05 Golden Task 实测发现，中途改过一次结论）
+- **先纠正一版错误猜测**：最初读代码得出的猜测是"lookup_glossary 靠子串碰撞意外拿到非零关键词分，把 HYBRID 的 LLM 兜底短路了"。用真实捕获到的三条查询直接跑生产代码里的 `ToolIndexEntry.score()`（不是脑内模拟正则）验证后，这个猜测**不成立**——三条查询对 `execute_sql`/`lookup_glossary` 的关键词得分全部是 0，包括原本以为会命中的那一条。教训：光读代码推导出的机制，没有拿真实输入跑一遍生产代码验证之前，只是一个假设，不能当结论写文档（也不能报给别人）。
+- **坑（验证过的真实机制）**：`ToolSearchCallback.search()` 的 HYBRID 分支是 `keywordMatches.isEmpty() && chatModel != null ? llmSearch(query) : keywordMatches`。但对这几个真实的中文分析查询（"查询租赁总量"、"租赁 查询 状态 金额"、"地址查询"），关键词打分（`ToolIndexEntry.score`）**从来没产生过任何非零分**——`execute_sql` 的机制向描述里没有任何领域词，`lookup_glossary` 描述里的术语表项（"租赁次数"）虽然会被切成独立 token，但和查询词（"租赁"/"金额"这类更短的词）不是同一个 token，`List.contains` 精确相等判断不会命中；描述整体子串检查用的是**未拆词的完整查询串**，同样不会命中短查询词。结果是三次全部落进 `llmSearch()`：同一套候选工具清单、同一个系统提示词，这次真实采样出的 LLM 判断本身不稳定——第一次选对了 `execute_sql`；第二次选了 `lookup_glossary`（模型拿到术语口径就直接答完，没有再回头搜 `execute_sql`）；第三次两次改写查询都判定"没有匹配的工具"。
+- **解法方向（未落地，留给后续）**：① 给 `execute_sql` 补领域关键词（查询/统计/数据/记录），至少让关键词路径能在明显的场景里真正生效，减少对 LLM 兜底的依赖面；② 更根本的是 `llmSearch()` 这次独立的 LLM 判断本身要提高稳定性——工具描述里补一句"能回答任意业务数据统计问题"类的兜底信号，或者给检索 LLM 调用配置更低的采样温度；③ 模型选中 `lookup_glossary` 之后没有重新搜索 `execute_sql` 直接把术语口径当答案交卷，这是 SKILL.md 的 SOP 约束不够强（"先查术语口径再查数据"没有强制"查完术语口径后必须继续查数据"），也值得单独补一条。
+- **面试角度**：两层教训都值得讲——① HYBRID"关键词优先、LLM 兜底"这个分层思路本身没问题，但关键词层对这套工具描述基本形同虚设（中文长词组极难靠简单 token 相等/子串命中），实际上退化成了纯 LLM 检索，"混合检索"的名不副实是要在设计评审时主动暴露的风险，不是等出了 bug 才发现；② 排查方法论本身——先读代码得出的机制推导只是假设，必须拿真实输入跑一遍生产代码或者做真实调用验证过，才能写进文档或者说给别人听，这次自己就在这个环节犯过一次错，是个可以直接讲的真实反例。也是"没有真实评测就不会发现"的直接证据：`ToolSearchCallbackTest` 只测过 `getWeather` 这类合成 fixture，从没测过真实业务工具集。
 
 ## 四、Skills 渐进式披露
 
@@ -337,10 +344,10 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **解法**：最终收敛到**模板填充**——设计交给专业设计师预先做好模板和占位符（shape name），大模型只负责生成结构化内容（JSON Schema），系统负责把内容填进模板。"设计"和"内容生成"彻底解耦，兼顾可编辑性、视觉稳定性和成本（配图甚至可以用免费的 echarts-mcp 生成图表）。
 - **面试角度**：不是"拍脑袋选一个方案"，而是对四条技术路线的成本、失败模式、可维护性做了量化对比后收敛的选型决策。能讲清楚"为什么排除另外三条路"往往比直接说"我们用了模板填充"更有说服力。
 
-### 51. PPT 信息收集阶段：SpringAI 流式+工具调用不稳定，退回自研 ReactAgent
-- **坑**：SearchStrategy（信息收集阶段）本来想直接用 SpringAI 的 ChatClient 做"流式输出 + 工具调用"，但实测发现 SpringAI 在这个组合场景下"稳定性很差，有一些 bug，导致工具无法调用"。
-- **解法**：绕开 SpringAI 官方的流式+工具调用组合，直接复用自研的 `SimpleReactAgent` 来做联网搜索并流式输出，收集到的最终结果再保存进 `AiPptInst`。
-- **面试角度**：一个很实际的"框架能力边界踩坑"案例——遇到官方框架在特定组合场景（流式+工具调用）下的稳定性问题，没有死磕，而是用已有的自研组件绕过局限，体现对框架限制的清醒判断和快速止损能力（这也是本项目"手写 loop 优先"这条 ADR 决策在另一个真实项目里的印证）。
+### 51. PPT 信息收集阶段：工具调用参数流式接收，但不把半截参数暴露给用户
+- **坑**：SEARCH 状态中的模型输出本质是工具调用参数，工具必须等待完整 JSON 才能执行；用户也不需要看到半截参数。更大的风险是直接依赖框架的“流式 + 自动工具执行”组合，SDK 可能在分片合并阶段失败，使本该在后台完成的素材收集中断。
+- **解法**：Runtime 自己接收工具调用分片，按 toolCallId 拼接 arguments，流结束后并行执行并按原始顺序回填；对走 OpenAI 兼容端点的 Qwen 工具轮，工厂切到原生 DeepSeek 客户端，绕开上游合并器缺陷。SEARCH 状态只向用户展示可信的阶段状态和最终产物。
+- **面试角度**：流式的价值在协议层的增量接收、并发调度和可观测事件，不等于把不可消费的参数碎片直接展示给用户；边界应由用户可见性和协议稳定性共同决定。
 
 ### 52. 需求澄清："是否继续"的判断不能靠自然语言语义解析，要靠固定标记
 - **坑**：PPT 需求澄清和 DeepResearch 需求澄清都遇到过同一个问题——如果指望程序直接从模型的自然语言回复里判断"信息是否收集够了、能不能继续往下走"，会发现"程序很难准确判断模型意图"，比如模型可能说"信息已经足够，可以开始生成 PPT"，也可能说"好的，我现在帮你生成 PPT"，语义相近但没法用简单规则稳定识别。
@@ -404,8 +411,8 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **解法**：拆独立池（`Schedulers.fromExecutor` 包自建线程池），工具执行一个池、loop 调度一个池，池参数各自按负载特征定。
 - **Java 角度**：线程池隔离（舱壁模式）的经典应用；能讲出 boundedElastic 的默认参数和"为什么共池会互相拖死"，比背"线程池七参数"有说服力。
 
-### 63. 会话持久化必须在 tryEmitComplete 之前，不能放 doFinally（agentx 源码里的真实教训）
-- **坑**：把"保存会话历史"放在 `doFinally` 里看起来很自然（流结束时清理），但 `doFinally` 的执行时机在终止信号**之后**——下游收到 Complete 就认为一轮结束了，此时若 JVM 退出（部署重启、容器被杀），doFinally 里的入库还没跑完，历史直接丢失。agentx 源码里有多处注释明确记录这个教训："在 tryEmitComplete() 之前执行，避免 doFinally 时序问题导致 JVM 退出时数据丢失"。
+### 63. 会话持久化必须在 tryEmitComplete 之前，不能放 doFinally（参考框架源码里的真实教训）
+- **坑**：把"保存会话历史"放在 `doFinally` 里看起来很自然（流结束时清理），但 `doFinally` 的执行时机在终止信号**之后**——下游收到 Complete 就认为一轮结束了，此时若 JVM 退出（部署重启、容器被杀），doFinally 里的入库还没跑完，历史直接丢失。研读的参考框架源码里有多处注释明确记录这个教训："在 tryEmitComplete() 之前执行，避免 doFinally 时序问题导致 JVM 退出时数据丢失"。
 - **解法**：持久化作为发出 Complete 事件**之前**的同步步骤（我们的 `emitCompleteAndCleanup` 已经是这个顺序——持久化 → emit Complete → tryEmitComplete → removeTask），`doFinally` 只做真正的资源清理（stopTask 等幂等操作）。
 - **Java 角度**：Reactor 终止信号与副作用操作符的时序语义（`doOnComplete` vs `doFinally` 的区别）是响应式编程的高频追问点，这里有真实事故背书。
 
@@ -490,15 +497,40 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **解法**：在 `llmInvoker.streamRound(...)` 之后、`doOnNext`/`doOnComplete` 之前插一次 `.publishOn(Schedulers.boundedElastic())`，把后续所有下游操作符（包括会触发 `finishRound` → `ToolCallExecutor.execute()` → `.block()` 的那条路径）都搬到允许阻塞的调度器上执行。`subscribeOn` 管的是"upstream 源头在哪个线程订阅"，`publishOn` 管的是"downstream 操作符在哪个线程执行"——这里要控制的是后者，两个操作符职责不同，选错了不会报错，只会在真正对接真实网络实现时才失效。
 - **Java/Reactor 角度**：这条和 #62/#63/#64 一起构成"响应式编程线程模型"的完整案例集，但这条最典型地展示了"测试替身跑得通不代表生产实现跑得通"——`ScriptedChatModel` 在这里不是"简化了业务逻辑"，而是**悄悄抹掉了一个只有真实 I/O 实现才会暴露的调度器语义**。面试可以直接点破：Mock/Stub 测试替身的选型，不能只看"返回值对不对"，还要看它有没有忠实复现被替换对象的**执行模型**（同步 vs 异步、哪个线程发信号）——这正是很多"单测全绿、联调必炸"的根因。
 
-### 78a.（同一次排查的次要发现，未在本项目内修复）Spring AI 2.0 `OpenAiChatModel` 合并流式 tool_call chunk 时对 DashScope 不完全兼容
-- **现象**：接 `qwen-plus`（DashScope OpenAI 兼容模式）时，一旦某一轮触发工具调用，`OpenAiChatModel$ChunkMerger.chunkToChatCompletion` 内部一个 `Optional.get()` 会抛 `NoSuchElementException: No value present`；同样的调用链换成 `deepseek-chat` 完全正常。定位到是 `spring-ai-openai:2.0.0` 合并 tool_call 分片 chunk 时，假设了某个字段（很可能是分片延续 chunk 上的 `id`/`index`）一定存在，而 DashScope 的流式分片形状和 OpenAI 官方在这个细节上不完全一致。
-- **处置**：这是第三方库（`spring-ai-openai`）内部实现的兼容性问题，不是本项目代码可以修的范围；暂时的规避方式是"挂了 Web 搜索这类工具的对话默认路由到 `deepseek-chat`，`qwen-plus` 保留给纯对话场景"。真要修，路径是升级 `spring-ai` 版本看是否已修复，或向上游报告这个兼容性 bug。
+### 78a. Spring AI 2.0 `OpenAiChatModel` 合并流式 tool_call chunk 时错误假设每片都有 id
+- **现象**：接 `qwen-plus`（走 OpenAI 兼容客户端）时，一旦某一轮触发工具调用，`OpenAiChatModel$ChunkMerger.chunkToChatCompletion` 内部一个 `Optional.get()` 会抛 `NoSuchElementException: No value present`；同样的调用链换成 `deepseek-chat` 完全正常。字节码显示该分支直接对 `ToolCall.id()` 的 Optional 调用 `get()`。而 OpenAI 流式协议允许第一个工具分片带 id、后续增量分片省略 id，因此这是客户端合并器的协议处理缺陷，而不是某个搜索工具返回了错误数据。
+- **处置**：这是第三方库（`spring-ai-openai`）内部实现的兼容性问题，不是本项目代码可以修的范围；工具执行虽要等待完整 arguments，但 Runtime 仍需要流式接收分片、按 id 重组并发出 ToolStart/ToolEnd。于是工厂只把走 OpenAI 兼容端点的 `qwen-plus` 工具轮切到原生 `deepseek-chat`，避开错误的 SDK 合并器；Runtime 自己的 `scheduleRound → processChunk → finishRound` 和并行执行保持不变。根治路径仍是升级 `spring-ai` 验证修复，或向上游报告兼容性 bug。
 - **面试角度**：和 #78 放在一起讲是一条完整的"真实联调排查"叙事——同一次真机测试里连续挖出两个平时被 Mock 掩盖的问题，一个是自己代码的线程模型 bug（能修、已修），一个是第三方库的厂商兼容性 bug（不能改源码、只能规避+报告）。能清楚区分"这个坑归谁修"本身就是排查能力的一部分。
 
 ### 79. 构造函数里字段初始化顺序反了：懒加载的变体测得出来，急加载的变体测不出来
 - **坑**：issue #23 给 `AgentLoopExecutorFactory` 加图表工具支持时，构造函数被重新整理成"先把 `plainExecutorsByModelId`（每个注册模型各建一个不挂搜索/图表工具的执行器）建好，再把 `this.taskManager`/`this.webSearchToolProvider`/`this.chartToolProvider` 这几个字段赋值"。问题是 `plainExecutorsByModelId` 的初始化调的是 `buildExecutor()`，这个私有方法读的是**字段** `this.taskManager`，不是构造函数参数——Java 对象字段在显式赋值之前默认值是 `null`，构造函数体内的语句是按书写顺序执行的，不是"先把所有字段都定下来再跑方法体"。于是每一个非懒加载的 `plainExecutorsByModelId` 执行器，实际上都是拿着一个还没赋值（`null`）的 `taskManager` 建出来的。同一个类里另外两个变体——`forModel(id, true)` 懒加载的搜索执行器、`forModelWithCharts(...)` 懒加载的图表执行器——因为 `buildExecutor()` 调用发生在构造函数**返回之后**的某次真实请求里，这时候 `this.taskManager` 早就赋值完了，完全不受影响。结果是：全部走懒加载路径的单元测试（`AgentLoopExecutorFactoryTest` 里搜索/图表相关的用例）全绿，只有 `DeepResearchService`（用的是构造阶段就建好的 `plainExecutorsByModelId`）在接真实流式模型时，第一次真实调用触发 `AgentTaskManager.registerTask(...)` 就 `NullPointerException`——而且这个 NPE 第一次出现时，恰好和另外两个并发子 agent 正在同一个工作树里改这份文件重叠，一度被误判成"并发编辑导致的环境噪音"而不是真 bug，多跑了几次集成测试才确认是真的、和并发编辑无关。
 - **解法**：构造函数里，任何"字段初始化表达式依赖另一个字段的值"的写法，必须严格保证依赖的字段先赋值——这里就是把 `this.taskManager = taskManager;`（以及它引用到的 `webSearchToolProvider`/`chartToolProvider`）挪到 `plainExecutorsByModelId` 的初始化语句之前。更通用的教训：一个类里如果同时存在"构造阶段就建好"和"请求时才懒加载"两种初始化路径，构造阶段这条路径对字段赋值顺序的敏感度远高于看起来的样子——因为它是在 `this` 还没完全"活起来"的时候执行的，而懒加载路径是在对象已经完全构造完成之后才第一次运行，天然不会踩到这类顺序问题，这也是为什么这类 bug 精确地只影响"急加载"的那个变体，是排查时判断"该往哪个方向找"的一个有效线索。
 - **Java 角度**：这是"Java 对象初始化顺序"这个八股题目里经常被简化成"父类先于子类、字段先于构造函数体"的规则,在**同一个构造函数内部**的具体表现——很多人背得出"字段初始化器和实例初始化块按声明顺序在构造函数体之前执行"，但构造函数体本身内部的多条语句同样是严格按书写顺序执行、彼此之间没有"先决算所有字段"这回事，一旦某条语句的副作用（这里是调用一个读取 `this.xxx` 的私有方法）被安排在依赖字段赋值之前，编译器不会报错，因为语法上完全合法——这类 bug 只能在运行时、且只在真正触达那条代码路径时才会现形，是"能编译 ≠ 能跑对"的一个具体例子，也是为什么"仅用同步/合成测试替身跑通的单测"不能代表"接真实实现也跑得通"（和 #78 是同一类"测试替身掩盖了真实执行路径"的教训，但这次坑在对象构造阶段而不是响应式调度阶段）。
+
+### 80. 网络是流式的，Vue 页面仍可能在结束时一次刷新：不要继续修改被代理前的原对象
+- **坑**：`messages.push(assistant)` 会把对象转换成响应式代理，但如果后续 SSE 事件一直执行 `assistant.text += delta`，修改的是 push 之前的原始对象，不是数组里暴露给模板的代理。抓包能看到多个 `Text` 事件按时到达，页面却只在另一个响应式状态（例如 `busy=false`）变化时整体刷新，看起来就像后端没有流式。
+- **解法**：创建消息时先 `reactive(...)`，或 push 后立即取回数组中的代理并只修改它。测试不能只等待流关闭后断言最终字符串；必须让异步生成器在首个 `Text` 后挂起，先断言 DOM 已出现首段，再释放后续事件。
+- **前端角度**："传输协议是流式"、"解析器逐帧 yield"、"视图逐帧重绘"是三层独立契约。只测最终结果会同时掩盖解析缓冲和响应式对象身份两个问题。
+
+### 81. 工具适配层承诺“异常转普通结果”，执行器却让超时穿透，整个 Agent 流会被取消
+- **坑**：外部 MCP 搜索超时抛出异常时，`ToolCallExecutor` 直接让 `tool.call()` 的异常向上冒泡。结果不只是一次搜索失败：整条 DeepResearch Flux 被终止，随后的并行任务被取消，并出现 `onErrorDropped`，与执行器注释中的"单工具失败不炸毁 Agent"契约相反。
+- **解法**：在单工具边界捕获异常，把失败原因编码成普通 ToolResponse，再照常发 `ToolEnd`。模型可以据此解释、改用其他工具或给出降级答案；进程级错误仍由更外层处理。回归测试使用一个确定性抛异常的 ToolCallback，断言返回错误结果而不是失败信号。
+- **设计角度**：第三方超时不是 Runtime 的不可恢复故障。隔离边界应放在最小的外部副作用单元（一次工具调用），否则一个供应商的不稳定会放大成整个会话不可用。
+
+### 82. `Sinks.Many.tryEmitNext` 支持跨线程调用，不代表并发发射天然串行
+- **坑**：DeepResearch 并行任务会从多个工作线程同时发送 ToolStart/ToolEnd；Reactor sink 在竞争时返回 `FAIL_NON_SERIALIZED`。如果代码只记日志并丢弃，前端时间线缺事件，随后取消链路又可能产生 `onErrorDropped`，现场看起来像多个无关故障叠在一起。
+- **解法**：只在 `tryEmitNext` 的最小临界区按 sink 实例串行化，保留任务计算本身的并行度。统一检查 emit result，终止后的失败可忽略，其余失败必须可观测。并发回归测试从多个线程对同一个 sink 发事件，断言数量完整。
+- **Reactor 角度**：并行生产与串行信号是两件事。这里需要保护的是响应流协议的信号顺序，不是把整个研究任务退化成串行执行。
+
+### 83. “同一个输入框”必须对应同一个会话事实源，不能只在视觉上把能力卡片塞进消息列表
+- **坑**：普通对话写 `agent_session`，DeepResearch/PPT 结果只留在组件 `ref` 里，会导致当前页面看起来属于同一会话，刷新或点击历史后能力记录却消失。另造一张能力历史表又会让分页、标题、排序和权限重复实现。
+- **解法**：沿用“一轮一行、`conversation_id` 分组”的会话模型。普通问答写文字事件；同步能力把可读问题/答案写入同一行，把完整结构化结果作为 `StageOutput` 放进既有 `timeline` 数组。列表标题取第一轮问题保持稳定，最近活动取最后一轮；前端按事件类型恢复对应卡片。
+- **数据建模角度**：表结构应表达用户心智模型：能力是会话中的一种轮次，不是另一套产品。结构化载荷复用时间线事件扩展点，避免为了每种能力持续加 `message_type`/`payload_xxx` 列。
+
+### 84. 浏览器下载链接不能泄露服务端文件路径
+- **坑**：PPT 任务完成后若把持久化的 `outputPath` 原样放进前端 `<a href>`，这个值通常是服务器磁盘上的绝对路径或内部工作路径。浏览器既无权读取它，也无法把它当 HTTP 资源请求，于是 UI 显示“预览 / 下载”但点击没有可用结果。
+- **解法**：完成响应只返回基于任务号的受控 URL：`/agent/v1/ppt/{taskId}/download`。控制器在服务端核验产物仍是普通文件后，以带 UTF-8 文件名的 `Content-Disposition: attachment` 返回内容；缺失、清理或不可读的产物统一返回 404。前端只信任此 URL，绝不拼接或展示真实路径。
+- **测试要点**：除了断言完成响应的 URL，还要写入临时 `.pptx` 并断言下载响应包含 attachment 头和资源实体，避免“接口字段看似正确、实际无法下载”的假绿测试。
 
 ## 二十、Java 八股文关联索引（反向查表：面试考点 → 项目里的具体场景）
 
@@ -518,7 +550,8 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **`volatile` 可见性与双重检查锁**：#4 的 `Method` 缓存实现
 - **原子性与竞态窗口**：#9（`Disposable` 每轮重注册，避免持有过期句柄）、#30（Redis 续期必须原子操作，不能拆成"读+比较+写"三步）
 - **背压（Reactive Streams 核心概念）**：#64——无界 buffer 的 OOM 场景，四种溢出策略怎么选
-- **Reactor 终止信号时序**：#63——`doOnComplete` vs `doFinally` 的执行时机差异，agentx 源码里的真实数据丢失事故
+- **Reactor 终止信号时序**：#63——`doOnComplete` vs `doFinally` 的执行时机差异，参考框架源码里的真实数据丢失事故
+- **并发信号串行化**：#82——并行任务可以保留，但向同一个 `Sinks.Many` 发射的最小临界区必须串行化，不能静默接受 `FAIL_NON_SERIALIZED`
 
 ### Spring 核心机制（AOP / 事务 / Bean 生命周期 / 事件）
 - **注解元数据的编译期限制**：#59——`@Tool` 的 description 必须编译期常量，需要动态拼接内容时只能退回 `FunctionToolCallback` 编程式注册
@@ -533,6 +566,7 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **SQL 语义与执行计划**：#26——AST 改写权限条件时，运算符优先级坑（字符串拼接 AND 破坏原有 OR 逻辑）+ LEFT JOIN 退化成 INNER JOIN，这是全文档技术含金量最高的一条
 - **索引与树形结构查询**：#36——物化路径（`ancestors` 字段）代替递归查询/递归 CTE 查部门子树，能对比讲三种树形存储方案的取舍
 - **AST 解析与编译原理关联**：#22——JSqlParser + Visitor 模式检测危险函数，讲清楚"为什么正则在这个场景下从原理上就不够用"（注释可以绕过正则、字符串字面量会被正则误伤）
+- **会话事实建模**：#83——一轮一行、`conversation_id` 聚合、首轮问题作稳定标题；结构化能力结果复用 `TimelineEntry[]` 而不是另造历史表
 
 ### 分布式系统（分布式锁 / 一致性 / 幂等 / 集群）
 - **分布式锁正确性**：#11/#30（续期前必须原子性校验归属，Redisson watchdog 机制）、#31（优雅关闭主动释放锁而不是等 TTL，`DisposableBean`/`@PreDestroy` 生命周期钩子）、#77（AOP 声明式加锁的两个真实缺陷：固定 TTL 无续期、同步 unlock 假设在响应式方法上失效）

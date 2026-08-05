@@ -1,5 +1,13 @@
 # AGENTS
 
+## Local-only documentation and publication constraint (global)
+
+- All research notes, wiki imports, interview materials, architecture documents, and related artifacts must remain local to this workspace by default.
+- Do not publish, upload, push, open a public PR/issue, or sync these materials to any external service unless the user explicitly authorizes that specific action.
+- Do not call GitHub/remote publishing workflows as a normal completion step. If external publication is requested later, confirm the exact files and destination first.
+- Treat credentials, API keys, database passwords, tokens, personal data, and copied private-source content as local-sensitive material. Never include them in public artifacts; recommend rotation/removal when discovered.
+- Local edits to documentation are allowed when requested, but the default handoff is a local file path only.
+
 ## 实现任何机制之前，先读参考源码
 
 **这是硬性要求，不是建议。** 本项目的每一个 Runtime 机制，都有可参照的真实企业级实现。
@@ -46,3 +54,7 @@ Default five-role vocabulary (`needs-triage`/`needs-info`/`ready-for-agent`/`rea
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at the repo root, alongside `docs/roadmap.md` and `docs/engineering-pitfalls-and-highlights.md`. See `docs/agents/domain.md`.
+
+### Analytics Golden gate
+
+When changing `SqlSafetyGuard`, `DataScopeRewriter`, or `SensitiveFilter`, run `mvn verify -Pgolden` before delivery. The default `mvn test` intentionally skips live Golden/IT evaluation.

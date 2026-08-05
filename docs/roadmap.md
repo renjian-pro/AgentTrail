@@ -6,6 +6,8 @@
 
 ## 技术决策（已定，不再讨论）
 
+> **2026-08-03 交叉核对补充**：已核对现有设计与真实生产形态 DataAgent 实现的对照结果，详见内部笔记和 [ADR 0003](adr/0003-agentscope-isolated-data-agent-runtime.md)。DataAgent 采用 AgentScope 仅限于隔离的 Runtime Adapter；M-Schema/YAML、SQL AST 安全、数据权限重写、脱敏、结果校验和 Artifact 仍属于 AgentTrail 业务/平台层。认证与租户主体必须先于 SQL 能力包，不能继续让生产路径使用 `anonymous`。
+
 - **模型接入直调 `ChatModel.stream(Prompt)`，不经过 `ChatClient`/Advisor 链**——`internalToolExecutionEnabled` 只存在于 ChatClient 这一层，绕开它就不需要关心 Spring AI 1.1.0/2.0 的差异，两个版本行为一致。**结论：上 Spring AI 2.0 GA**（原生匹配 Boot 4.1.0）。
 - **版本映射提醒**：研读的参考框架源码基于 **Spring AI 1.1.0 + Boot 3.5.6**，本项目是 **Spring AI 2.0 GA + Boot 4.1.x**——研读时对 ChatClient/Advisor/Tool 注册相关的 API 要做版本映射笔记（1.x 的 `internalToolExecutionEnabled` → 2.0 的 `ToolCallingAdvisor`；Function Bean → 显式 `ToolCallback` Bean；`spring.ai.*.chat.options.*` 配置扁平化），面试被追问"2.0 和 1.x 区别"时这本身就是答案素材。
 - **SQL 场景库用 sakila**（MySQL 官方 DVD 租赁库，通用示例数据集）。
@@ -90,7 +92,7 @@
 ### 0.5 会话持久化（接口已定义，JDBC 实现待写）
 - `TurnPersistenceHook` 接口：loop 结束时同步回调一次，拿到 `sessionId` 塞进 `Complete` 事件
 - JDBC 实现：写 `question`/`answer`/`think`/`timeline_json`/`created_at`；历史消息重建按 `conversation_id` 查最近 N 轮拼回 `Message` 列表——N 不能拍脑袋定死，按 token 预算倒推（用 `TokenEstimator` 估算，超预算从最老的轮次截断）
-- **持久化时序**：必须在 `tryEmitComplete()` 之前同步完成入库，不能放在 `doFinally` 里（踩坑点 #63，agentx 源码里真实踩过：doFinally 时序问题导致 JVM 退出时历史丢失）
+- **持久化时序**：必须在 `tryEmitComplete()` 之前同步完成入库，不能放在 `doFinally` 里（踩坑点 #63，参考框架源码里真实踩过：doFinally 时序问题导致 JVM 退出时历史丢失）
 - 会话表用 `conversation_id`（跨轮可见）+ `session_id`（历史回放归属）两个独立 key——Phase 4 的文件生命周期依赖这个结构，一开始就按这个建表（踩坑点 #49）
 
 ### 0.6 ToolSearch 延迟工具发现（雏形已写，待完善）
@@ -131,13 +133,17 @@
 | Redis 分布式任务锁 | Redisson SETNX + instanceId 归属校验续期（原子操作，踩坑点 #30）+ TTL 自愈 + 优雅关闭主动释放（踩坑点 #31） |
 | Pub/Sub 跨实例中断 | 本地 map 快路径 + Redis 广播兜底，前端 `AbortController` + HTTP 双路径（踩坑点 #12） |
 | Redis 会话/状态存储 | 会话历史、pause-state（如果后面做断点续传）迁移到 Redis/MySQL，不再是纯内存 |
-| 集群部署配套 | K8s 滚动发布下长任务的收尾策略（踩坑点 #32）、连接池按实例数重算（踩坑点 #33）、工具幂等性边界声明（踩坑点 #34）、Skills 文件的多节点分发/一致性（单机版对账机制的分布式延伸，对应课程《多节点部署改造》，文章待入库后补细节） |
-| 断点续传 / HITL 暂停恢复 | `PauseState` 快照（消息列表副本 + pendingToolCalls + SafePoint 阶段 + PauseReason）+ `PauseStateStore`（内存版 → JDBC/Redis）+ `resumeStream` 按原因分支恢复（HITL 审批通过→执行挂起工具；用户中断带新指令→跳过工具注入新消息）——**这是 Phase 3a"高危操作转人工审批"的前置机制**，审批必须能"暂停等人、之后恢复"（踩坑点 #61；对应课程《中断恢复怎么实现》，文章待入库，框架侧机制已从源码读透） |
+| 集群部署配套 | K8s 滚动发布下长任务的收尾策略（踩坑点 #32）、连接池按实例数重算（踩坑点 #33）、工具幂等性边界声明（踩坑点 #34）、Skills 文件的多节点分发/一致性（单机版对账机制的分布式延伸，多节点部署改造相关笔记待补充细节） |
+| 断点续传 / HITL 暂停恢复 | `PauseState` 快照（消息列表副本 + pendingToolCalls + SafePoint 阶段 + PauseReason）+ `PauseStateStore`（内存版 → JDBC/Redis）+ `resumeStream` 按原因分支恢复（HITL 审批通过→执行挂起工具；用户中断带新指令→跳过工具注入新消息）——**这是 Phase 3a"高危操作转人工审批"的前置机制**，审批必须能"暂停等人、之后恢复"（踩坑点 #61；框架侧机制已从参考源码读透） |
 | 幂等工具模板 | 承接踩坑点 #34"框架不兜底幂等、责任在工具方"的边界声明，给写类工具一个标准实现模板：业务唯一键 upsert / 幂等 token / Outbox 三选一——不是每个工具各想各的 |
 
 ---
 
-## Phase 2：SQL 数据分析能力包
+## Phase 2：SQL 数据分析能力包 —— ✅ 已完成（issue #52-#61）
+
+> **执行口径**：Phase 2 不是把分析流程硬编码成固定 Workflow。先完成 Phase 2A 的身份/权限/Schema/SQL 安全基础，并用 ReAct + Skill 做隔离 Pilot；外层 Task/Checkpoint/Artifact 负责长任务和恢复。Phase 2B 再基于 Golden Tasks 决定是否扩大使用范围。Phase 3 的治理项中，SQL 安全、数据范围、脱敏和审计是本能力包的上线前置门禁。
+>
+> **2026-08-05 补充（对照 spring-ai-alibaba/DataAgent 的纠偏）**：DataAgent 不是纯 DAG，是"确定性骨架 + 局部自愈循环"——固定的 StateGraph 节点序列（IntentRecognition→…→SqlExecute）里，每个容易出错的节点后面都挂了条件重试 Gate（RelGate/SemGate/SQLGate2/PyGate2），报错就回退到对应生成节点重试，达到上限才降级/终止，Gate+maxRetries 天然是一个图结构给的重试上限。我们这边"SQL 报错自己修"靠的是 ReAct 循环里 LLM 临场决定，SKILL.md 的七步 SOP 是指导不是强制，**没有等价的图结构上限**——唯一的硬顶是 `AgentLoopExecutor` 的 `maxRounds`（analytics 执行器是 20，见 `AgentLoopExecutorFactory.java:191`），这是粗粒度的整轮上限，不是"同一个错误连续失败 N 次就提前止损"的电路断路器，20 轮里模型完全可能把"生成 SQL→报错→重新生成"这个子循环转上十几轮才撞顶，期间 token 成本已经烧出去了。这不是"Workflow 死板/ReAct 灵活"能一句话带过的差异，是 ReAct+Skill 路线一个结构性的开放风险，对应的补丁见下方"Analytics 重复失败熔断"（技术债清算清单）。
 
 | 机制 | 说明 |
 |---|---|
@@ -153,7 +159,7 @@
 
 ## Phase 3：治理层（Hooks + 可观测性 + 评测体系）
 
-> **2026-07-31 修正**：本 Phase 原本的定位是"不属于 spring-ai-agentx 的 19 项能力，是本项目
+> **2026-07-31 修正**：本 Phase 原本的定位是"不属于参考框架自带的 19 项能力，是本项目
 > 自己的增强"，这句话现在只对本表剩下的这几行成立——"审计日志"和"结构化输出校验"的**基础
 > 机制**其实是参考框架自己的 core/17、core/13，已经挪到上面 Phase 0 状态表的 0.14/0.15。
 > 这里两行改成明确"建立在 0.14/0.15 之上"的业务层增强，不是从零开始。
@@ -206,7 +212,7 @@
 | AI 配图 | 调图片生成 API 拿到的 URL 有时效性，必须立刻下载转存自建对象存储（MinIO），不能直接持久化引用第三方临时链接（踩坑点 #54） |
 | 渲染引擎 | **Python + python-pptx，不是 Java Apache POI**——POI 对 Group shape 支持差，而模板填充依赖 shape name 精确定位到最深层文本框，POI 处理不了会导致填充失败（踩坑点 #55）；Java 侧只管状态机流程编排，`ProcessBuilder` 起 Python 脚本传 Schema JSON |
 | 素材生成（可选） | 官方 pptx skill 视觉效果单一（python-pptx 本身无绘图能力），可选自研 Pillow（命令式，零依赖但繁琐）或 SVG（声明式，画质更高但要装 cairo 系统依赖）两种图片素材生成增强（踩坑点 #56） |
-| 信息收集阶段 | 复用自研 `SimpleReactAgent` 做联网搜索+流式输出，不走 SpringAI 官方"流式+工具调用"组合（实测不稳定，踩坑点 #51）——依赖 Phase 5 的联网搜索能力 |
+| 信息收集阶段 | 保持 `scheduleRound → processChunk → finishRound` 的流式 Tool Calling 闭环：按 `toolCallId` 拼接参数，完整一轮后并行执行搜索并按原顺序回填；参数分片不直接展示给用户。由于 OpenAI 兼容客户端的省略 id 分片缺陷，带工具的 `qwen-plus` 请求路由到原生 `deepseek-chat`，普通对话继续走 SSE——依赖 Phase 5 的联网搜索能力 |
 
 ---
 
@@ -272,7 +278,7 @@
 | 性能基线 | 单实例并发会话数目标（受 Redis 锁 + 连接池 + LLM 并发限制约束）、单会话平均 token、压缩触发后的延迟增量；Redis 锁续期频率随并发数线性放大，连接池要按并发数预算 |
 | 前端演示页 | Vue3 + TS + Vite 单页应用，覆盖对话/文件问答/DeepResearch/PPT 生成——面试演示的视觉效果远强于 curl；详细设计见 [`docs/specs/frontend-v1.md`](specs/frontend-v1.md)，已拆票 [#38-#43](https://github.com/renjian-pro/AgentTrail/issues/38)；登录 + RBAC + 数据权限前端另见 [`docs/specs/frontend-phase2-auth.md`](specs/frontend-phase2-auth.md)（绑定下面 Phase 2 一起做，尚未拆票） |
 | Demo 脚本 | 一套 curl/Postman 集作为前端之外的补充，覆盖每个能力包的典型场景 |
-| 评测落地 | Phase 3c 的评测体系接上真实数据——对应课程《data-agent的评测》（文章待入库后补具体指标口径） |
+| 评测落地 | Phase 3c 的评测体系接上真实数据——data-agent 评测体系相关笔记，待补充具体指标口径 |
 
 ---
 
@@ -282,7 +288,7 @@
 > 框架 `docs/core/` 的 19 篇能力文档对齐（三处有意例外见上方状态速览的更新说明）。下面这条
 > 硬约束现在真正清空——可以放心开始 Phase 2。
 
-**核心排序原则**：Phase 0 + Phase 1 是"引擎"——通用、不含任何业务知识，对应 spring-ai-agentx
+**核心排序原则**：Phase 0 + Phase 1 是"引擎"——通用、不含任何业务知识，对应参考框架
 框架本身的能力集，**必须完整做完才能开始任何 Capability Pack**。这不是任意排的先后顺序，
 是 `loop/` 分包原则（不知道 SQL、不知道 PPT）在构建顺序上的延伸：业务代码不应该在引擎接口
 还没定型的时候就依赖上它。Phase 1 的 Redis 生产化本质是 Phase 0.4 任务管理能力的生产形态，
@@ -296,7 +302,7 @@ Phase 0（Runtime 核心）+ Phase 1（Redis 生产化）—— 引擎，必须�
        ├─ Phase 5（联网搜索+图表）── 联网搜索无前置依赖；图表生成只是"要等 Phase 2 有数据可画"（运行时数据流关系，不是构建顺序约束）
        ├─ Phase 6（PPT 生成）── 依赖 Phase 5 的联网搜索（收集素材阶段用）
        └─ Phase 7（DeepResearch）── 依赖 Phase 5 的联网搜索
-Phase 3（治理层）—— 不属于 spring-ai-agentx 的 19 项能力，是本项目自己的增强；Phase 0.9 的内置
+Phase 3（治理层）—— 不属于参考框架自带的 19 项能力，是本项目自己的增强；Phase 0.9 的内置
   工具（Bash/FileSystem/Grep）本身就是"真实工具调用"，Phase 0 做完即可开始 Phase 3，不需要等
   任何 Capability Pack
 Phase 8（多 Agent 编排）—— 依赖至少 2-3 个 Capability Pack 已存在（Phase 2/6/7 至少两个），否则没有"协作"的意义
@@ -309,20 +315,20 @@ Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版
 
 | 阶段 | 来源 |
 |---|---|
-| Phase 0.1-0.4 loop 核心 | spring-ai-agentx 源码（`AgentLoopExecutor`/`ToolCallExecutor`/`ContextCompactor`）+ Clippings《流式响应的一些重要概念》《流式控制与任务管理》《Think模型与输出解析》《上下文压缩 micro/auto_compact》 |
-| Phase 0.6 ToolSearch | agentx `tools/toolsearch`（jieba 中文分词 + HYBRID 兜底）+ Clippings《如何按需披露工具》 |
-| Phase 0.7 Skills | agentx `SkillsTool` + Clippings《Agent Skills到底是如何实现的》《Skills管理（单机版）》《spring-ai-agent-utils中的skills》 |
-| Phase 0.9 文件/Bash 工具 | agentx `FileSystemTools`/`BashTool`/`GrepTool` + Clippings《智能体如何拥有操作系统的能力》 |
-| Phase 1 分布式任务管理 | Clippings《多实例Agent任务管理改造》；分布式锁的注解化对照实现参考同类项目的 `@DistributeLock` 模式（`@Order(MIN_VALUE)` 保证锁在事务外，含真实缺陷可当反例，踩坑点 #65） |
-| Phase 2 SQL/权限 | Clippings《什么是M-Schema》《M-Schema的Java实现》《SQL安全校验》《执行SQL的完整流程》《权限模型的改造》《如何计算/改写数据权限》《敏感字段如何脱敏》《业务消歧怎么做》 + 数据分析类 Agent 项目的工具设计模式 |
-| Phase 3 治理层 | wiki《研发效能 Agent 平台》Hooks 设计 + agentx `TraceManager`/docs/core/17 |
-| Phase 4 文件问答 RAG | Clippings《文件问答助手如何实现》《大文件如何处理》《文件与联网搜索的重构》 |
-| Phase 5 搜索+图表 | Clippings《复杂计算与图表生成》 |
-| Phase 6 PPT | Clippings PPT 系列 7 篇（选型/需求分析/稳定输出/Python渲染/失败恢复/重写Skill） |
-| Phase 7 DeepResearch | Clippings《实现 DeepResearch（上/下）》《如何让智能体自主规划》 |
-| Phase 8 多 Agent | agentx `SubAgentTool`/docs/core/18；对照另一种常见实现——注意实测口径：它是 SubAgent-as-Tool 架构（LLM 串行决定调哪个子 Agent，**没有**并行 fan-out/结果合并），实际挂载 4 个子 Agent；真正值得抄的是三层意图路由（规则→向量→LLM）+ 影子历史补偿（#70）+ Tool 粒度手写熔断（#71）+ 注册表集群教训（#69） |
-| Phase 9 MCP | wiki《研发效能 Agent 平台》MCP 设计 + Clippings 相关篇目 |
-| 待入库 | 《中断恢复怎么实现》《多节点部署改造》《data-agent的评测》——课程目录里有、还没剪藏，入库后补对应阶段细节 |
+| Phase 0.1-0.4 loop 核心 | 研读真实生产级 Java Agent 框架源码（`AgentLoopExecutor`/`ToolCallExecutor`/`ContextCompactor` 等核心机制）+ 系统整理的流式响应、任务管理、Think 模型输出解析、上下文压缩（micro/auto_compact）相关工程笔记 |
+| Phase 0.6 ToolSearch | 研读参考框架的工具检索模块（jieba 中文分词 + HYBRID 兜底）+ 按需工具披露机制相关工程笔记 |
+| Phase 0.7 Skills | 研读参考框架的 Skills 工具实现 + Skills 机制设计、单机版管理相关工程笔记 |
+| Phase 0.9 文件/Bash 工具 | 研读参考框架的内置工具实现（文件系统/Bash/Grep）+ Agent 操作系统能力相关工程笔记 |
+| Phase 1 分布式任务管理 | 多实例 Agent 任务管理改造相关工程笔记；分布式锁的注解化实现对照了同类开源方案的 `@DistributeLock` 模式（`@Order(MIN_VALUE)` 保证锁在事务外，含真实缺陷可当反例，踩坑点 #65） |
+| Phase 2 SQL/权限 | M-Schema、SQL 安全校验、执行流程、权限模型改造、数据权限计算与改写、敏感字段脱敏、业务术语消歧相关工程笔记 + 数据分析类 Agent 项目的工具设计模式 |
+| Phase 3 治理层 | 研发效能 Agent 平台的 Hooks 设计笔记 + 参考框架的 `TraceManager` 实现 |
+| Phase 4 文件问答 RAG | 文件问答实现、大文件处理、文件与联网搜索重构相关工程笔记 |
+| Phase 5 搜索+图表 | 复杂计算与图表生成相关工程笔记 |
+| Phase 6 PPT | PPT 生成智能体系列工程笔记（选型/需求分析/稳定输出/Python渲染/失败恢复/重写Skill） |
+| Phase 7 DeepResearch | DeepResearch 实现、智能体自主规划相关工程笔记 |
+| Phase 8 多 Agent | 研读参考框架的 SubAgent 工具化实现；对照另一种常见实现——注意实测口径：它是 SubAgent-as-Tool 架构（LLM 串行决定调哪个子 Agent，**没有**并行 fan-out/结果合并），实际挂载 4 个子 Agent；真正值得抄的是三层意图路由（规则→向量→LLM）+ 影子历史补偿（#70）+ Tool 粒度手写熔断（#71）+ 注册表集群教训（#69） |
+| Phase 9 MCP | 研发效能 Agent 平台的 MCP 设计笔记 + 相关工程笔记 |
+| 待补充 | 中断恢复实现、多节点部署改造、data-agent 评测体系相关笔记——已列入整理清单，后续补充对应阶段细节 |
 
 ## 面试叙事主线
 
@@ -335,10 +341,26 @@ Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版
 
 ## 下一步
 
-**issue #1-#19 全部关闭，`mvn test` 全绿（372/372，含真实 MySQL/Redis 的 Testcontainers 集成
-测试）——Phase 0 + Phase 1 这个"引擎"现在真正完整，和参考框架 `docs/core/` 的 19 篇能力文档
-对齐。** 下一步是 Phase 2（SQL 数据分析能力包）：无前置业务依赖，是 Capability Pack 里唯一
-可以第一个做的。
+**2026-08-05 更新**：issue #1-#19（Phase 0+1）和 issue #52-#61（Phase 2 SQL 数据分析能力包）
+全部关闭。认证/RBAC、DeepResearch/PPT 异步轮询、文件问答生命周期（含删除）这几个能力包之外
+的横切机制也在最近几天补齐了。**下一步不是直接进 Phase 3，是先把前面几个阶段开发时留下的
+技术债还上**——这些是已验证仍然打开的具体缺口，不是"泛泛的重构冲动"：
+
+1. **`AgentTaskManager` 生产装配没接 Redis 锁/广播器**（`security-and-gap-audit-2026-08-02.md` 的
+   P0，验证过仍成立）：`AgentLoopExecutorConfig.agentTaskManager()` 还是裸 `new AgentTaskManager()`，
+   `RedisTaskLock`/`RedisInterruptBroadcaster` 组件本身已经写好、也已经在 `AnalyticsSchemaConfig`
+   里用了，只是主线没装上。
+2. **DeepResearch/PPT 仍然"能提交、能查询，但不能取消、不能跨刷新恢复"**：async+轮询已经做了，
+   但没有 cancel 端点，前端刷新页面也不会重新接上一个还在跑的 taskId（`recordSuccess/Failure`
+   只在任务真正跑完时才写会话历史，没跑完之前是完全不可见的）。
+3. **Analytics 的 ReAct 自我修正没有失败预算**：对照 spring-ai-alibaba/DataAgent 的 Gate+maxRetries
+   图结构上限，我们这边只有粗粒度的 `maxRounds=20` 整轮硬顶，没有"同一个错误连续失败 N 次就提前
+   止损"的电路断路器（见上方 Phase 2 的 2026-08-05 补充）。
+4. **SQL Golden Task 只跑通了框架自测，没跑过真实调用**：`GoldenTaskRunner`/33 条 fixture 都已经
+   写好，但 `GoldenTaskRunnerTest` 喂的是纯 canned executor，从没接过真实的 `AnalyticsToolProvider`
+   执行链，没有任何可复现的准确率数字。
+
+技术债清完、closed-loop 回归走完一遍之后再开始 Phase 3（治理层）。
 
 已知的、故意留到后续的缺口（不阻塞 Phase 2，但动到对应机制时要记得补上）：
 - ~~`AgentTaskManager` 不会定时续期已持有的 Redis 锁~~ → 已补上：`RedisTaskLock.startAutoRenewal()`
@@ -354,5 +376,5 @@ Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版
 - DeepSeek `reasoning_content` 的流式行为还没拿真实 key 实测过（`DeepSeekLlmClientLiveIT` 已经
   搭好，缺一次真实调用去跑它）
 - V1 的 HTTP 入口（`AgentLoopExecutorConfig` + `AgentLoopController`，`POST /agent/v1/chat`）目前
-  只接了裸引擎——没工具、没暂停恢复、没追踪审计、没分层记忆，也还是同步 `call()` 不是 SSE 流式；
-  V0 的旧入口（`AgentController`，`/agent/chat`）保留不动，两者互不影响
+  已接入会话持久化、联网搜索和图表工具，并通过 `stream()` 返回 SSE；暂停恢复、追踪审计、分层记忆
+  等机制仍按场景扩展。V0 的旧入口（`AgentController`，`/agent/chat`）保留不动，两者互不影响

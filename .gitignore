@@ -7,6 +7,10 @@ frontend/.mvn-node/
 frontend/*.tsbuildinfo
 src/main/resources/static/
 
+### Python bytecode cache (ppt renderer scripts) ###
+__pycache__/
+*.pyc
+
 ### Local application config and secrets — never commit ###
 src/main/resources/application.properties
 src/main/resources/application.yaml
