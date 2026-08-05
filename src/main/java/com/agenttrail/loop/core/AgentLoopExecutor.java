@@ -24,6 +24,9 @@ import com.agenttrail.loop.pause.ResumeInstruction;
 import com.agenttrail.loop.pause.SafePoint;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;
+import com.agenttrail.loop.security.PiiMasker;
+import com.agenttrail.loop.security.PromptInjectionGuard;
+import com.agenttrail.loop.security.ToolRateLimiter;
 import com.agenttrail.loop.stageoutput.StageContext;
 import com.agenttrail.loop.stageoutput.StageOutputManager;
 import com.agenttrail.loop.task.AgentTaskManager;
@@ -100,6 +103,9 @@ public class AgentLoopExecutor {
     private final SessionBudgetTracker budgetTracker;
     private final MeterRegistry meterRegistry;
     private final String modelName;
+    private final PromptInjectionGuard promptInjectionGuard;
+    private final PiiMasker piiMasker;
+    private final ToolRateLimiter toolRateLimiter;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
         this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
@@ -256,6 +262,29 @@ public class AgentLoopExecutor {
                       MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
                       AgentHooks hooks, SessionBudgetTracker budgetTracker,
                       MeterRegistry meterRegistry, String modelName) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
+                maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
+                null, null, null);
+    }
+
+    /**
+     * @param promptInjectionGuard 提示词注入检测；传 null 表示不启用，行为与没有这个机制时一致
+     * @param piiMasker            用户输入 PII 打码；传 null 表示不启用——原始文本原样进入
+     *                             {@code messages} 和落库记录
+     * @param toolRateLimiter      单会话工具调用限速；传 null 表示不启用，所有工具调用都放行，
+     *                             行为与没有这个机制时一致
+     */
+    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                      StageOutputManager stageOutputManager, TraceStore traceStore,
+                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
+                      AgentHooks hooks, SessionBudgetTracker budgetTracker,
+                      MeterRegistry meterRegistry, String modelName,
+                      PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
+                      ToolRateLimiter toolRateLimiter) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog), meterRegistry);
         this.taskManager = taskManager;
@@ -276,6 +305,9 @@ public class AgentLoopExecutor {
         this.budgetTracker = budgetTracker;
         this.meterRegistry = meterRegistry;
         this.modelName = (modelName == null || modelName.isBlank()) ? "unknown" : modelName;
+        this.promptInjectionGuard = promptInjectionGuard;
+        this.piiMasker = piiMasker;
+        this.toolRateLimiter = toolRateLimiter;
     }
 
     /**
@@ -308,6 +340,9 @@ public class AgentLoopExecutor {
         private SessionBudgetTracker budgetTracker;
         private MeterRegistry meterRegistry;
         private String modelName = "unknown";
+        private PromptInjectionGuard promptInjectionGuard;
+        private PiiMasker piiMasker;
+        private ToolRateLimiter toolRateLimiter;
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
             this.chatModel = chatModel;
@@ -393,10 +428,26 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        public Builder promptInjectionGuard(PromptInjectionGuard promptInjectionGuard) {
+            this.promptInjectionGuard = promptInjectionGuard;
+            return this;
+        }
+
+        public Builder piiMasker(PiiMasker piiMasker) {
+            this.piiMasker = piiMasker;
+            return this;
+        }
+
+        public Builder toolRateLimiter(ToolRateLimiter toolRateLimiter) {
+            this.toolRateLimiter = toolRateLimiter;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
             return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
                     persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
-                    fileStore, maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName);
+                    fileStore, maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
+                    promptInjectionGuard, piiMasker, toolRateLimiter);
         }
     }
 
@@ -427,6 +478,16 @@ public class AgentLoopExecutor {
             return sink.asFlux();
         }
 
+        if (promptInjectionGuard != null && promptInjectionGuard.looksLikeInjection(question)) {
+            taskManager.removeTask(params.conversationId());
+            EventSinks.emit(sink, new AgentStreamEvent.Error(
+                    "PROMPT_INJECTION_DETECTED", "检测到疑似的提示词注入攻击，本次请求已被拒绝"));
+            sink.tryEmitComplete();
+            return sink.asFlux();
+        }
+        // 打码后的文本才继续往下走——原始文本不落库、不进 messages（见 CLASSIFIER/落库落点）
+        String sanitizedQuestion = (piiMasker == null) ? question : piiMasker.mask(question);
+
         List<Message> messages = new ArrayList<>();
         // 模型没有别的途径知道"今天"是哪天——不注入的话，"今天几号"这类问题会被当成
         // 需要工具才能回答的问题（曾经因此去猜一个不存在的 file_id 调用 load_file_content），
@@ -448,7 +509,7 @@ public class AgentLoopExecutor {
         if (persistenceHook != null) {
             messages.addAll(persistenceHook.loadHistory(params.conversationId(), HISTORY_TOKEN_BUDGET));
         }
-        messages.add(new UserMessage(withFormatInstruction(question, params.outputType())));
+        messages.add(new UserMessage(withFormatInstruction(sanitizedQuestion, params.outputType())));
 
         // 每次对话请求各自开一个全新会话——发现的工具互相隔离，不会泄漏给并发的其他会话
         ToolSearchSession toolSearchSession = (toolCatalog == null) ? null : toolCatalog.newSession();
@@ -457,7 +518,7 @@ public class AgentLoopExecutor {
         // 过了线程边界就读不到了；这里在还没跳线程之前，把发起这次请求的线程的 MDC 拍下来
         Map<String, String> mdcSnapshot = MDC.getCopyOfContextMap();
 
-        RunContext context = new RunContext(question, params, messages, sink, new AtomicInteger(0),
+        RunContext context = new RunContext(sanitizedQuestion, params, messages, sink, new AtomicInteger(0),
                 System.currentTimeMillis(), toolSearchSession, mdcSnapshot);
         fireSessionStart(context);
         context.emit(new AgentStreamEvent.AgentStart(params.conversationId()));
@@ -651,8 +712,9 @@ public class AgentLoopExecutor {
                 ? null : context.toolSearchSession().toolSearchCallback();
         HookContext hookContext = toHookContext(context);
         firePreToolUse(hookContext, toolCalls);
-        List<ToolResponseMessage.ToolResponse> responses = toolCallExecutor.execute(
-                toolCalls, context::emit, paramInjector, sessionScopedTool, context.mdcSnapshot());
+
+        List<ToolResponseMessage.ToolResponse> responses = executeWithRateLimit(
+                toolCalls, context, paramInjector, sessionScopedTool);
         firePostToolUse(hookContext, responses);
         context.messages().add(ToolResponseMessage.builder().responses(responses).build());
 
@@ -969,6 +1031,42 @@ public class AgentLoopExecutor {
         if (budgetTracker != null) {
             budgetTracker.forget(context.conversationId());
         }
+    }
+
+    /**
+     * 限速在真正执行前把超限的调用摘出来，只让剩下的走 {@link ToolCallExecutor}——没有直接
+     * 把 {@link ToolRateLimiter} 套进 {@link com.agenttrail.loop.hook.PreToolUseHook}：那个
+     * 接口是纯观察型 void 契约（Ticket 1 的既定设计），用异常做流程控制会拉伸它的契约，
+     * 不如像 {@link SessionBudgetTracker} 一样单独做一个直接参与决策的组件更清楚。
+     *
+     * <p>被限速的调用不送进 {@link ToolCallExecutor}，直接合成一条 {@code "Error:"} 开头的
+     * {@link ToolResponseMessage.ToolResponse} 喂回模型——跟业务工具约定失败结果的形状一致，
+     * 也会被 {@link #checkConsecutiveToolFailures} 当作一次失败计入连续失败熔断。
+     */
+    private List<ToolResponseMessage.ToolResponse> executeWithRateLimit(
+            List<AssistantMessage.ToolCall> toolCalls, RunContext context,
+            ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
+        if (toolRateLimiter == null) {
+            return toolCallExecutor.execute(
+                    toolCalls, context::emit, paramInjector, sessionScopedTool, context.mdcSnapshot());
+        }
+
+        List<AssistantMessage.ToolCall> allowed = new ArrayList<>();
+        List<ToolResponseMessage.ToolResponse> responses = new ArrayList<>();
+        for (AssistantMessage.ToolCall call : toolCalls) {
+            if (toolRateLimiter.allow(context.conversationId())) {
+                allowed.add(call);
+            } else {
+                responses.add(new ToolResponseMessage.ToolResponse(call.id(), call.name(),
+                        "Error: 工具调用频率超限，本次调用已被拒绝——请放慢调用节奏，" +
+                                "或基于已有结果继续推理，不要连续重试同一个工具"));
+            }
+        }
+        if (!allowed.isEmpty()) {
+            responses.addAll(toolCallExecutor.execute(
+                    allowed, context::emit, paramInjector, sessionScopedTool, context.mdcSnapshot()));
+        }
+        return responses;
     }
 
     private void firePreToolUse(HookContext context, List<AssistantMessage.ToolCall> toolCalls) {

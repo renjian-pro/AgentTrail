@@ -11,6 +11,9 @@ import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.pause.PauseStateStore;
 import com.agenttrail.loop.persistence.JdbcSessionStore;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
+import com.agenttrail.loop.security.PiiMasker;
+import com.agenttrail.loop.security.PromptInjectionGuard;
+import com.agenttrail.loop.security.ToolRateLimiter;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.task.RedisInterruptBroadcaster;
 import com.agenttrail.loop.task.RedisTaskLock;
@@ -127,6 +130,33 @@ public class AgentLoopExecutorConfig {
         return new JdbcTraceStore(dataSource);
     }
 
+    /**
+     * 用便宜的非思考模型（qwen-plus）做分类，不占用主对话模型的配额，也不需要为它单独接一个
+     * 第三方分类模型——分类任务本身足够简单，复用现有已注册的模型就够了（ticket 09）。
+     */
+    @Bean
+    public PromptInjectionGuard promptInjectionGuard(@Qualifier("openAiChatModel") ChatModel qwenChatModel) {
+        return new PromptInjectionGuard(qwenChatModel);
+    }
+
+    @Bean
+    public PiiMasker piiMasker() {
+        return PiiMasker.create();
+    }
+
+    /**
+     * 复用 {@link RedisConfig} 已经验证过的可选装配方式：没配 Redis 时 {@code
+     * ObjectProvider.getIfAvailable()} 拿到 null，{@link ToolRateLimiter} 内部据此永远放行，
+     * 不会因为这一台开发机没有常驻 Redis 就报错甚至拖累应用启动。
+     */
+    @Bean
+    public ToolRateLimiter toolRateLimiter(ObjectProvider<RedissonClient> redissonProvider,
+            @Value("${agenttrail.tool-rate-limit.max-calls:30}") int maxCallsPerWindow,
+            @Value("${agenttrail.tool-rate-limit.window-seconds:60}") long windowSeconds) {
+        return new ToolRateLimiter(redissonProvider.getIfAvailable(), maxCallsPerWindow,
+                Duration.ofSeconds(windowSeconds));
+    }
+
     /** 对话、DeepResearch、PPT 共用 agent_session，不维护互相漂移的多套历史。 */
     @Bean
     public CapabilityConversationService capabilityConversationService(
@@ -180,7 +210,10 @@ public class AgentLoopExecutorConfig {
             ToolRiskRegistry toolRiskRegistry,
             SessionBudgetTracker sessionBudgetTracker,
             TraceStore traceStore,
-            ObjectProvider<MeterRegistry> meterRegistryProvider) {
+            ObjectProvider<MeterRegistry> meterRegistryProvider,
+            PromptInjectionGuard promptInjectionGuard,
+            PiiMasker piiMasker,
+            ToolRateLimiter toolRateLimiter) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
@@ -188,6 +221,6 @@ public class AgentLoopExecutorConfig {
         return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider,
                 chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
                 analyticsToolProvider.getIfAvailable(), pauseConfig, toolRiskRegistry, sessionBudgetTracker, traceStore,
-                meterRegistryProvider.getIfAvailable());
+                meterRegistryProvider.getIfAvailable(), promptInjectionGuard, piiMasker, toolRateLimiter);
     }
 }

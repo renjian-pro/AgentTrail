@@ -113,6 +113,12 @@ agenttrail:
     # RedisInterruptBroadcaster wired into AgentTaskManager (see RedisConfig).
     enabled: false
     address: redis://127.0.0.1:6379
+  budget:
+    per-session-tokens: 200000
+  tool-rate-limit:
+    # 没配 Redis 时 ToolRateLimiter 永远放行，这两个值只在 agenttrail.redis.enabled=true 时才生效。
+    max-calls: 30
+    window-seconds: 60
   analytics:
     # Analytics data source is optional and disabled by default.
     datasource:

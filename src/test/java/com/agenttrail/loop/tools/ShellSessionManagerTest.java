@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * 伪持久 shell 的行为测试。
@@ -201,5 +202,31 @@ class ShellSessionManagerTest {
         manager.execute(SESSION, "cd no-such-directory-here");
 
         assertThat(manager.workingDirectory(SESSION)).isEqualToIgnoringCase(real(workspace));
+    }
+
+    /**
+     * 凭据隔离审查（ticket 09）：{@code ProcessBuilder} 默认继承整个 JVM 进程的环境变量，
+     * 数据库密码/模型 API Key 如果通过环境变量注入配置，bash 工具执行 {@code env}/{@code set}
+     * 就能把它们原样打印出来——这是先复现问题再验证修复：{@code JAVA_HOME} 是这台机器真实存在
+     * 于 JVM 进程环境、但不在白名单里的变量，子进程应该看不到它。
+     */
+    @Test
+    void doesNotLeakNonWhitelistedEnvironmentVariablesToTheChildProcess() {
+        assumeTrue(System.getenv("JAVA_HOME") != null, "本机环境没有 JAVA_HOME，测不出隔离效果");
+        ShellSessionManager manager = manager();
+
+        ShellSessionManager.CommandResult result = manager.execute(SESSION, WINDOWS ? "set" : "env");
+
+        assertThat(result.stdout()).doesNotContainIgnoringCase("JAVA_HOME");
+    }
+
+    /** 白名单里的变量（shell 正常工作必需）应该继续可见，不能把子进程环境清空到跑不起来。 */
+    @Test
+    void stillExposesWhitelistedVariablesNeededForTheShellToWork() {
+        ShellSessionManager manager = manager();
+
+        ShellSessionManager.CommandResult result = manager.execute(SESSION, WINDOWS ? "set" : "env");
+
+        assertThat(result.stdout().toUpperCase(java.util.Locale.ROOT)).contains("PATH=");
     }
 }

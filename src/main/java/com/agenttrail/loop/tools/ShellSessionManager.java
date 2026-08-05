@@ -174,9 +174,27 @@ public final class ShellSessionManager {
     // 进程执行
     // ------------------------------------------------------------------
 
+    /**
+     * 子进程默认继承整个 JVM 进程的环境变量（Java {@link ProcessBuilder} 的默认行为），数据库密码、
+     * 模型 API Key 这些如果通过环境变量注入配置（见 {@code application.yml} 里
+     * {@code OTEL_EXPORTER_OTLP_HEADERS_AUTHORIZATION} 这类 {@code ${VAR}} 占位符），模型执行
+     * {@code env}/{@code set} 类命令就能把它们原样打印出来——凭据隔离审查（ticket 09）确认过
+     * 这是真实可利用的风险，不是假设性问题。只保留 shell 正常工作必需的变量，其余一律清空。
+     */
+    private static final List<String> ENV_WHITELIST = WINDOWS
+            ? List.of("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "WINDIR",
+                    "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "NUMBER_OF_PROCESSORS")
+            : List.of("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SHELL");
+
+    private static void sanitizeEnvironment(Map<String, String> childEnvironment) {
+        childEnvironment.keySet().removeIf(key -> ENV_WHITELIST.stream().noneMatch(key::equalsIgnoreCase));
+    }
+
     private CommandResult run(ShellSession session, List<String> invocation, Path stateFile,
                               Duration effectiveTimeout) throws IOException {
-        Process process = new ProcessBuilder(invocation).start();
+        ProcessBuilder processBuilder = new ProcessBuilder(invocation);
+        sanitizeEnvironment(processBuilder.environment());
+        Process process = processBuilder.start();
         // 立刻关掉子进程的 stdin：交互式命令会读到 EOF 直接退出，而不是永远等一个不会来的输入
         process.getOutputStream().close();
 

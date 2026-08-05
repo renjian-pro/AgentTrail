@@ -9,6 +9,9 @@ import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
+import com.agenttrail.loop.security.PiiMasker;
+import com.agenttrail.loop.security.PromptInjectionGuard;
+import com.agenttrail.loop.security.ToolRateLimiter;
 import com.agenttrail.loop.trace.TraceStore;
 import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.task.AgentTaskManager;
@@ -80,6 +83,10 @@ public class AgentLoopExecutorFactory {
     private final SessionBudgetTracker sessionBudgetTracker;
     private final TraceStore traceStore;
     private final MeterRegistry meterRegistry;
+    /** 三者传 null 表示对应机制未启用，见 {@link AgentLoopExecutor.Builder} 的"null = 不启用"约定。 */
+    private final PromptInjectionGuard promptInjectionGuard;
+    private final PiiMasker piiMasker;
+    private final ToolRateLimiter toolRateLimiter;
 
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider) {
@@ -159,6 +166,20 @@ public class AgentLoopExecutorFactory {
             AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
             ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
             TraceStore traceStore, MeterRegistry meterRegistry) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
+                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
+                sessionBudgetTracker, traceStore, meterRegistry, null, null, null);
+    }
+
+    /** 生产装配扩展：安全纵深（ticket 09）——Prompt Injection 检测 / PII 打码 / 工具调用限速。 */
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool, FileStore fileStore,
+            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
+            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
+            TraceStore traceStore, MeterRegistry meterRegistry,
+            PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker, ToolRateLimiter toolRateLimiter) {
         if (models.stream().noneMatch(model -> model.id().equals(defaultModelId))) {
             throw new IllegalArgumentException("默认模型 " + defaultModelId + " 不在注册的模型列表里");
         }
@@ -178,6 +199,9 @@ public class AgentLoopExecutorFactory {
         this.sessionBudgetTracker = sessionBudgetTracker;
         this.traceStore = traceStore;
         this.meterRegistry = meterRegistry;
+        this.promptInjectionGuard = promptInjectionGuard;
+        this.piiMasker = piiMasker;
+        this.toolRateLimiter = toolRateLimiter;
         this.baseTools = fileContentTool != null ? List.of(fileContentTool.toolCallback()) : List.of();
         // baseTools 现在可能非空（文件工具无条件挂载），所以这里也必须经过
         // resolveToolCallingModel 那道 qwen-plus→deepseek-chat 的安全切换——之前这里直接
@@ -216,7 +240,10 @@ public class AgentLoopExecutorFactory {
                 .budgetTracker(sessionBudgetTracker)
                 .traceStore(traceStore)
                 .meterRegistry(meterRegistry)
-                .modelName(model.id());
+                .modelName(model.id())
+                .promptInjectionGuard(promptInjectionGuard)
+                .piiMasker(piiMasker)
+                .toolRateLimiter(toolRateLimiter);
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
         }
@@ -263,6 +290,9 @@ public class AgentLoopExecutorFactory {
                 .traceStore(traceStore)
                 .meterRegistry(meterRegistry)
                 .modelName(model.id())
+                .promptInjectionGuard(promptInjectionGuard)
+                .piiMasker(piiMasker)
+                .toolRateLimiter(toolRateLimiter)
                 // ReAct+Skill 的自我修正没有 DataAgent 那种 Gate+maxRetries 的图结构上限，SKILL.md
                 // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
                 // 不再指望它在 maxRounds=20 撞顶之前自己收敛。
