@@ -194,6 +194,10 @@ public class AgentLoopExecutorFactory {
                 .persistenceHook(persistenceHook)
                 .toolCatalog(catalog)
                 .contextPolicy(contextPolicy)
+                // ReAct+Skill 的自我修正没有 DataAgent 那种 Gate+maxRetries 的图结构上限，SKILL.md
+                // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
+                // 不再指望它在 maxRounds=20 撞顶之前自己收敛。
+                .maxConsecutiveToolFailures(3)
                 .build();
         analyticsExecutorsByModelId.put(resolvedId, executor);
         return executor;

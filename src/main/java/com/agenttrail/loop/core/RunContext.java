@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.Message;
 import reactor.core.publisher.Sinks;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *                      跳之前拿这份快照还原一次，日志里的 conversationId 等字段才不会断线（见 MdcPropagation）
  * @param toolTimeline  本轮工具调用的落库轨迹，按 toolCallId 索引、按发起顺序迭代；
  *                      {@link #emit} 里随 ToolStart/ToolEnd 原地维护，收尾时序列化进 timeline 列
+ * @param consecutiveToolFailures 按工具名统计的"连续失败"计数，跨这次推理的多轮递增/清零；
+ *                      {@code maxConsecutiveToolFailures} 机制用它判断要不要提前熔断，见
+ *                      {@link AgentLoopExecutor#finishRound}
  */
 record RunContext(
         String question,
@@ -42,7 +46,8 @@ record RunContext(
         long startTimeMillis,
         ToolSearchSession toolSearchSession,
         Map<String, String> mdcSnapshot,
-        Map<String, ToolTimelineEntry> toolTimeline) {
+        Map<String, ToolTimelineEntry> toolTimeline,
+        Map<String, Integer> consecutiveToolFailures) {
 
     private static final Logger log = LoggerFactory.getLogger(RunContext.class);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -51,7 +56,7 @@ record RunContext(
                AtomicInteger roundCounter, long startTimeMillis, ToolSearchSession toolSearchSession,
                Map<String, String> mdcSnapshot) {
         this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
-                new LinkedHashMap<>());
+                new LinkedHashMap<>(), new HashMap<>());
     }
 
     String conversationId() {

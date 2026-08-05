@@ -24,6 +24,10 @@ agenttrail:
     secret-key: ""
   skills:
     directory: ""
+  redis:
+    # 可选：跨实例任务锁/中断广播，默认关闭。部署到有真实 Redis 的环境时打开。
+    enabled: false
+    address: "redis://127.0.0.1:6379"
   analytics:
     datasource:
       enabled: false

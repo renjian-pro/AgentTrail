@@ -6,12 +6,15 @@ import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.persistence.JdbcSessionStore;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.loop.task.RedisInterruptBroadcaster;
+import com.agenttrail.loop.task.RedisTaskLock;
 import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilyWebSearchResultParser;
 import com.agenttrail.loop.tools.websearch.WebSearchResultParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.redisson.api.RedissonClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.ObjectProvider;
@@ -21,6 +24,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
 import javax.sql.DataSource;
 
 /**
@@ -51,10 +55,25 @@ public class AgentLoopExecutorConfig {
         return new ObjectMapper();
     }
 
-    /** 会话单飞注册必须全局共享一份，不能每个模型各建一份，否则同一会话换模型问单飞检测会失效。 */
+    /**
+     * 会话单飞注册必须全局共享一份，不能每个模型各建一份，否则同一会话换模型问单飞检测会失效。
+     *
+     * <p>安全审计 2026-08-02 的 P0：这里以前不管有没有配 Redis 都只 {@code new AgentTaskManager()}，
+     * 多实例部署时同一会话可能被两个实例同时跑。{@link RedisConfig} 只在 {@code
+     * agenttrail.redis.enabled=true} 时才提供 {@link RedissonClient} Bean（本机开发环境没有常驻
+     * Redis，默认关闭），{@code ObjectProvider.getIfAvailable()} 拿不到时优雅回退成和以前完全一致
+     * 的纯内存单实例行为；配了之后才真正启用跨实例锁 + Pub/Sub 广播，并开启锁的后台自动续期
+     * （5 分钟 TTL，每 ~100 秒续一次）——不开自动续期的话，跑得比 TTL 还久的会话锁会被其它实例抢走。
+     */
     @Bean
-    public AgentTaskManager agentTaskManager() {
-        return new AgentTaskManager();
+    public AgentTaskManager agentTaskManager(ObjectProvider<RedissonClient> redissonProvider) {
+        RedissonClient redisson = redissonProvider.getIfAvailable();
+        if (redisson == null) {
+            return new AgentTaskManager();
+        }
+        RedisTaskLock lock = new RedisTaskLock(redisson, "chat-" + UUID.randomUUID(), Duration.ofMinutes(5));
+        lock.startAutoRenewal();
+        return new AgentTaskManager(lock, new RedisInterruptBroadcaster(redisson));
     }
 
     @Bean

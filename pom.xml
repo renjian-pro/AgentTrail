@@ -367,6 +367,7 @@
 							</systemPropertyVariables>
 							<includes>
 								<include>**/GoldenTaskIT.java</include>
+								<include>**/GoldenTaskLiveIT.java</include>
 							</includes>
 						</configuration>
 						<executions>

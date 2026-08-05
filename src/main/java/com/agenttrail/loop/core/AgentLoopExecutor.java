@@ -88,6 +88,7 @@ public class AgentLoopExecutor {
     private final MemoryExtractor memoryExtractor;
     private final FileStore fileStore;
     private final int maxRounds;
+    private final int maxConsecutiveToolFailures;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
         this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
@@ -189,6 +190,24 @@ public class AgentLoopExecutor {
                              ToolCatalog toolCatalog, PauseConfig pauseConfig,
                              StageOutputManager stageOutputManager, TraceStore traceStore,
                              MemoryStore memoryStore, FileStore fileStore) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore, 0);
+    }
+
+    /**
+     * @param maxConsecutiveToolFailures 同一个工具名在这次推理里连续失败达到这个次数就提前终止本轮
+     *                                   推理，把已知的失败原因如实告诉用户，而不是继续把预算烧在
+     *                                   "生成→报错→再生成→再报错"的自我修正循环上；{@code <= 0}
+     *                                   表示不启用，行为和没有这个机制时完全一致——{@code maxRounds}
+     *                                   仍然是唯一的硬顶，但那是"整轮最多转几圈"的粗粒度上限，
+     *                                   不区分"这几圈是不是在原地打转"
+     */
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                             StageOutputManager stageOutputManager, TraceStore traceStore,
+                             MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
@@ -204,6 +223,7 @@ public class AgentLoopExecutor {
         this.memoryExtractor = (memoryStore == null) ? null : new MemoryExtractor(chatModel, memoryStore);
         this.fileStore = fileStore;
         this.maxRounds = maxRounds;
+        this.maxConsecutiveToolFailures = maxConsecutiveToolFailures;
     }
 
     /**
@@ -231,6 +251,7 @@ public class AgentLoopExecutor {
         private TraceStore traceStore;
         private MemoryStore memoryStore;
         private FileStore fileStore;
+        private int maxConsecutiveToolFailures;
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
             this.chatModel = chatModel;
@@ -288,10 +309,18 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        /** @see AgentLoopExecutor#AgentLoopExecutor(ChatModel, List, int, AgentTaskManager, ContextPolicy,
+         *      ThinkingMode, TurnPersistenceHook, ToolCatalog, PauseConfig, StageOutputManager, TraceStore,
+         *      MemoryStore, FileStore, int) */
+        public Builder maxConsecutiveToolFailures(int maxConsecutiveToolFailures) {
+            this.maxConsecutiveToolFailures = maxConsecutiveToolFailures;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
             return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
                     persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
-                    fileStore);
+                    fileStore, maxConsecutiveToolFailures);
         }
     }
 
@@ -514,7 +543,58 @@ public class AgentLoopExecutor {
         // 这一批工具调用（一轮可能并发跑多个）跑完了——不是每个工具单独触发一次，见 StageTiming.AFTER_TOOL_END
         stageOutputManager.afterToolEnd(new StageContext(context.question(), null, context.params()), context::emit);
 
+        if (maxConsecutiveToolFailures > 0) {
+            String breakerMessage = checkConsecutiveToolFailures(context, responses);
+            if (breakerMessage != null) {
+                state.appendText(breakerMessage);
+                context.emit(new AgentStreamEvent.Text(breakerMessage));
+                completeRun(state, context);
+                return;
+            }
+        }
+
         scheduleRound(context);
+    }
+
+    /**
+     * 按工具名统计"连续失败"次数：本轮里一个工具调用失败就把它的计数加一，一旦某次成功
+     * 就把那个工具名的计数清零——不是全局失败总数，是"最近这几次是不是一直在原地打转"。
+     * 达到阈值时返回一段说明文字（附最近一次的错误原因），调用方据此提前收尾，不再进入下一轮；
+     * 没有任何工具越过阈值时返回 null，正常继续。
+     *
+     * <p>{@code maxRounds} 早就是硬顶，但那是粗粒度的"整轮最多转几圈"，不区分"这几圈都在拿同一个
+     * 工具反复试错"——ReAct+Skill 路线没有 DataAgent 那种 Gate+maxRetries 的图结构上限，SKILL.md
+     * 写的重试预算只是给模型的指导，不是强制；这里补一道 Runtime 级别真正有强制力的止损线。
+     */
+    private String checkConsecutiveToolFailures(RunContext context, List<ToolResponseMessage.ToolResponse> responses) {
+        String breakerMessage = null;
+        for (ToolResponseMessage.ToolResponse response : responses) {
+            String name = response.name();
+            if (looksLikeToolFailure(response.responseData())) {
+                int count = context.consecutiveToolFailures().merge(name, 1, Integer::sum);
+                if (count >= maxConsecutiveToolFailures) {
+                    breakerMessage = "工具 " + name + " 已连续 " + count + " 次调用失败，最近一次的错误是：" +
+                            truncate(response.responseData(), 300) +
+                            "。为避免无意义的重复重试，本轮到此为止——请根据以上错误信息调整问题，或换一种问法重新提问。";
+                }
+            } else {
+                context.consecutiveToolFailures().remove(name);
+            }
+        }
+        return breakerMessage;
+    }
+
+    /** 业务工具约定失败结果以 {@code "Error:"} 开头（见各 analytics 工具）；{@code ToolCallExecutor}
+     *  自己捕获的引擎级失败（未知工具、执行异常）用 {@code {"error":...}} 这个 JSON 形状——两种都算失败。 */
+    private static boolean looksLikeToolFailure(String result) {
+        return result != null && (result.startsWith("Error:") || result.startsWith("{\"error\""));
+    }
+
+    private static String truncate(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text == null ? "" : text;
+        }
+        return text.substring(0, maxLength) + "…";
     }
 
     private boolean requiresApproval(List<AssistantMessage.ToolCall> toolCalls) {

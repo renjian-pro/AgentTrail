@@ -89,6 +89,13 @@ agenttrail:
     max-critique-rounds: 3
     context:
       token-threshold: 60000
+  redis:
+    # Cross-instance task lock/broadcast is optional and disabled by default — this dev machine
+    # has no standing Redis service (Redis-dependent tests spin up their own Testcontainers
+    # instance). Flip enabled=true and point address at a real Redis to get RedisTaskLock/
+    # RedisInterruptBroadcaster wired into AgentTaskManager (see RedisConfig).
+    enabled: false
+    address: redis://127.0.0.1:6379
   analytics:
     # Analytics data source is optional and disabled by default.
     datasource:

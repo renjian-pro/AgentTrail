@@ -16,7 +16,7 @@ class GoldenTaskRunnerTest {
                     : testCase.id().equals("sql-007") ? "截断" : "查询成功，共 1 行。********";
             return new GoldenTaskReport.GoldenObservation(testCase.id(), testCase.dimension(), true, "", 1, 4,
                     "SELECT * FROM rental WHERE dept_id IN (3)", result,
-                    List.of("lookup_glossary", "calculate"),
+                    List.of("execute_sql", "lookup_glossary", "calculate"),
                     Map.of("rowCount", 1, "scalar.total", 1, "resultMatchesReference", true));
         });
 
