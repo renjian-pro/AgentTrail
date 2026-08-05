@@ -18,6 +18,6 @@ async function logout() {
   <div class="user-badge">
     <span class="user-avatar">{{ displayName.slice(0, 1).toUpperCase() }}</span>
     <span class="user-badge-copy"><b>{{ displayName }}</b><small>{{ roles || 'Signed in' }}</small></span>
-    <button class="user-logout" type="button" aria-label="Log out" @click="logout">↪</button>
+    <button class="user-logout" type="button" title="Log out" @click="logout"><span aria-hidden="true">↪</span> Log out</button>
   </div>
 </template>

@@ -4,8 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { toErrorMessage } from '../api/http'
 import { useAuthStore } from '../stores/auth'
 
-const username = ref('admin')
-const password = ref('admin123')
+// 不预填有效凭证——之前写死 admin/admin123，打开登录页不用输入任何东西点一下就直接登录进去了。
+const username = ref('')
+const password = ref('')
 const error = ref('')
 const auth = useAuthStore()
 const route = useRoute()

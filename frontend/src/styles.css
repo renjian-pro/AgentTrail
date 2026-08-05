@@ -378,7 +378,9 @@ button { cursor: pointer; }
 .user-badge-copy b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-badge-copy small { overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
 .user-logout, .icon-button { border: 0; color: var(--muted); background: transparent; }
-.user-logout { padding: 6px; font-size: 17px; }
+.user-logout { display: flex; align-items: center; gap: 4px; padding: 6px 10px; font-size: 13px; white-space: nowrap; border-radius: 8px; cursor: pointer; }
+.user-logout:hover { background: var(--hover, rgba(0, 0, 0, 0.05)); color: var(--text); }
+.user-logout span { font-size: 15px; }
 .auth-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--canvas); }
 .auth-card { width: min(420px, 100%); padding: 42px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow); }
 .auth-card .welcome-mark { margin-bottom: 20px; }
