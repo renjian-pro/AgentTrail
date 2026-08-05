@@ -1,0 +1,37 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "title": "LLM TTFT P95",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(agenttrail_llm_ttft_seconds_bucket[5m])))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "title": "LLM Duration P95",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(agenttrail_llm_duration_seconds_bucket[5m])))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "id": 3,
+      "title": "Tool Success Rate",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(agenttrail_tool_calls_total{outcome=\"success\"}[5m])) / sum(rate(agenttrail_tool_calls_total[5m]))", "refId": "A"}]
+    }
+  ],
+  "schemaVersion": 41,
+  "title": "AgentTrail SLI",
+  "uid": "agenttrail-sli",
+  "version": 1
+}

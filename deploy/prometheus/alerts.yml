@@ -1,0 +1,26 @@
+groups:
+  - name: agenttrail-sli
+    rules:
+      - alert: AgentTrailLlmTtftP95High
+        expr: histogram_quantile(0.95, sum by (le) (rate(agenttrail_llm_ttft_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: AgentTrail TTFT P95 is above 2 seconds
+
+      - alert: AgentTrailLlmDurationP95High
+        expr: histogram_quantile(0.95, sum by (le) (rate(agenttrail_llm_duration_seconds_bucket[5m]))) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: AgentTrail end-to-end LLM duration P95 is above 5 seconds
+
+      - alert: AgentTrailToolSuccessRateLow
+        expr: sum(rate(agenttrail_tool_calls_total{outcome="success"}[5m])) / sum(rate(agenttrail_tool_calls_total[5m])) < 0.99
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: AgentTrail tool success rate is below 99 percent
