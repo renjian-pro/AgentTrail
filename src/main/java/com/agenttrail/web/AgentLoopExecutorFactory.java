@@ -4,6 +4,7 @@ import com.agenttrail.capability.analytics.AnalyticsToolProvider;
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.file.FileStore;
+import com.agenttrail.loop.hook.AgentHooks;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.FileContentTool;
@@ -68,6 +69,7 @@ public class AgentLoopExecutorFactory {
      */
     private final FileStore fileStore;
     private final AnalyticsToolProvider analyticsToolProvider;
+    private final AgentHooks sharedHooks = AgentHooks.EMPTY;
 
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider) {
@@ -153,7 +155,8 @@ public class AgentLoopExecutorFactory {
                 .taskManager(taskManager)
                 .thinkingMode(model.thinkingMode())
                 .persistenceHook(persist ? persistenceHook : null)
-                .fileStore(fileStore);
+                .fileStore(fileStore)
+                .hooks(sharedHooks);
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
         }
@@ -194,6 +197,7 @@ public class AgentLoopExecutorFactory {
                 .persistenceHook(persistenceHook)
                 .toolCatalog(catalog)
                 .contextPolicy(contextPolicy)
+                .hooks(sharedHooks)
                 // ReAct+Skill 的自我修正没有 DataAgent 那种 Gate+maxRetries 的图结构上限，SKILL.md
                 // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
                 // 不再指望它在 maxRounds=20 撞顶之前自己收敛。

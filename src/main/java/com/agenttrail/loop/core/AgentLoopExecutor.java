@@ -5,6 +5,9 @@ import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.context.MessageRendering;
 import com.agenttrail.loop.file.FilePromptFormatter;
 import com.agenttrail.loop.file.FileStore;
+import com.agenttrail.loop.hook.AgentHooks;
+import com.agenttrail.loop.hook.HookContext;
+import com.agenttrail.loop.hook.ToolInvocation;
 import com.agenttrail.loop.memory.MemoryExtractor;
 import com.agenttrail.loop.memory.MemoryPromptFormatter;
 import com.agenttrail.loop.memory.MemoryStore;
@@ -89,6 +92,7 @@ public class AgentLoopExecutor {
     private final FileStore fileStore;
     private final int maxRounds;
     private final int maxConsecutiveToolFailures;
+    private final AgentHooks hooks;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
         this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
@@ -206,8 +210,20 @@ public class AgentLoopExecutor {
                              AgentTaskManager taskManager, ContextPolicy contextPolicy,
                              ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
                              ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                             StageOutputManager stageOutputManager, TraceStore traceStore,
-                             MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures) {
+                              StageOutputManager stageOutputManager, TraceStore traceStore,
+                              MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
+                maxConsecutiveToolFailures, AgentHooks.EMPTY);
+    }
+
+    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                      StageOutputManager stageOutputManager, TraceStore traceStore,
+                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
+                      AgentHooks hooks) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
@@ -224,6 +240,7 @@ public class AgentLoopExecutor {
         this.fileStore = fileStore;
         this.maxRounds = maxRounds;
         this.maxConsecutiveToolFailures = maxConsecutiveToolFailures;
+        this.hooks = hooks == null ? AgentHooks.EMPTY : hooks;
     }
 
     /**
@@ -252,6 +269,7 @@ public class AgentLoopExecutor {
         private MemoryStore memoryStore;
         private FileStore fileStore;
         private int maxConsecutiveToolFailures;
+        private AgentHooks hooks = AgentHooks.EMPTY;
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
             this.chatModel = chatModel;
@@ -317,10 +335,15 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        public Builder hooks(AgentHooks hooks) {
+            this.hooks = hooks;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
             return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
                     persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
-                    fileStore, maxConsecutiveToolFailures);
+                    fileStore, maxConsecutiveToolFailures, hooks);
         }
     }
 
@@ -383,6 +406,7 @@ public class AgentLoopExecutor {
 
         RunContext context = new RunContext(question, params, messages, sink, new AtomicInteger(0),
                 System.currentTimeMillis(), toolSearchSession, mdcSnapshot);
+        fireSessionStart(context);
         context.emit(new AgentStreamEvent.AgentStart(params.conversationId()));
         stageOutputManager.afterStart(new StageContext(question, null, params), context::emit);
         scheduleRound(context);
@@ -518,6 +542,7 @@ public class AgentLoopExecutor {
 
         if (state.mode() == RoundMode.TEXT) {
             recordTrace(context, state, requestSnapshot, state.text(), true, null);
+            fireBudget(context, state);
             completeRun(state, context);
             return;
         }
@@ -527,6 +552,7 @@ public class AgentLoopExecutor {
         context.messages().add(buildAssistantMessage(state, toolCalls));
         // 只记这轮"模型要调什么工具"，不记工具执行结果——结果会随下一轮历史出现在下一条记录的输入里
         recordTrace(context, state, requestSnapshot, MessageRendering.renderToolCalls(toolCalls), true, null);
+        fireBudget(context, state);
 
         if (requiresApproval(toolCalls)) {
             pauseForApproval(toolCalls, context);
@@ -536,8 +562,11 @@ public class AgentLoopExecutor {
         ToolParamInjector paramInjector = new ToolParamInjector(context.params().toolParams());
         ToolCallback sessionScopedTool = (context.toolSearchSession() == null)
                 ? null : context.toolSearchSession().toolSearchCallback();
+        HookContext hookContext = toHookContext(context);
+        firePreToolUse(hookContext, toolCalls);
         List<ToolResponseMessage.ToolResponse> responses = toolCallExecutor.execute(
                 toolCalls, context::emit, paramInjector, sessionScopedTool, context.mdcSnapshot());
+        firePostToolUse(hookContext, responses);
         context.messages().add(ToolResponseMessage.builder().responses(responses).build());
 
         // 这一批工具调用（一轮可能并发跑多个）跑完了——不是每个工具单独触发一次，见 StageTiming.AFTER_TOOL_END
@@ -700,10 +729,16 @@ public class AgentLoopExecutor {
                 .map(pending -> new AssistantMessage.ToolCall(pending.id(), "function", pending.name(), pending.arguments()))
                 .toList();
         ToolParamInjector paramInjector = new ToolParamInjector(paused.params().toolParams());
+        HookContext hookContext = new HookContext(paused.conversationId(), paused.params().userId(),
+                paused.roundAtPause());
+        firePreToolUse(hookContext, approvedCalls);
         // 这一步发生在恢复流程里还没建出新 RunContext 的时刻（见调用方），没有 context::emit
         // 可用；直接转发到原始 sink，和改造前的行为一致——落库轨迹的记录从下面新建的
         // RunContext 开始才生效，暂停前的工具调用不计入这一轮的 timeline，可接受。
-        return toolCallExecutor.execute(approvedCalls, event -> EventSinks.emit(sink, event), paramInjector);
+        List<ToolResponseMessage.ToolResponse> responses = toolCallExecutor.execute(
+                approvedCalls, event -> EventSinks.emit(sink, event), paramInjector);
+        firePostToolUse(hookContext, responses);
+        return responses;
     }
 
     /**
@@ -787,6 +822,7 @@ public class AgentLoopExecutor {
         stageOutputManager.beforeComplete(
                 new StageContext(context.question(), state.text(), context.params()), context::emit);
 
+        fireSessionEnd(context, true);
         context.emit(new AgentStreamEvent.Complete(context.conversationId(), turnId));
         context.emitComplete();
         // 释放单飞占位，让该会话能发起下一轮对话
@@ -795,6 +831,8 @@ public class AgentLoopExecutor {
 
     private void failRun(Throwable error, RunContext context, RoundState state, String requestSnapshot) {
         recordTrace(context, state, requestSnapshot, null, false, error.getMessage());
+        fireOnError(context, error);
+        fireSessionEnd(context, false);
         context.emit(new AgentStreamEvent.Error("LLM_CALL_FAILED", error.getMessage()));
         context.emitComplete();
         taskManager.removeTask(context.conversationId());
@@ -811,5 +849,45 @@ public class AgentLoopExecutor {
         traceStore.save(new TraceRecord(context.conversationId(), context.roundCounter().get(),
                 requestSnapshot, outputData, think, state.promptTokens(), state.completionTokens(),
                 durationMillis, success, errorMessage, System.currentTimeMillis()));
+    }
+
+    private void fireSessionStart(RunContext context) {
+        HookContext hookContext = new HookContext(context.conversationId(), context.params().userId(), 0);
+        hooks.sessionStart().forEach(hook -> hook.onSessionStart(hookContext));
+    }
+
+    private void fireBudget(RunContext context, RoundState state) {
+        HookContext hookContext = toHookContext(context);
+        hooks.budget().forEach(hook -> hook.onRoundUsage(
+                hookContext, state.promptTokens(), state.completionTokens()));
+    }
+
+    private void firePreToolUse(HookContext context, List<AssistantMessage.ToolCall> toolCalls) {
+        toolCalls.forEach(call -> {
+            ToolInvocation invocation = new ToolInvocation(call.id(), call.name(), call.arguments());
+            hooks.preToolUse().forEach(hook -> hook.beforeToolUse(context, invocation));
+        });
+    }
+
+    private void firePostToolUse(HookContext context, List<ToolResponseMessage.ToolResponse> responses) {
+        responses.forEach(response -> {
+            ToolInvocation invocation = new ToolInvocation(response.id(), response.name(), null);
+            boolean success = !looksLikeToolFailure(response.responseData());
+            hooks.postToolUse().forEach(hook -> hook.afterToolUse(
+                    context, invocation, response.responseData(), success));
+        });
+    }
+
+    private void fireOnError(RunContext context, Throwable error) {
+        hooks.onError().forEach(hook -> hook.onError(toHookContext(context), error));
+    }
+
+    private void fireSessionEnd(RunContext context, boolean success) {
+        hooks.sessionEnd().forEach(hook -> hook.onSessionEnd(toHookContext(context), success));
+    }
+
+    private static HookContext toHookContext(RunContext context) {
+        return new HookContext(context.conversationId(), context.params().userId(),
+                context.roundCounter().get());
     }
 }
