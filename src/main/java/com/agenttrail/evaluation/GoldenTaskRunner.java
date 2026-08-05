@@ -13,6 +13,9 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.IntConsumer;
 
@@ -43,12 +46,7 @@ public final class GoldenTaskRunner {
     }
 
     public static GoldenTaskReport run(Function<GoldenCase, GoldenTaskReport.GoldenObservation> executor) {
-        return run(executor, ignored -> { });
-    }
-
-    public static GoldenTaskReport run(Function<GoldenCase, GoldenTaskReport.GoldenObservation> executor,
-                                       IntConsumer progress) {
-        return runCaseList(loadAll(), executor, progress);
+        return runCaseList(loadAll(), executor);
     }
 
     public static GoldenTaskReport runCaseList(List<GoldenCase> cases,
@@ -61,32 +59,54 @@ public final class GoldenTaskRunner {
                                                 IntConsumer progress) {
         List<GoldenTaskReport.GoldenObservation> results = new ArrayList<>();
         for (int index = 0; index < cases.size(); index++) {
-            GoldenCase testCase = cases.get(index);
-            GoldenTaskReport.GoldenObservation observation;
-            try {
-                observation = executor.apply(testCase);
-            } catch (RuntimeException failure) {
-                observation = new GoldenTaskReport.GoldenObservation(testCase.id(), testCase.dimension(), false,
-                        "executor failed: " + failure.getMessage(), 0, 0, "", "", List.of(), Map.of(),
-                        testCase.question());
-            }
-            Map<String, Object> metrics = new LinkedHashMap<>(observation.metrics());
-            if (!testCase.expectedToolCalls().isEmpty()) {
-                metrics.putAll(ToolSelectionMetrics.calculate(testCase.expectedToolCalls(), observation.toolCalls()).asMap());
-            }
-            List<String> failures = GoldenAssertion.failures(testCase, observation);
-            boolean passed = observation.passed() && failures.isEmpty();
-            String reason = observation.reason();
-            if (!failures.isEmpty()) {
-                reason = (reason.isBlank() ? "" : reason + "; ") + String.join("; ", failures);
-            }
-            results.add(new GoldenTaskReport.GoldenObservation(observation.id(), observation.dimension(), passed,
-                    reason, observation.rounds(), observation.elapsedMs(), observation.actualSql(),
-                    observation.actualResult(), observation.toolCalls(), metrics,
-                    observation.question().isBlank() ? testCase.question() : observation.question()));
+            results.add(scoreCase(cases.get(index), executor));
             progress.accept(index + 1);
         }
         return new GoldenTaskReport(results);
+    }
+
+    /**
+     * 并发版本：case 之间互相独立（各自开一条新会话），用调用方给的线程池并发跑，用 case 完成的
+     * 先后顺序更新 progress，但结果仍按 {@code cases} 的原始顺序落地，保证报告可复现。
+     */
+    public static GoldenTaskReport runCaseListConcurrently(List<GoldenCase> cases,
+                                                           Function<GoldenCase, GoldenTaskReport.GoldenObservation> executor,
+                                                           IntConsumer progress, Executor pool) {
+        AtomicInteger completed = new AtomicInteger();
+        // 先把全部 case 都提交出去，再统一 join——两步分开是必须的：submit+join 揉进同一个 map
+        // 会退化回串行（每个 case 提交后立刻被 join 阻塞，下一个 case 根本没机会提交）。
+        List<CompletableFuture<GoldenTaskReport.GoldenObservation>> pending = cases.stream()
+                .map(testCase -> CompletableFuture.supplyAsync(() -> scoreCase(testCase, executor), pool)
+                        .whenComplete((observation, failure) -> progress.accept(completed.incrementAndGet())))
+                .toList();
+        List<GoldenTaskReport.GoldenObservation> results = pending.stream().map(CompletableFuture::join).toList();
+        return new GoldenTaskReport(results);
+    }
+
+    private static GoldenTaskReport.GoldenObservation scoreCase(GoldenCase testCase,
+            Function<GoldenCase, GoldenTaskReport.GoldenObservation> executor) {
+        GoldenTaskReport.GoldenObservation observation;
+        try {
+            observation = executor.apply(testCase);
+        } catch (RuntimeException failure) {
+            observation = new GoldenTaskReport.GoldenObservation(testCase.id(), testCase.dimension(), false,
+                    "executor failed: " + failure.getMessage(), 0, 0, "", "", List.of(), Map.of(),
+                    testCase.question());
+        }
+        Map<String, Object> metrics = new LinkedHashMap<>(observation.metrics());
+        if (!testCase.expectedToolCalls().isEmpty()) {
+            metrics.putAll(ToolSelectionMetrics.calculate(testCase.expectedToolCalls(), observation.toolCalls()).asMap());
+        }
+        List<String> failures = GoldenAssertion.failures(testCase, observation);
+        boolean passed = observation.passed() && failures.isEmpty();
+        String reason = observation.reason();
+        if (!failures.isEmpty()) {
+            reason = (reason.isBlank() ? "" : reason + "; ") + String.join("; ", failures);
+        }
+        return new GoldenTaskReport.GoldenObservation(observation.id(), observation.dimension(), passed,
+                reason, observation.rounds(), observation.elapsedMs(), observation.actualSql(),
+                observation.actualResult(), observation.toolCalls(), metrics,
+                observation.question().isBlank() ? testCase.question() : observation.question());
     }
 
     private static GoldenCase toCase(Map<?, ?> item) {

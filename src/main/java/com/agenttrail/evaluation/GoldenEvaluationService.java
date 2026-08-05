@@ -35,7 +35,11 @@ public class GoldenEvaluationService {
         List<GoldenCase> cases = GoldenTaskRunner.loadAll();
         EvaluationTask task = new EvaluationTask(UUID.randomUUID().toString(), cases.size());
         tasks.put(task.taskId, task);
-        evaluationExecutor.execute(() -> run(task));
+        // 协调线程本身不占 evaluationExecutor 的名额——它全程 join 等 37 个 case 跑完，
+        // 真占进去会从池子里偷走一个线程，37 个 case 实际只能 3 路并发，不是预期的 4 路。
+        Thread coordinator = new Thread(() -> run(task, cases), "golden-evaluation-" + task.taskId);
+        coordinator.setDaemon(true);
+        coordinator.start();
         return task.response();
     }
 
@@ -53,9 +57,10 @@ public class GoldenEvaluationService {
                 .toList();
     }
 
-    private void run(EvaluationTask task) {
+    private void run(EvaluationTask task, List<GoldenCase> cases) {
         try {
-            task.report = GoldenTaskRunner.run(this::executeCase, task.completedCases::set);
+            task.report = GoldenTaskRunner.runCaseListConcurrently(cases, this::executeCase,
+                    task.completedCases::set, evaluationExecutor);
             task.status = GoldenEvaluationTaskResponse.SUCCESS;
         } catch (RuntimeException failure) {
             task.error = failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();

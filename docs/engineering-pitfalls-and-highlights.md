@@ -421,6 +421,11 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **解法**：buffer 有界化（带容量参数的 `onBackpressureBuffer` 或 `limitRate`），溢出策略明确（丢弃旧事件/断流报错）；超时拆成 TTFT 超时和 token 间隔超时两个不同阈值；`timeout` 只断下游，要配合 `cancel()` 真正释放上游模型调用。
 - **Java 角度**：背压是 Reactive Streams 的核心概念，能从"一个具体的 OOM 场景"讲到"buffer/drop/latest/error 四种溢出策略怎么选"，是最能区分"用过 Reactor"和"理解 Reactor"的话题。
 
+### 90. 协调线程把自己也提交进它要阻塞等待的那个有界线程池——池子的有效并发悄悄少了一个
+- **坑**：把 Golden 评测的 37 个用例从串行改并发时，`GoldenEvaluationService.start()` 原来就用 `evaluationExecutor.execute(() -> run(task))` 把"整个评测"这个协调任务派发到 `deepResearchExecutor`（固定 4 线程池）。改造后每个用例也通过 `CompletableFuture.supplyAsync(..., evaluationExecutor)` 提交到**同一个池**，协调线程自己再用 `.join()` 卡住等 37 个 `Future` 跑完——但协调线程本身就是从这 4 个名额里抢来的一个，它全程阻塞在 `join()` 上不干活，实际能跑用例的只剩 3 个线程，不是预期的 4 个。不报错、不崩溃，只是并发效果悄悄打了 25% 折扣，不专门做线程转储或测吞吐根本发现不了——这次是 `/simplify` 的 efficiency 和 altitude 两个独立review角度分别发现同一个问题，才确认下来。
+- **解法**：协调者（负责发起 + 阻塞等待汇总）不能占用它要往里面派发子任务的那个有界池的名额。这里的选择是让协调逻辑跑在池外一根独立命名的 daemon 线程上（不复用 `evaluationExecutor`），线程池内部只承担 37 个用例的 fan-out，4 个线程名额全部让给真正干活的子任务。
+- **Java 角度**：和 #62（工具执行池和流式聚合池共用会互相拖死）是同一族"线程池隔离"问题，但换了一个更隐蔽的形态——#62 是两类不相关的工作抢同一个池，这里是**同一条调用链里，外层协调者把自己也提交进它正在阻塞等待的那个池**，本质是线程池的"自嵌套提交"（nested submission）反模式：只要外层任务会阻塞等内层任务、又和内层任务共用同一个有界池，池子的有效并发度就会被外层自己吃掉一个名额，且不会以异常形式暴露，只能靠吞吐量或线程转储才能察觉。
+
 ## 十九、另一类代码走查案例（含"注释与代码不符"类真实缺陷——反例和正例一样值钱）
 
 ### 65. 分布式锁切面把 Throwable 包成受检 Exception，@Transactional 静默不回滚
@@ -570,7 +575,7 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 
 ### 并发编程（线程池 / 锁 / 原子类 / ThreadLocal）
 - **`ConcurrentHashMap` 原子操作**：#10——`stopTask` 用 `remove` 的原子返回值判断而不是 check-then-act，避免删任务的竞态
-- **线程池核心参数与隔离（舱壁模式）**：#62——工具执行池和流式聚合池共用会互相拖死，`Schedulers.boundedElastic()` 默认参数要讲清楚
+- **线程池核心参数与隔离（舱壁模式）**：#62——工具执行池和流式聚合池共用会互相拖死，`Schedulers.boundedElastic()` 默认参数要讲清楚；#90——同一条调用链里协调线程把自己也提交进它要阻塞等待的那个有界池，自嵌套提交吃掉一个并发名额
 - **`ThreadLocal` 失效场景与替代方案**：#35（跨线程池后认证上下文丢失，改造成显式参数传递）、#39（MDC/trace 跨线程不自动传播，Reactor Context 是解法）、#60（SubAgent 场景下 ThreadLocal 走私上下文，`set`/`finally clear` 的显式生命周期管理）——三个角度分别对应"为什么失效""怎么用 Reactor 原生方案解""怎么在必须用 ThreadLocal 时管好生命周期"，能连起来讲是完整闭环
 - **`volatile` 可见性与双重检查锁**：#4 的 `Method` 缓存实现
 - **原子性与竞态窗口**：#9（`Disposable` 每轮重注册，避免持有过期句柄）、#30（Redis 续期必须原子操作，不能拆成"读+比较+写"三步）
