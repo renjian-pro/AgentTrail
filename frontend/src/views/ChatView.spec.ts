@@ -40,6 +40,32 @@ describe('ChatView', () => {
     expect(store.sessions).toEqual([{ id: 'streamed-conversation', title: '你好' }])
   })
 
+  /**
+   * 回归测试：切换会话时中断上一个会话遗留的 SSE 流，靠的是 watch(navigationSeq, ...)——
+   * 踩过的坑是改成直接 watch(conversationId, ...)：AgentStart 事件会把 conversationId
+   * 从 undefined 改写成服务端刚分配的真实 id，这也是 conversationId 的一次变化，但那是"这次
+   * 请求认领了它自己的会话号"，不是"用户换了会话"。如果两者不分开，第一条消息发出去之后
+   * conversationId 一变，watcher 就会把这次请求自己的 aborter.abort() 调用了——请求还没走完
+   * 就被自己掐断，是真实复现过的行为，不是假设的边界情况。
+   */
+  it('does not abort its own SSE stream when AgentStart assigns the very first conversationId', async () => {
+    let capturedSignal: AbortSignal | undefined
+    vi.mocked(streamChat).mockImplementation(async function * (_body, signal) {
+      capturedSignal = signal
+      yield { type: 'AgentStart', conversationId: 'brand-new-conversation' }
+      yield { type: 'Text', content: '你好呀' }
+      yield { type: 'Complete', conversationId: 'brand-new-conversation', turnId: 1 }
+    })
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await wrapper.find('textarea').setValue('第一条消息，之前没有 conversationId')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(capturedSignal?.aborted).toBe(false)
+    expect(wrapper.text()).toContain('你好呀')
+  })
+
   it('renders each text event before the stream completes', async () => {
     let releaseRemainder!: () => void
     const remainder = new Promise<void>(resolve => { releaseRemainder = resolve })

@@ -21,7 +21,7 @@ import { useChatStore, type ChatTurn, type PptEntry, type ResearchEntry } from '
 type Mode = 'research' | 'ppt' | 'analytics' | undefined
 
 const chat = useChatStore()
-const { conversationId, messages, todos } = storeToRefs(chat)
+const { conversationId, messages, todos, navigationSeq } = storeToRefs(chat)
 const busy = ref(false)
 const error = ref('')
 const webSearch = ref(false)
@@ -45,7 +45,13 @@ onMounted(() => {
 // 跨会话复用的（路由没变，只是 conversationId 这个 store 里的值变了），不重置的话上一个会话
 // 遗留的 busy/pendingMode/error 会继续锁住新会话的输入框和工具栏——这正是切换会话后 PPT 任务
 // "消失"、界面卡死的根因。切会话时顺手把还挂着的 SSE 流也中断掉，没有理由让它继续跑。
-watch(conversationId, () => {
+//
+// watch 的是 navigationSeq，不是 conversationId 本身——同一个 send() 请求成功后，服务端
+// 分配的会话号会通过 AgentStart 事件把 conversationId 从 undefined 改写成真实值（见
+// acceptConversation），这也是 conversationId 的一次变化，但那是"这次请求认领了它自己的会话
+// 号"，不是"用户换了个会话"，不该被当成后者去中断请求自己。navigationSeq 只在
+// startNewConversation/openSession 这两个真正的用户导航入口才自增，两种情况天然分得开。
+watch(navigationSeq, () => {
   aborter?.abort()
   aborter = undefined
   busy.value = false

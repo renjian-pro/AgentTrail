@@ -41,6 +41,12 @@ export const useChatStore = defineStore('chat', () => {
   const sessions = ref<ChatSession[]>([])
   const sessionPage = ref(0)
   const sessionsHasMore = ref(false)
+  // conversationId 也会在一次进行中的流式请求里自己变化——AgentStart 事件把它从 undefined
+  // 改成服务端刚分配的真实 id（见 acceptConversation）。ChatView 需要区分"用户主动切换/新建
+  // 会话"（该中断上一个会话遗留的请求、重置 busy）和"当前这次请求自己刚拿到会话号"（不该把
+  // 自己的请求当成"别人的"中断掉）——只 watch conversationId 分不清这两种情况，这个计数器
+  // 只在 startNewConversation/openSession 这两个明确的"用户导航"入口才自增。
+  const navigationSeq = ref(0)
 
   function persistSessions() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions.value))
@@ -62,6 +68,7 @@ export const useChatStore = defineStore('chat', () => {
     conversationId.value = undefined
     messages.value = []
     todos.value = []
+    navigationSeq.value++
   }
 
   /** Research/PPT/文件问答没有 AgentStart 事件分配会话号，需要在首次调用时自己兜底。 */
@@ -171,6 +178,7 @@ export const useChatStore = defineStore('chat', () => {
     conversationId.value = id
     messages.value = turnToMessages(page.turns)
     todos.value = []
+    navigationSeq.value++
     if (!sessions.value.some(session => session.id === id)) {
       acceptConversation(id, page.turns.at(0)?.question ?? '新对话')
     }
@@ -210,7 +218,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   return {
-    conversationId, messages, todos, sessions, sessionsHasMore,
+    conversationId, messages, todos, sessions, sessionsHasMore, navigationSeq,
     acceptConversation, ensureConversation, applyStreamEvent,
     startNewConversation, openSession, hydrateSessions, loadMoreSessions
   }
