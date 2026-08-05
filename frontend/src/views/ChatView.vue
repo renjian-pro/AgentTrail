@@ -220,6 +220,22 @@ function onComposerDrop(event: DragEvent) {
   if (result.kind === 'rejected') uploadError.value = result.reason
   else if (result.kind === 'file') void upload(result.file)
 }
+
+/**
+ * 之前"×"只是把文件从本地列表里过滤掉，服务端那份记录（以及大文件在向量库里的分块）
+ * 从没被真的删过，继续提问时模型和 RAG 检索依然能看到它——删除只是前端幻觉。
+ * 这里先调后端真正删除，成功了才从本地列表移除；失败则保留在列表里并提示错误，
+ * 不能让用户以为删掉了、其实还在。
+ */
+async function removeFile(fileId: number) {
+  uploadError.value = ''
+  try {
+    await fileApi.remove(fileId)
+    files.value = files.value.filter(file => file.fileId !== fileId)
+  } catch (failure) {
+    uploadError.value = toErrorMessage(failure)
+  }
+}
 </script>
 
 <template>
@@ -251,7 +267,7 @@ function onComposerDrop(event: DragEvent) {
     <TodoProgressBar :items="todos" />
     <div class="chat-bottom" :class="{ dragging: composerDragging }"
         @dragover.prevent="composerDragging = true" @dragleave="composerDragging = false" @drop.prevent="onComposerDrop">
-      <AttachedFileList :files="files" :busy="uploadBusy" :error="uploadError" @remove="files = files.filter(file => file.fileId !== $event)" />
+      <AttachedFileList :files="files" :busy="uploadBusy" :error="uploadError" @remove="removeFile" />
       <div class="capability-bar">
         <div class="mode-picker">
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'research' }" @click="toggleMode('research')">⌕ 深度研究</button>

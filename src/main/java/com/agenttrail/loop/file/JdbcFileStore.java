@@ -41,6 +41,10 @@ public class JdbcFileStore implements FileStore {
             UPDATE agent_file SET turn_id = ? WHERE conversation_id = ? AND turn_id IS NULL
             """;
 
+    private static final String DELETE_SQL = """
+            DELETE FROM agent_file WHERE id = ?
+            """;
+
     private final JdbcClient jdbcClient;
 
     public JdbcFileStore(@Qualifier("dataSource") DataSource dataSource) {
@@ -94,6 +98,13 @@ public class JdbcFileStore implements FileStore {
         jdbcClient.sql(LINK_FILES_TO_TURN_SQL)
                 .param(turnId)
                 .param(conversationId)
+                .update();
+    }
+
+    @Override
+    public void delete(long id) {
+        jdbcClient.sql(DELETE_SQL)
+                .param(id)
                 .update();
     }
 

@@ -111,6 +111,61 @@ class FileUploadControllerTest {
         }
     }
 
+    /**
+     * 回归测试：之前前端"×"只是本地过滤掉，从没调用过任何后端接口——服务端那份记录一直都在，
+     * 会话继续提问时模型和 RAG 检索照样能看到"已删除"的文件。现在必须真的能删掉，删掉之后
+     * 通过 content() 就再也读不到了。
+     */
+    @Test
+    void deleteRemovesTheFileSoItCanNoLongerBeRead() {
+        MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain",
+                "hello world".getBytes(StandardCharsets.UTF_8));
+        long fileId;
+        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
+            fileId = controller.upload(file, "conv-1").fileId();
+        }
+
+        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
+            controller.delete(fileId);
+        }
+
+        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
+            assertThatThrownBy(() -> controller.content(fileId, null))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("404");
+        }
+    }
+
+    /** Regression test for the same IDOR shape as content(): ownership must be checked per caller. */
+    @Test
+    void deleteRejectsAFileThatBelongsToADifferentUser() {
+        MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain",
+                "hello world".getBytes(StandardCharsets.UTF_8));
+        long fileId;
+        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
+            fileId = controller.upload(file, "conv-1").fileId();
+        }
+
+        try (MockedStatic<StpUtil> stp = loggedInAs("user-2")) {
+            assertThatThrownBy(() -> controller.delete(fileId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("404");
+        }
+
+        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
+            assertThat(controller.content(fileId, null).content()).isEqualTo("hello world");
+        }
+    }
+
+    @Test
+    void deleteRejectsAnUnknownFileIdAsNotFound() {
+        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
+            assertThatThrownBy(() -> controller.delete(999L))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("404");
+        }
+    }
+
     private static MockedStatic<StpUtil> loggedInAs(String userId) {
         MockedStatic<StpUtil> stp = mockStatic(StpUtil.class);
         stp.when(StpUtil::isLogin).thenReturn(true);

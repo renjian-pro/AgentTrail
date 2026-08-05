@@ -11,11 +11,16 @@ import java.util.List;
 /**
  * {@link VectorStore} 的测试替身：记录每次 {@link #add} 收到的文档（含 batch 分界），
  * 可以设定下一次 {@code add} 抛出指定异常，用于验证向量化失败时的可观测行为。
+ *
+ * <p>{@link #delete(Filter.Expression)} 真的会从 {@link #allAdded} 里移除匹配的文档——只支持
+ * {@code FileVectorizationService} 实际会传入的那种简单形态（单个 metadata 字段的 EQ 表达式），
+ * 够用来断言"删除文件后它的分块确实从向量库里没了"，不需要一个完整的表达式求值器。
  */
 public class RecordingVectorStore implements VectorStore {
 
     private final List<Document> allAdded = new ArrayList<>();
     private final List<List<Document>> addedBatches = new ArrayList<>();
+    private final List<Filter.Expression> deleteFilterExpressions = new ArrayList<>();
     private RuntimeException failureToThrowOnNextAdd;
 
     public void failNextAddWith(RuntimeException failure) {
@@ -39,6 +44,14 @@ public class RecordingVectorStore implements VectorStore {
 
     @Override
     public void delete(Filter.Expression filterExpression) {
+        deleteFilterExpressions.add(filterExpression);
+        if (!(filterExpression.left() instanceof Filter.Key key) || !(filterExpression.right() instanceof Filter.Value value)) {
+            return;
+        }
+        allAdded.removeIf(document -> value.value().equals(document.getMetadata().get(key.key())));
+        addedBatches.replaceAll(batch -> batch.stream()
+                .filter(document -> !value.value().equals(document.getMetadata().get(key.key())))
+                .toList());
     }
 
     @Override
@@ -52,5 +65,9 @@ public class RecordingVectorStore implements VectorStore {
 
     public List<List<Document>> addedBatches() {
         return List.copyOf(addedBatches);
+    }
+
+    public List<Filter.Expression> deleteFilterExpressions() {
+        return List.copyOf(deleteFilterExpressions);
     }
 }

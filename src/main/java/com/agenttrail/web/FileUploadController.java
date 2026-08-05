@@ -5,10 +5,12 @@ import com.agenttrail.loop.file.FileQaService;
 import com.agenttrail.loop.rag.VectorizationException;
 import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
@@ -66,6 +68,25 @@ public class FileUploadController {
         }
         try {
             return new FileContentResponse(fileId, fileQaService.contentFor(fileId, question));
+        } catch (NoSuchElementException notFound) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, notFound.getMessage(), notFound);
+        }
+    }
+
+    /**
+     * 删除一个已上传文件——之前前端"×"按钮只是把它从本地列表里过滤掉，服务端这行 {@code agent_file}
+     * 和它在向量库里的分块从没被真的删过，会话里继续提问时模型和 RAG 检索照样能看到它，
+     * "删除"只是前端幻觉。这里补上真正的删除入口，联动清理见 {@link FileQaService#delete}。
+     */
+    @DeleteMapping("/agent/v1/files/{fileId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable long fileId) {
+        String userId = currentUserId();
+        if (userId == null || !fileQaService.belongsToUser(fileId, userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件不存在: " + fileId);
+        }
+        try {
+            fileQaService.delete(fileId);
         } catch (NoSuchElementException notFound) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, notFound.getMessage(), notFound);
         }

@@ -4,6 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 
 import java.util.List;
 
@@ -57,5 +59,17 @@ public class FileVectorizationService {
 
         log.info("文件 {} 向量化完成，共 {} 个分块", fileId, chunks.size());
         return chunks.size();
+    }
+
+    /**
+     * 删除一个文件在向量库里的全部分块（文件本身被删除时联动清理）——按 {@link #vectorize}
+     * 写入时打的同一个 {@code fileId} 标签过滤删除，不需要先查一遍分块 id 再逐个删。
+     */
+    public void deleteByFileId(long fileId) {
+        Filter.Expression fileIdFilter = new FilterExpressionBuilder()
+                .eq(FILE_ID_METADATA_KEY, String.valueOf(fileId))
+                .build();
+        vectorStore.delete(fileIdFilter);
+        log.info("文件 {} 的向量分块已从向量库删除", fileId);
     }
 }

@@ -160,6 +160,59 @@ class FileQaServiceTest {
         assertThat(fileStore.findById(ingested.id()).orElseThrow().parsedText()).isEqualTo("一只猫");
     }
 
+    /**
+     * 回归测试：删除一个走 RAG 的大文件必须连同它在向量库里的分块一起清掉——只删
+     * {@link FileStore} 里的元数据行的话，分块还留在向量库里，按 fileId 过滤的检索依然会命中，
+     * "删除"就只是前端看不到、后端仍然能查到的假象。
+     */
+    @Test
+    void deletingALargeRagFileAlsoPurgesItsChunksFromTheVectorStore() {
+        FileQaService service = serviceWithThreshold(5);
+        IngestedFile ingested = service.ingest("conv-1", "large.txt", "text/plain",
+                inputStreamOf("this text is longer than the threshold"), 40);
+        assertThat(vectorStore.allAdded()).as("上传时应该已经向量化").isNotEmpty();
+
+        service.delete(ingested.id());
+
+        assertThat(fileStore.findById(ingested.id())).isEmpty();
+        assertThat(vectorStore.allAdded()).as("删除文件后向量库里不应该再留有它的分块").isEmpty();
+    }
+
+    @Test
+    void deletingASmallFileThatWasNeverVectorizedJustRemovesTheMetadataRow() {
+        FileQaService service = serviceWithThreshold(100);
+        IngestedFile ingested = service.ingest("conv-1", "small.txt", "text/plain",
+                inputStreamOf("hello world"), 11);
+
+        service.delete(ingested.id());
+
+        assertThat(fileStore.findById(ingested.id())).isEmpty();
+        assertThat(vectorStore.deleteFilterExpressions())
+                .as("从没向量化过的文件不应该触发一次多余的向量库删除调用").isEmpty();
+    }
+
+    @Test
+    void deletingAnUnknownFileIdThrows() {
+        FileQaService service = serviceWithThreshold(100);
+
+        assertThatThrownBy(() -> service.delete(999L))
+                .isInstanceOf(NoSuchElementException.class)
+                .hasMessageContaining("999");
+    }
+
+    @Test
+    void aDeletedFileNoLongerAppearsWhenQuestioningTheConversationAfterward() {
+        FileQaService service = serviceWithThreshold(100);
+        IngestedFile ingested = service.ingest("conv-1", "small.txt", "text/plain",
+                inputStreamOf("hello world"), 11);
+
+        service.delete(ingested.id());
+
+        assertThat(fileStore.findByConversationId("conv-1")).isEmpty();
+        assertThatThrownBy(() -> service.contentFor(ingested.id(), null))
+                .isInstanceOf(NoSuchElementException.class);
+    }
+
     private static ByteArrayInputStream inputStreamOf(String text) {
         return new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8));
     }

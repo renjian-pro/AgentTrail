@@ -119,4 +119,21 @@ class JdbcFileStoreIT {
 
         assertThat(store.findById(id).orElseThrow().parsedText()).isEqualTo("一只猫坐在窗台上");
     }
+
+    @Test
+    void deleteRemovesOnlyTheTargetedRow() {
+        long toDelete = store.save(textFile("conv-1", "first.txt", 5, "first", 1L));
+        long toKeep = store.save(textFile("conv-1", "second.txt", 6, "second", 2L));
+
+        store.delete(toDelete);
+
+        assertThat(store.findById(toDelete)).isEmpty();
+        assertThat(store.findById(toKeep)).isPresent();
+        assertThat(store.findByConversationId("conv-1")).extracting(UploadedFile::fileName).containsExactly("second.txt");
+    }
+
+    @Test
+    void deletingAnUnknownIdIsANoOp() {
+        store.delete(999L);
+    }
 }

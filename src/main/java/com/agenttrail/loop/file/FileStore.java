@@ -33,4 +33,7 @@ public interface FileStore {
      * {@code onTurnComplete} 返回 id 之后才回填。
      */
     void linkFilesToTurn(String conversationId, long turnId);
+
+    /** 按主键删除一个文件；id 不存在时静默无操作（调用方在此之前已经确认过存在与归属）。 */
+    void delete(long id);
 }

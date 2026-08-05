@@ -59,4 +59,9 @@ public class InMemoryFileStore implements FileStore {
             }
         }
     }
+
+    @Override
+    public void delete(long id) {
+        filesById.remove(id);
+    }
 }

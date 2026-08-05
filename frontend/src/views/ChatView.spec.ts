@@ -14,7 +14,7 @@ vi.mock('../api/chat-api', () => ({
 }))
 vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn() } }))
 vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn(), status: vi.fn() } }))
-vi.mock('../api/file-api', () => ({ fileApi: { upload: vi.fn() } }))
+vi.mock('../api/file-api', () => ({ fileApi: { upload: vi.fn(), remove: vi.fn() } }))
 
 describe('ChatView', () => {
   beforeEach(() => {
@@ -199,5 +199,35 @@ describe('ChatView', () => {
 
     expect(fileApi.upload).toHaveBeenCalledWith(expect.any(String), file)
     expect(wrapper.text()).toContain('brief.pdf')
+  })
+
+  /**
+   * 回归测试：之前"×"按钮只是把文件从本地列表里过滤掉，从没调用过任何后端接口——服务端那份
+   * 记录一直都在，会话继续提问时模型和 RAG 检索照样能看到"已删除"的文件。现在必须先请求后端
+   * 真正删除，删除成功后才从列表里消失；后端失败时要保留在列表里并提示错误，不能让用户以为
+   * 删掉了、其实还在。
+   */
+  it('calls the backend to actually delete a file before removing it from the list, and keeps it if that fails', async () => {
+    vi.mocked(fileApi.upload).mockResolvedValue(
+      { fileId: 7, fileName: 'brief.pdf', kind: 'TEXT', sizeBytes: 8, parsedTextLength: 3, routedToRag: false })
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+    const file = new File(['hello'], 'brief.pdf', { type: 'application/pdf' })
+    await wrapper.find('textarea').trigger('drop', {
+      dataTransfer: { files: [file], items: [{ webkitGetAsEntry: () => ({ isDirectory: false }) }] }
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('brief.pdf')
+
+    vi.mocked(fileApi.remove).mockRejectedValueOnce(new Error('删除失败'))
+    await wrapper.find('.attachments button').trigger('click')
+    await flushPromises()
+    expect(fileApi.remove).toHaveBeenCalledWith(7)
+    expect(wrapper.text()).toContain('brief.pdf')
+    expect(wrapper.text()).toContain('删除失败')
+
+    vi.mocked(fileApi.remove).mockResolvedValueOnce(undefined)
+    await wrapper.find('.attachments button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('brief.pdf')
   })
 })

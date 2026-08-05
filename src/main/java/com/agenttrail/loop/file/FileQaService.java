@@ -152,6 +152,24 @@ public class FileQaService {
                 .orElse(false);
     }
 
+    /**
+     * 删除一个文件——连同它在向量库里的分块一起清掉（issue #文件删除联动 RAG 清理），不是只删
+     * {@link FileStore} 里的元数据行：光删元数据行的话，分块还留在向量库里，按 fileId 过滤的
+     * {@link RagRetrievalService#retrieve} 依然会命中，"删除"就成了前端看不到、后端仍在用的假象。
+     *
+     * <p>调用方（HTTP 层）负责在此之前做归属校验——这里假定 fileId 已经确认属于当前调用者。
+     *
+     * @throws NoSuchElementException fileId 不存在
+     */
+    public void delete(long fileId) {
+        UploadedFile file = fileStore.findById(fileId)
+                .orElseThrow(() -> new NoSuchElementException("未知的文件标识: " + fileId));
+        if (file.kind() == FileKind.TEXT && file.parsedText() != null && file.parsedText().length() > ragThresholdChars) {
+            vectorizationService.deleteByFileId(fileId);
+        }
+        fileStore.delete(fileId);
+    }
+
     /** 缓存命中直接返回；未命中才真的调多模态模型，并把结果写回缓存。 */
     private String contentForImage(UploadedFile file) {
         String cached = file.parsedText();
