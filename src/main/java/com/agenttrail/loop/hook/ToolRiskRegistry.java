@@ -1,6 +1,8 @@
 package com.agenttrail.loop.hook;
 
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /** 工具名到治理风险等级的显式分类表；未知工具按只读处理。 */
 public final class ToolRiskRegistry {
@@ -35,5 +37,13 @@ public final class ToolRiskRegistry {
 
     public ToolRiskLevel riskOf(String toolName) {
         return levels.getOrDefault(toolName, ToolRiskLevel.READ_ONLY);
+    }
+
+    /** 返回指定风险等级的已注册工具名，供生产装配生成审批名单。 */
+    public Set<String> toolsWithLevel(ToolRiskLevel level) {
+        return levels.entrySet().stream()
+                .filter(entry -> entry.getValue() == level)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toUnmodifiableSet());
     }
 }

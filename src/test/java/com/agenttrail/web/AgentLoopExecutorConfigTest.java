@@ -2,6 +2,11 @@ package com.agenttrail.web;
 
 import com.agenttrail.loop.file.FileQaService;
 import com.agenttrail.loop.file.FileStore;
+import com.agenttrail.loop.hook.SessionBudgetTracker;
+import com.agenttrail.loop.hook.ToolRiskLevel;
+import com.agenttrail.loop.hook.ToolRiskRegistry;
+import com.agenttrail.loop.pause.PauseConfig;
+import com.agenttrail.loop.pause.PauseStateStore;
 import com.agenttrail.loop.tools.FileContentTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -29,6 +34,12 @@ class AgentLoopExecutorConfigTest {
 
             assertThat(context.getBean(ObjectMapper.class)).isNotNull();
             assertThat(context.getBean(CapabilityConversationService.class)).isNotNull();
+            assertThat(context.getBean(PauseStateStore.class)).isNotNull();
+            assertThat(context.getBean(SessionBudgetTracker.class)).isNotNull();
+            assertThat(context.getBean(PauseConfig.class).approvalRequiredTools())
+                    .containsExactlyInAnyOrder("write_file", "edit_file", "bash");
+            assertThat(context.getBean(ToolRiskRegistry.class).riskOf("write_file"))
+                    .isEqualTo(ToolRiskLevel.HIGH_RISK);
         }
     }
 

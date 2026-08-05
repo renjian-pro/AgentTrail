@@ -7,6 +7,7 @@ import com.agenttrail.loop.file.FilePromptFormatter;
 import com.agenttrail.loop.file.FileStore;
 import com.agenttrail.loop.hook.AgentHooks;
 import com.agenttrail.loop.hook.HookContext;
+import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.loop.hook.ToolInvocation;
 import com.agenttrail.loop.memory.MemoryExtractor;
 import com.agenttrail.loop.memory.MemoryPromptFormatter;
@@ -93,6 +94,7 @@ public class AgentLoopExecutor {
     private final int maxRounds;
     private final int maxConsecutiveToolFailures;
     private final AgentHooks hooks;
+    private final SessionBudgetTracker budgetTracker;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
         this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
@@ -214,7 +216,19 @@ public class AgentLoopExecutor {
                               MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures) {
         this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
                 toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
-                maxConsecutiveToolFailures, AgentHooks.EMPTY);
+                maxConsecutiveToolFailures, AgentHooks.EMPTY, null);
+    }
+
+    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                       ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                       StageOutputManager stageOutputManager, TraceStore traceStore,
+                       MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
+                       AgentHooks hooks) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
+                maxConsecutiveToolFailures, hooks, null);
     }
 
     AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
@@ -223,7 +237,7 @@ public class AgentLoopExecutor {
                       ToolCatalog toolCatalog, PauseConfig pauseConfig,
                       StageOutputManager stageOutputManager, TraceStore traceStore,
                       MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
-                      AgentHooks hooks) {
+                      AgentHooks hooks, SessionBudgetTracker budgetTracker) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
         this.taskManager = taskManager;
@@ -241,6 +255,7 @@ public class AgentLoopExecutor {
         this.maxRounds = maxRounds;
         this.maxConsecutiveToolFailures = maxConsecutiveToolFailures;
         this.hooks = hooks == null ? AgentHooks.EMPTY : hooks;
+        this.budgetTracker = budgetTracker;
     }
 
     /**
@@ -270,6 +285,7 @@ public class AgentLoopExecutor {
         private FileStore fileStore;
         private int maxConsecutiveToolFailures;
         private AgentHooks hooks = AgentHooks.EMPTY;
+        private SessionBudgetTracker budgetTracker;
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
             this.chatModel = chatModel;
@@ -340,10 +356,15 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        public Builder budgetTracker(SessionBudgetTracker budgetTracker) {
+            this.budgetTracker = budgetTracker;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
             return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
                     persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
-                    fileStore, maxConsecutiveToolFailures, hooks);
+                    fileStore, maxConsecutiveToolFailures, hooks, budgetTracker);
         }
     }
 
@@ -543,6 +564,7 @@ public class AgentLoopExecutor {
         if (state.mode() == RoundMode.TEXT) {
             recordTrace(context, state, requestSnapshot, state.text(), true, null);
             fireBudget(context, state);
+            recordBudget(context, state);
             completeRun(state, context);
             return;
         }
@@ -553,6 +575,7 @@ public class AgentLoopExecutor {
         // 只记这轮"模型要调什么工具"，不记工具执行结果——结果会随下一轮历史出现在下一条记录的输入里
         recordTrace(context, state, requestSnapshot, MessageRendering.renderToolCalls(toolCalls), true, null);
         fireBudget(context, state);
+        recordBudget(context, state);
 
         if (requiresApproval(toolCalls)) {
             pauseForApproval(toolCalls, context);
@@ -580,6 +603,14 @@ public class AgentLoopExecutor {
                 completeRun(state, context);
                 return;
             }
+        }
+
+        if (budgetTracker != null && budgetTracker.overBudget(context.conversationId())) {
+            String message = "本会话 token 消耗已超过预算上限，本轮到此为止——如需继续，请开启新会话。";
+            state.appendText(message);
+            context.emit(new AgentStreamEvent.Text(message));
+            completeRun(state, context);
+            return;
         }
 
         scheduleRound(context);
@@ -802,6 +833,7 @@ public class AgentLoopExecutor {
      * 可能根本跑不到，这一轮就白问了（踩坑点 #63）。
      */
     private void completeRun(RoundState state, RunContext context) {
+        forgetBudget(context);
         String think = state.reasoning().isEmpty() ? null : state.reasoning();
         Long turnId = persistenceHook == null ? null : persistenceHook.onTurnComplete(new TurnRecord(
                 context.conversationId(), context.params().userId(), context.question(),
@@ -830,6 +862,7 @@ public class AgentLoopExecutor {
     }
 
     private void failRun(Throwable error, RunContext context, RoundState state, String requestSnapshot) {
+        forgetBudget(context);
         recordTrace(context, state, requestSnapshot, null, false, error.getMessage());
         fireOnError(context, error);
         fireSessionEnd(context, false);
@@ -860,6 +893,18 @@ public class AgentLoopExecutor {
         HookContext hookContext = toHookContext(context);
         hooks.budget().forEach(hook -> hook.onRoundUsage(
                 hookContext, state.promptTokens(), state.completionTokens()));
+    }
+
+    private void recordBudget(RunContext context, RoundState state) {
+        if (budgetTracker != null) {
+            budgetTracker.record(context.conversationId(), state.promptTokens(), state.completionTokens());
+        }
+    }
+
+    private void forgetBudget(RunContext context) {
+        if (budgetTracker != null) {
+            budgetTracker.forget(context.conversationId());
+        }
     }
 
     private void firePreToolUse(HookContext context, List<AssistantMessage.ToolCall> toolCalls) {

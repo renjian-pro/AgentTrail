@@ -3,6 +3,9 @@ package com.agenttrail.web;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.loop.pause.PauseState;
+import com.agenttrail.loop.pause.PauseStateStore;
+import com.agenttrail.loop.pause.ResumeInstruction;
 import com.agenttrail.loop.task.AgentTaskManager;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -15,6 +18,7 @@ import reactor.core.publisher.Flux;
 import cn.dev33.satoken.stp.StpUtil;
 
 import java.util.Map;
+import java.util.Objects;
 
 import java.util.UUID;
 
@@ -39,12 +43,14 @@ public class AgentLoopController {
     private final AgentLoopExecutorFactory executorFactory;
     private final AgentTaskManager agentTaskManager;
     private final ConversationHistoryService conversationHistoryService;
+    private final PauseStateStore pauseStateStore;
 
     public AgentLoopController(AgentLoopExecutorFactory executorFactory, AgentTaskManager agentTaskManager,
-            ConversationHistoryService conversationHistoryService) {
+            ConversationHistoryService conversationHistoryService, PauseStateStore pauseStateStore) {
         this.executorFactory = executorFactory;
         this.agentTaskManager = agentTaskManager;
         this.conversationHistoryService = conversationHistoryService;
+        this.pauseStateStore = pauseStateStore;
     }
 
     @PostMapping(value = "/agent/v1/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -63,11 +69,40 @@ public class AgentLoopController {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.BAD_REQUEST, failure.getMessage(), failure);
         }
-        return executor
-                .stream(request.message(), params)
-                .map(event -> ServerSentEvent.builder(event)
-                        .event(event.getClass().getSimpleName())
-                        .build());
+        return asSse(executor.stream(request.message(), params));
+    }
+
+    /**
+     * 恢复普通对话中由高危工具触发的 HITL 暂停。归属校验读暂停快照而不是 agent_session：
+     * 暂停发生在本轮 Complete 之前，此时首轮对话可能还没有落库。
+     */
+    @PostMapping(value = "/agent/v1/chat/{conversationId}/approve", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<AgentStreamEvent>> approve(
+            @org.springframework.web.bind.annotation.PathVariable String conversationId,
+            @RequestBody AgentApprovalRequest request) {
+        String userId = StpUtil.getLoginIdAsString();
+        PauseState paused = pauseStateStore.find(conversationId)
+                .filter(state -> Objects.equals(state.params().userId(), userId))
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "暂停会话不存在或不属于当前用户"));
+        AgentLoopExecutor executor;
+        try {
+            executor = "analytics".equalsIgnoreCase(request.mode())
+                    ? executorFactory.forAnalytics(request.modelId())
+                    : executorFactory.forModelWithCharts(request.modelId(), request.webSearchEnabled());
+        } catch (IllegalStateException failure) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, failure.getMessage(), failure);
+        }
+        ResumeInstruction.ApprovalDecision decision = request.approved()
+                ? ResumeInstruction.ApprovalDecision.approve()
+                : ResumeInstruction.ApprovalDecision.reject(request.rejectionReason());
+        try {
+            return asSse(executor.resume(conversationId, decision));
+        } catch (IllegalArgumentException failure) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND, failure.getMessage(), failure);
+        }
     }
 
     @PostMapping("/agent/v1/chat/stop")
@@ -94,5 +129,11 @@ public class AgentLoopController {
                     "会话不存在: " + conversationId);
         }
         return conversationHistoryService.findPage(StpUtil.getLoginIdAsString(), conversationId, page, size);
+    }
+
+    private Flux<ServerSentEvent<AgentStreamEvent>> asSse(Flux<AgentStreamEvent> events) {
+        return events.map(event -> ServerSentEvent.builder(event)
+                .event(event.getClass().getSimpleName())
+                .build());
     }
 }

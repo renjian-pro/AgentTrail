@@ -16,5 +16,7 @@ class ToolRiskRegistryTest {
         assertThat(registry.riskOf("execute_sql")).isEqualTo(ToolRiskLevel.READ_ONLY);
         assertThat(registry.riskOf("list_tables")).isEqualTo(ToolRiskLevel.READ_ONLY);
         assertThat(registry.riskOf("unknown-tool")).isEqualTo(ToolRiskLevel.READ_ONLY);
+        assertThat(registry.toolsWithLevel(ToolRiskLevel.HIGH_RISK))
+                .containsExactlyInAnyOrder("write_file", "edit_file", "bash");
     }
 }

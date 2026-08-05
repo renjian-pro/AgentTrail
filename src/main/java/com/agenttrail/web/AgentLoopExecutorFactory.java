@@ -5,6 +5,9 @@ import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.file.FileStore;
 import com.agenttrail.loop.hook.AgentHooks;
+import com.agenttrail.loop.hook.SessionBudgetTracker;
+import com.agenttrail.loop.hook.ToolRiskRegistry;
+import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.FileContentTool;
@@ -70,6 +73,9 @@ public class AgentLoopExecutorFactory {
     private final FileStore fileStore;
     private final AnalyticsToolProvider analyticsToolProvider;
     private final AgentHooks sharedHooks = AgentHooks.EMPTY;
+    private final PauseConfig pauseConfig;
+    private final ToolRiskRegistry toolRiskRegistry;
+    private final SessionBudgetTracker sessionBudgetTracker;
 
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider) {
@@ -109,6 +115,20 @@ public class AgentLoopExecutorFactory {
             ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
             FileContentTool fileContentTool, FileStore fileStore,
             AnalyticsToolProvider analyticsToolProvider) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
+                fileContentTool, fileStore, analyticsToolProvider, null, null, null);
+    }
+
+    /**
+     * 生产装配用的扩展构造函数：保留上面的兼容重载，让单元测试和内部调用方可以继续使用
+     * 没有审批/预算机制的最小装配；生产 Bean 则显式传入治理依赖。
+     */
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool, FileStore fileStore,
+            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
+            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker) {
         if (models.stream().noneMatch(model -> model.id().equals(defaultModelId))) {
             throw new IllegalArgumentException("默认模型 " + defaultModelId + " 不在注册的模型列表里");
         }
@@ -123,6 +143,9 @@ public class AgentLoopExecutorFactory {
         this.persistenceHook = persistenceHook;
         this.fileStore = fileStore;
         this.analyticsToolProvider = analyticsToolProvider;
+        this.pauseConfig = pauseConfig;
+        this.toolRiskRegistry = toolRiskRegistry;
+        this.sessionBudgetTracker = sessionBudgetTracker;
         this.baseTools = fileContentTool != null ? List.of(fileContentTool.toolCallback()) : List.of();
         // baseTools 现在可能非空（文件工具无条件挂载），所以这里也必须经过
         // resolveToolCallingModel 那道 qwen-plus→deepseek-chat 的安全切换——之前这里直接
@@ -156,7 +179,9 @@ public class AgentLoopExecutorFactory {
                 .thinkingMode(model.thinkingMode())
                 .persistenceHook(persist ? persistenceHook : null)
                 .fileStore(fileStore)
-                .hooks(sharedHooks);
+                .hooks(sharedHooks)
+                .pauseConfig(pauseConfig)
+                .budgetTracker(sessionBudgetTracker);
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
         }
@@ -198,6 +223,8 @@ public class AgentLoopExecutorFactory {
                 .toolCatalog(catalog)
                 .contextPolicy(contextPolicy)
                 .hooks(sharedHooks)
+                .pauseConfig(pauseConfig)
+                .budgetTracker(sessionBudgetTracker)
                 // ReAct+Skill 的自我修正没有 DataAgent 那种 Gate+maxRetries 的图结构上限，SKILL.md
                 // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
                 // 不再指望它在 maxRounds=20 撞顶之前自己收敛。

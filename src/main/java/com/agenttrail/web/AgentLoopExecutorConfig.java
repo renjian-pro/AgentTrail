@@ -2,7 +2,13 @@ package com.agenttrail.web;
 
 import com.agenttrail.capability.analytics.AnalyticsToolProvider;
 import com.agenttrail.loop.file.FileStore;
+import com.agenttrail.loop.hook.SessionBudgetTracker;
+import com.agenttrail.loop.hook.ToolRiskLevel;
+import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.model.ThinkingMode;
+import com.agenttrail.loop.pause.JdbcPauseStateStore;
+import com.agenttrail.loop.pause.PauseConfig;
+import com.agenttrail.loop.pause.PauseStateStore;
 import com.agenttrail.loop.persistence.JdbcSessionStore;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
@@ -92,6 +98,27 @@ public class AgentLoopExecutorConfig {
         return new ConversationHistoryService(dataSource);
     }
 
+    @Bean
+    public PauseStateStore pauseStateStore(@Qualifier("dataSource") DataSource dataSource) {
+        return new JdbcPauseStateStore(dataSource);
+    }
+
+    @Bean
+    public ToolRiskRegistry toolRiskRegistry() {
+        return ToolRiskRegistry.defaults();
+    }
+
+    @Bean
+    public PauseConfig pauseConfig(ToolRiskRegistry toolRiskRegistry, PauseStateStore pauseStateStore) {
+        return new PauseConfig(toolRiskRegistry.toolsWithLevel(ToolRiskLevel.HIGH_RISK), pauseStateStore);
+    }
+
+    @Bean
+    public SessionBudgetTracker sessionBudgetTracker(
+            @Value("${agenttrail.budget.per-session-tokens:200000}") long perSessionTokens) {
+        return new SessionBudgetTracker(perSessionTokens);
+    }
+
     /** 对话、DeepResearch、PPT 共用 agent_session，不维护互相漂移的多套历史。 */
     @Bean
     public CapabilityConversationService capabilityConversationService(
@@ -140,13 +167,16 @@ public class AgentLoopExecutorConfig {
             TurnPersistenceHook turnPersistenceHook,
             ObjectProvider<FileContentTool> fileContentToolProvider,
             ObjectProvider<FileStore> fileStoreProvider,
-            ObjectProvider<AnalyticsToolProvider> analyticsToolProvider) {
+            ObjectProvider<AnalyticsToolProvider> analyticsToolProvider,
+            PauseConfig pauseConfig,
+            ToolRiskRegistry toolRiskRegistry,
+            SessionBudgetTracker sessionBudgetTracker) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
                 new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
         return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider,
                 chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
-                analyticsToolProvider.getIfAvailable());
+                analyticsToolProvider.getIfAvailable(), pauseConfig, toolRiskRegistry, sessionBudgetTracker);
     }
 }
