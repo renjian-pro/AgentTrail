@@ -32,6 +32,8 @@ import com.agenttrail.loop.trace.TraceStore;
 import com.agenttrail.loop.structured.JsonRepair;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchSession;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -55,6 +57,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -95,6 +98,8 @@ public class AgentLoopExecutor {
     private final int maxConsecutiveToolFailures;
     private final AgentHooks hooks;
     private final SessionBudgetTracker budgetTracker;
+    private final MeterRegistry meterRegistry;
+    private final String modelName;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
         this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
@@ -228,7 +233,7 @@ public class AgentLoopExecutor {
                        AgentHooks hooks) {
         this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
                 toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
-                maxConsecutiveToolFailures, hooks, null);
+                maxConsecutiveToolFailures, hooks, null, null, "unknown");
     }
 
     AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
@@ -238,8 +243,21 @@ public class AgentLoopExecutor {
                       StageOutputManager stageOutputManager, TraceStore traceStore,
                       MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
                       AgentHooks hooks, SessionBudgetTracker budgetTracker) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
+                maxConsecutiveToolFailures, hooks, budgetTracker, null, "unknown");
+    }
+
+    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                      StageOutputManager stageOutputManager, TraceStore traceStore,
+                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
+                      AgentHooks hooks, SessionBudgetTracker budgetTracker,
+                      MeterRegistry meterRegistry, String modelName) {
         this.llmInvoker = new LlmInvoker(chatModel);
-        this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog));
+        this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog), meterRegistry);
         this.taskManager = taskManager;
         this.contextCompactor = (contextPolicy == null) ? null : new ContextCompactor(contextPolicy, chatModel);
         this.thinkingModeProcessor = new ThinkingModeProcessor(thinkingMode);
@@ -256,6 +274,8 @@ public class AgentLoopExecutor {
         this.maxConsecutiveToolFailures = maxConsecutiveToolFailures;
         this.hooks = hooks == null ? AgentHooks.EMPTY : hooks;
         this.budgetTracker = budgetTracker;
+        this.meterRegistry = meterRegistry;
+        this.modelName = (modelName == null || modelName.isBlank()) ? "unknown" : modelName;
     }
 
     /**
@@ -286,6 +306,8 @@ public class AgentLoopExecutor {
         private int maxConsecutiveToolFailures;
         private AgentHooks hooks = AgentHooks.EMPTY;
         private SessionBudgetTracker budgetTracker;
+        private MeterRegistry meterRegistry;
+        private String modelName = "unknown";
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
             this.chatModel = chatModel;
@@ -361,10 +383,20 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        public Builder meterRegistry(MeterRegistry meterRegistry) {
+            this.meterRegistry = meterRegistry;
+            return this;
+        }
+
+        public Builder modelName(String modelName) {
+            this.modelName = modelName;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
             return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
                     persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
-                    fileStore, maxConsecutiveToolFailures, hooks, budgetTracker);
+                    fileStore, maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName);
         }
     }
 
@@ -499,14 +531,30 @@ public class AgentLoopExecutor {
         RoundState state = new RoundState();
         // 在发起请求前拍下快照——这轮的历史随后会被 finishRound 原地追加助手消息，晚拍就不是"发出去的那份"了
         String requestSnapshot = (traceStore == null) ? null : MessageRendering.render(context.messages());
+        Timer.Sample totalSample = meterRegistry == null ? null : Timer.start(meterRegistry);
+        Timer.Sample ttftSample = meterRegistry == null ? null : Timer.start(meterRegistry);
+        Timer totalTimer = timer("agenttrail.llm.duration");
+        Timer ttftTimer = timer("agenttrail.llm.ttft");
+        AtomicBoolean firstChunkSeen = new AtomicBoolean();
         Disposable subscription = llmInvoker.streamRound(context.messages(), roundTools)
                 // 真实的 HTTP ChatModel（Reactor Netty 实现）在自己的 I/O 线程上信号 onComplete——
                 // finishRound 出现工具调用时会走到 ToolCallExecutor.execute() 内部的 .block()，
                 // 直接卡在 I/O 线程上会被 Reactor 的非阻塞线程检查拒绝；统一切换到弹性线程。
                 .publishOn(Schedulers.boundedElastic())
-                .doOnNext(chunk -> processChunk(chunk, state, context))
-                .doOnComplete(() -> finishRound(state, context, requestSnapshot))
-                .doOnError(error -> failRun(error, context, state, requestSnapshot))
+                .doOnNext(chunk -> {
+                    if (firstChunkSeen.compareAndSet(false, true)) {
+                        stopTimer(ttftSample, ttftTimer);
+                    }
+                    processChunk(chunk, state, context);
+                })
+                .doOnComplete(() -> {
+                    stopTimer(totalSample, totalTimer);
+                    finishRound(state, context, requestSnapshot);
+                })
+                .doOnError(error -> {
+                    stopTimer(totalSample, totalTimer);
+                    failRun(error, context, state, requestSnapshot);
+                })
                 // failRun 已把异常转成协议内的 Error + Complete；继续把 error 冒给无 error consumer 的
                 // subscribe 只会制造 onErrorDropped 噪声，且前端不会得到任何额外信息。
                 .onErrorComplete()
@@ -514,6 +562,22 @@ public class AgentLoopExecutor {
 
         // 每轮都要重新登记，否则停止请求作用在上一轮早已结束的订阅上（踩坑点 #9）
         taskManager.setDisposable(context.conversationId(), subscription);
+    }
+
+    private Timer timer(String name) {
+        if (meterRegistry == null) {
+            return null;
+        }
+        return Timer.builder(name)
+                .description("AgentTrail LLM timing")
+                .tag("model", modelName)
+                .register(meterRegistry);
+    }
+
+    private static void stopTimer(Timer.Sample sample, Timer timer) {
+        if (sample != null && timer != null) {
+            sample.stop(timer);
+        }
     }
 
     /**

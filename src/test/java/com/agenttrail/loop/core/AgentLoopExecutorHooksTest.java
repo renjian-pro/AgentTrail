@@ -2,6 +2,7 @@ package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.agenttrail.loop.hook.AgentHooks;
 import com.agenttrail.loop.hook.BudgetHook;
 import com.agenttrail.loop.hook.OnErrorHook;
@@ -120,6 +121,22 @@ class AgentLoopExecutorHooksTest {
         assertThat(result).contains(new AgentStreamEvent.Error("LLM_CALL_FAILED", "boom"));
         assertThat(events).containsExactly(
                 "start:conv-1:0", "error:conv-1:1:boom", "end:conv-1:1:false");
+    }
+
+    @Test
+    void recordsIndependentLlmDurationAndTtftTimersWithModelTag() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(text("done"), usage(11, 7)));
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(model, List.of(), 5)
+                .meterRegistry(registry)
+                .modelName("test-model")
+                .build();
+
+        executor.stream("hello", new RunnableParams("conv-1", "user-1"))
+                .collectList().block(Duration.ofSeconds(5));
+
+        assertThat(registry.get("agenttrail.llm.duration").timer("model", "test-model").count()).isEqualTo(1);
+        assertThat(registry.get("agenttrail.llm.ttft").timer("model", "test-model").count()).isEqualTo(1);
     }
 
     private static AgentHooks hooks(List<String> events) {

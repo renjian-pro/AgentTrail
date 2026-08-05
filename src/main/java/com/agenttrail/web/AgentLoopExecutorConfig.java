@@ -14,6 +14,9 @@ import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.task.RedisInterruptBroadcaster;
 import com.agenttrail.loop.task.RedisTaskLock;
+import com.agenttrail.loop.trace.JdbcTraceStore;
+import com.agenttrail.loop.trace.TraceStore;
+import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
@@ -119,6 +122,11 @@ public class AgentLoopExecutorConfig {
         return new SessionBudgetTracker(perSessionTokens);
     }
 
+    @Bean
+    public TraceStore traceStore(@Qualifier("dataSource") DataSource dataSource) {
+        return new JdbcTraceStore(dataSource);
+    }
+
     /** 对话、DeepResearch、PPT 共用 agent_session，不维护互相漂移的多套历史。 */
     @Bean
     public CapabilityConversationService capabilityConversationService(
@@ -170,13 +178,16 @@ public class AgentLoopExecutorConfig {
             ObjectProvider<AnalyticsToolProvider> analyticsToolProvider,
             PauseConfig pauseConfig,
             ToolRiskRegistry toolRiskRegistry,
-            SessionBudgetTracker sessionBudgetTracker) {
+            SessionBudgetTracker sessionBudgetTracker,
+            TraceStore traceStore,
+            ObjectProvider<MeterRegistry> meterRegistryProvider) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
                 new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
         return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider,
                 chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
-                analyticsToolProvider.getIfAvailable(), pauseConfig, toolRiskRegistry, sessionBudgetTracker);
+                analyticsToolProvider.getIfAvailable(), pauseConfig, toolRiskRegistry, sessionBudgetTracker, traceStore,
+                meterRegistryProvider.getIfAvailable());
     }
 }

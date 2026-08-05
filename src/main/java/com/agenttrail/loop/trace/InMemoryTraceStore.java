@@ -2,6 +2,7 @@ package com.agenttrail.loop.trace;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -20,5 +21,10 @@ public class InMemoryTraceStore implements TraceStore {
     @Override
     public List<TraceRecord> findByConversationId(String conversationId) {
         return List.copyOf(recordsByConversation.getOrDefault(conversationId, List.of()));
+    }
+
+    @Override
+    public Optional<Integer> verifyChain(String conversationId) {
+        return Optional.empty();
     }
 }

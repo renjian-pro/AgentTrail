@@ -9,6 +9,8 @@ import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
+import com.agenttrail.loop.trace.TraceStore;
+import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
@@ -76,6 +78,8 @@ public class AgentLoopExecutorFactory {
     private final PauseConfig pauseConfig;
     private final ToolRiskRegistry toolRiskRegistry;
     private final SessionBudgetTracker sessionBudgetTracker;
+    private final TraceStore traceStore;
+    private final MeterRegistry meterRegistry;
 
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider) {
@@ -129,6 +133,32 @@ public class AgentLoopExecutorFactory {
             FileContentTool fileContentTool, FileStore fileStore,
             AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
             ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
+                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
+                sessionBudgetTracker, null, null);
+    }
+
+    /** 生产装配扩展：在治理依赖之后注入持久化审计存储。 */
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool, FileStore fileStore,
+            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
+            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
+            TraceStore traceStore) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
+                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
+                sessionBudgetTracker, traceStore, null);
+    }
+
+    /** 生产装配扩展：可选的 Micrometer registry 为空时关闭运行时指标。 */
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool, FileStore fileStore,
+            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
+            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
+            TraceStore traceStore, MeterRegistry meterRegistry) {
         if (models.stream().noneMatch(model -> model.id().equals(defaultModelId))) {
             throw new IllegalArgumentException("默认模型 " + defaultModelId + " 不在注册的模型列表里");
         }
@@ -146,6 +176,8 @@ public class AgentLoopExecutorFactory {
         this.pauseConfig = pauseConfig;
         this.toolRiskRegistry = toolRiskRegistry;
         this.sessionBudgetTracker = sessionBudgetTracker;
+        this.traceStore = traceStore;
+        this.meterRegistry = meterRegistry;
         this.baseTools = fileContentTool != null ? List.of(fileContentTool.toolCallback()) : List.of();
         // baseTools 现在可能非空（文件工具无条件挂载），所以这里也必须经过
         // resolveToolCallingModel 那道 qwen-plus→deepseek-chat 的安全切换——之前这里直接
@@ -181,7 +213,10 @@ public class AgentLoopExecutorFactory {
                 .fileStore(fileStore)
                 .hooks(sharedHooks)
                 .pauseConfig(pauseConfig)
-                .budgetTracker(sessionBudgetTracker);
+                .budgetTracker(sessionBudgetTracker)
+                .traceStore(traceStore)
+                .meterRegistry(meterRegistry)
+                .modelName(model.id());
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
         }
@@ -225,6 +260,9 @@ public class AgentLoopExecutorFactory {
                 .hooks(sharedHooks)
                 .pauseConfig(pauseConfig)
                 .budgetTracker(sessionBudgetTracker)
+                .traceStore(traceStore)
+                .meterRegistry(meterRegistry)
+                .modelName(model.id())
                 // ReAct+Skill 的自我修正没有 DataAgent 那种 Gate+maxRetries 的图结构上限，SKILL.md
                 // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
                 // 不再指望它在 maxRounds=20 撞顶之前自己收敛。

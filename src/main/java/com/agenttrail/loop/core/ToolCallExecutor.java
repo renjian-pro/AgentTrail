@@ -3,6 +3,9 @@ package com.agenttrail.loop.core;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.tools.TodoWriteTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.ai.chat.messages.AssistantMessage.ToolCall;
 import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
 import org.springframework.ai.tool.ToolCallback;
@@ -50,12 +53,18 @@ class ToolCallExecutor {
             "agent-tool-exec");
 
     private final Map<String, ToolCallback> toolsByName;
+    private final MeterRegistry meterRegistry;
 
     ToolCallExecutor(List<ToolCallback> tools) {
+        this(tools, null);
+    }
+
+    ToolCallExecutor(List<ToolCallback> tools, MeterRegistry meterRegistry) {
         this.toolsByName = tools.stream().collect(Collectors.toMap(
                 tool -> tool.getToolDefinition().name(),
                 Function.identity(),
                 (first, duplicate) -> first));
+        this.meterRegistry = meterRegistry;
     }
 
     List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
@@ -107,12 +116,14 @@ class ToolCallExecutor {
 
     private ToolResponse executeOne(ToolCall toolCall, Consumer<AgentStreamEvent> emit,
                                     ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
+        Timer.Sample sample = meterRegistry == null ? null : Timer.start(meterRegistry);
         ToolCallback tool = resolve(toolCall.name(), sessionScopedTool);
         if (tool == null) {
             // 模型幻觉出的工具：连参数都不必处理，直接把错误当结果喂回去
             emit.accept(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), toolCall.arguments()));
             String result = errorPayload("unknown tool: " + toolCall.name());
             emit.accept(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
+            recordToolMetrics(toolCall.name(), sample, false);
             return new ToolResponse(toolCall.id(), toolCall.name(), result);
         }
 
@@ -121,21 +132,48 @@ class ToolCallExecutor {
         emit.accept(new AgentStreamEvent.ToolStart(toolCall.name(), toolCall.id(), arguments));
 
         String result;
+        boolean success = true;
         try {
             result = tool.call(arguments);
+            success = !looksLikeFailure(result);
         } catch (Exception failure) {
             // MCP 超时、远端 5xx、参数校验异常都只是这一项工具调用失败。把错误作为
             // ToolResponse 喂回模型，它才能换查询或基于已有资料继续；向外抛会取消整轮
             // Flux，DeepResearch 并发任务还会进一步产生 onErrorDropped 噪音。
             String detail = failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
             result = errorPayload("tool execution failed: " + detail);
+            success = false;
         }
 
         emit.accept(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
         // 用模型原始的 toolCall.arguments()，不是上面刚注入过系统参数的 arguments——进度快照要和
         // 执行管道彻底解耦，见下面方法的说明
         emitTodoProgressIfApplicable(toolCall.name(), toolCall.arguments(), emit);
+        recordToolMetrics(toolCall.name(), sample, success);
         return new ToolResponse(toolCall.id(), toolCall.name(), result);
+    }
+
+    private void recordToolMetrics(String toolName, Timer.Sample sample, boolean success) {
+        if (meterRegistry == null || sample == null) {
+            return;
+        }
+        String outcome = success ? "success" : "failure";
+        Timer timer = Timer.builder("agenttrail.tool.duration")
+                .description("Tool execution duration")
+                .tag("tool", toolName)
+                .tag("outcome", outcome)
+                .register(meterRegistry);
+        sample.stop(timer);
+        Counter.builder("agenttrail.tool.calls")
+                .description("Tool execution count")
+                .tag("tool", toolName)
+                .tag("outcome", outcome)
+                .register(meterRegistry)
+                .increment();
+    }
+
+    private static boolean looksLikeFailure(String result) {
+        return result != null && (result.startsWith("Error:") || result.startsWith("{\"error\""));
     }
 
     /**

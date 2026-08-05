@@ -4,6 +4,7 @@ import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.TodoItem;
 import com.agenttrail.loop.tools.TodoWriteTool;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
@@ -86,6 +87,28 @@ class ToolCallExecutorTest {
 
         assertThat(responses).singleElement().extracting(ToolResponse::responseData)
                 .asString().contains("error", "upstream timed out after 30s");
+    }
+
+    @Test
+    void recordsToolDurationAndOutcomeCounters() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RecordingToolCallback success = new RecordingToolCallback("ok", "succeeds", "ok");
+        RecordingToolCallback failure = new RecordingToolCallback("bad", "fails", arguments -> {
+            throw new IllegalStateException("boom");
+        });
+        ToolCallExecutor executor = new ToolCallExecutor(List.of(success, failure), registry);
+
+        executor.execute(List.of(call("call-1", "ok", "{}"), call("call-2", "bad", "{}")),
+                sink::tryEmitNext, NO_INJECTION);
+
+        assertThat(registry.get("agenttrail.tool.duration").timer("tool", "ok", "outcome", "success").count())
+                .isEqualTo(1);
+        assertThat(registry.get("agenttrail.tool.duration").timer("tool", "bad", "outcome", "failure").count())
+                .isEqualTo(1);
+        assertThat(registry.get("agenttrail.tool.calls").counter("tool", "ok", "outcome", "success").count())
+                .isEqualTo(1);
+        assertThat(registry.get("agenttrail.tool.calls").counter("tool", "bad", "outcome", "failure").count())
+                .isEqualTo(1);
     }
 
     /**

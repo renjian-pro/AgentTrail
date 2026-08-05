@@ -90,12 +90,18 @@ CREATE TABLE IF NOT EXISTS agent_trace
     success           TINYINT      NOT NULL COMMENT '本轮模型调用是否成功：1 成功 0 失败',
     error_message     LONGTEXT     NULL COMMENT '失败时的错误信息；成功时为 NULL',
     recorded_at       BIGINT       NOT NULL COMMENT '记录写入时刻（epoch millis）',
+    prev_hash         VARCHAR(64)  NULL COMMENT '上一条记录的 hash，本会话第一条为 NULL',
+    hash              VARCHAR(64)  NULL COMMENT 'SHA-256(关键字段拼接 + prev_hash)，写入后不可再改',
     PRIMARY KEY (id),
     -- 读回一个会话的完整 trace 永远是「按轮次正序」，复合索引直接支撑这个查询
     KEY idx_trace_conversation_round (conversation_id, round)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT 'TraceAudit：每次模型调用的审计记录';
+
+-- 已有数据库需要手动执行下面两条一次性迁移；历史记录保持 NULL，不回填伪造哈希链。
+-- ALTER TABLE agent_trace ADD COLUMN prev_hash VARCHAR(64) NULL COMMENT '上一条记录的 hash，本会话第一条为 NULL';
+-- ALTER TABLE agent_trace ADD COLUMN hash VARCHAR(64) NULL COMMENT 'SHA-256(关键字段拼接 + prev_hash)，写入后不可再改';
 
 -- 分层记忆中间层（issue #19）：画像/偏好/指令/事实，按 userId 整体读取，不需要按条目单独查找/删除。
 

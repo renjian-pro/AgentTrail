@@ -36,6 +36,11 @@ class InMemoryTraceStoreTest {
         assertThat(store.findByConversationId("conv-1")).containsExactly(own);
     }
 
+    @Test
+    void inMemoryStoreHasNoPersistedChainToVerify() {
+        assertThat(new InMemoryTraceStore().verifyChain("conv-1")).isEmpty();
+    }
+
     private static TraceRecord record(String conversationId, int round) {
         return new TraceRecord(conversationId, round, "input", "output", null,
                 10, 5, 100, true, null, System.currentTimeMillis());

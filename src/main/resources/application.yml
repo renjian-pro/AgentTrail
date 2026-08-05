@@ -38,6 +38,23 @@ server:
     max-http-form-post-size: 50MB
     max-swallow-size: 50MB
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    prometheus:
+      enabled: true
+  tracing:
+    sampling:
+      probability: 0.1
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:3001/api/public/otel/v1/traces}
+      headers:
+        Authorization: ${OTEL_EXPORTER_OTLP_HEADERS_AUTHORIZATION:}
+
 # Token 通过 Authorization: Bearer <token> 传递，Sa-Token 的 Redis DAO 负责跨实例共享会话。
 sa-token:
   token-name: Authorization
