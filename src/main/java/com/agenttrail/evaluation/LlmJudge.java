@@ -46,11 +46,18 @@ public final class LlmJudge {
     }
 
     public LlmJudge(ChatModel chatModel) {
-        this(prompt -> {
+        // 不直接 this(lambda ->...)：Function<String,String> 和 ChatModel 都只有一个抽象方法，
+        // 两个构造函数重载对同一个 lambda 都"形状匹配"，javac 在参数形状阶段就判为二义性调用，
+        // 不会等到检查 lambda 方法体的返回类型是否兼容——先转成具体类型的局部变量再传，绕开这个坑。
+        this(toStructuredInvoker(chatModel));
+    }
+
+    private static Function<String, String> toStructuredInvoker(ChatModel chatModel) {
+        return prompt -> {
             ChatResponse response = chatModel.call(new Prompt(List.of(
                     new SystemMessage(SYSTEM_PROMPT), new UserMessage(prompt))));
             return response.getResult().getOutput().getText();
-        });
+        };
     }
 
     public JudgeScore judge(GoldenCase testCase, GoldenTaskReport.GoldenObservation observation) {

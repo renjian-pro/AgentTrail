@@ -135,8 +135,8 @@ class AgentLoopExecutorHooksTest {
         executor.stream("hello", new RunnableParams("conv-1", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
-        assertThat(registry.get("agenttrail.llm.duration").timer("model", "test-model").count()).isEqualTo(1);
-        assertThat(registry.get("agenttrail.llm.ttft").timer("model", "test-model").count()).isEqualTo(1);
+        assertThat(registry.get("agenttrail.llm.duration").tags("model", "test-model").timer().count()).isEqualTo(1);
+        assertThat(registry.get("agenttrail.llm.ttft").tags("model", "test-model").timer().count()).isEqualTo(1);
     }
 
     private static AgentHooks hooks(List<String> events) {

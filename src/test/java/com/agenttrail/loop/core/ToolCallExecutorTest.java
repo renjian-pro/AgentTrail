@@ -101,13 +101,13 @@ class ToolCallExecutorTest {
         executor.execute(List.of(call("call-1", "ok", "{}"), call("call-2", "bad", "{}")),
                 sink::tryEmitNext, NO_INJECTION);
 
-        assertThat(registry.get("agenttrail.tool.duration").timer("tool", "ok", "outcome", "success").count())
+        assertThat(registry.get("agenttrail.tool.duration").tags("tool", "ok", "outcome", "success").timer().count())
                 .isEqualTo(1);
-        assertThat(registry.get("agenttrail.tool.duration").timer("tool", "bad", "outcome", "failure").count())
+        assertThat(registry.get("agenttrail.tool.duration").tags("tool", "bad", "outcome", "failure").timer().count())
                 .isEqualTo(1);
-        assertThat(registry.get("agenttrail.tool.calls").counter("tool", "ok", "outcome", "success").count())
+        assertThat(registry.get("agenttrail.tool.calls").tags("tool", "ok", "outcome", "success").counter().count())
                 .isEqualTo(1);
-        assertThat(registry.get("agenttrail.tool.calls").counter("tool", "bad", "outcome", "failure").count())
+        assertThat(registry.get("agenttrail.tool.calls").tags("tool", "bad", "outcome", "failure").counter().count())
                 .isEqualTo(1);
     }
 
