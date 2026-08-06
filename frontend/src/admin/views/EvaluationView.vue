@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { evaluationApi, type EvaluationHistoryItem, type EvaluationTask, type GoldenObservation } from '../api/evaluation-api'
 import { toErrorMessage } from '../../api/http'
+import EvaluationTrendChart from '../components/EvaluationTrendChart.vue'
 
 const task = ref<EvaluationTask | null>(null)
 const history = ref<EvaluationHistoryItem[]>([])
@@ -149,6 +150,11 @@ onMounted(() => void loadHistory())
           </details>
         </div>
       </div>
+    </section>
+
+    <section class="admin-card" style="margin-top: 16px">
+      <h2>Pass rate trend</h2>
+      <EvaluationTrendChart :history="history" />
     </section>
 
     <section class="admin-card" style="margin-top: 16px">

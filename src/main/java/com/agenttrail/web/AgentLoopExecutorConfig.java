@@ -19,6 +19,9 @@ import com.agenttrail.loop.task.RedisInterruptBroadcaster;
 import com.agenttrail.loop.task.RedisTaskLock;
 import com.agenttrail.loop.trace.JdbcTraceStore;
 import com.agenttrail.loop.trace.TraceStore;
+import com.agenttrail.evaluation.GoldenCaseCandidateExtractor;
+import com.agenttrail.evaluation.GoldenCaseRepository;
+import com.agenttrail.evaluation.GoldenCaseService;
 import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
@@ -37,6 +40,9 @@ import org.springframework.context.annotation.Configuration;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import javax.sql.DataSource;
 
 /**
@@ -128,6 +134,38 @@ public class AgentLoopExecutorConfig {
     @Bean
     public TraceStore traceStore(@Qualifier("dataSource") DataSource dataSource) {
         return new JdbcTraceStore(dataSource);
+    }
+
+    /** 评测页面「badcase 怎么加」的答案：把生产 trace 变成可复核候选，从不自动信任生产流量。 */
+    @Bean
+    public GoldenCaseCandidateExtractor goldenCaseCandidateExtractor(TraceStore traceStore) {
+        return new GoldenCaseCandidateExtractor(traceStore);
+    }
+
+    @Bean
+    public GoldenCaseRepository goldenCaseRepository(@Qualifier("dataSource") DataSource dataSource,
+            ObjectMapper objectMapper) {
+        return new GoldenCaseRepository(dataSource, objectMapper);
+    }
+
+    @Bean
+    public GoldenCaseService goldenCaseService(GoldenCaseRepository goldenCaseRepository) {
+        return new GoldenCaseService(goldenCaseRepository);
+    }
+
+    /**
+     * 协调线程本身不占 {@code deepResearchExecutor} 的名额（全程 join 等所有 case 跑完，占进去会
+     * 偷走一个并发名额），理由和 {@link DeepResearchConfig#deepResearchExecutor} 一致——单独命名池，
+     * 不用手写 {@code new Thread(...)}：没有 Spring 生命周期管理，应用关闭时不会被优雅回收。
+     */
+    @Bean(name = "goldenEvaluationCoordinatorExecutor", destroyMethod = "shutdown")
+    public ExecutorService goldenEvaluationCoordinatorExecutor() {
+        ThreadFactory namedDaemonThread = runnable -> {
+            Thread thread = new Thread(runnable, "golden-evaluation-coordinator");
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newSingleThreadExecutor(namedDaemonThread);
     }
 
     /**

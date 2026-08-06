@@ -23,23 +23,27 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class GoldenEvaluationService {
     private final AgentLoopExecutorFactory executorFactory;
     private final Executor evaluationExecutor;
+    private final Executor coordinatorExecutor;
+    private final GoldenCaseService caseService;
     private final Map<String, EvaluationTask> tasks = new ConcurrentHashMap<>();
 
     public GoldenEvaluationService(AgentLoopExecutorFactory executorFactory,
-            @Qualifier("deepResearchExecutor") Executor evaluationExecutor) {
+            @Qualifier("deepResearchExecutor") Executor evaluationExecutor,
+            @Qualifier("goldenEvaluationCoordinatorExecutor") Executor coordinatorExecutor,
+            GoldenCaseService caseService) {
         this.executorFactory = executorFactory;
         this.evaluationExecutor = evaluationExecutor;
+        this.coordinatorExecutor = coordinatorExecutor;
+        this.caseService = caseService;
     }
 
     public GoldenEvaluationTaskResponse start() {
-        List<GoldenCase> cases = GoldenTaskRunner.loadAll();
+        List<GoldenCase> cases = caseService.casesForExecution();
         EvaluationTask task = new EvaluationTask(UUID.randomUUID().toString(), cases.size());
         tasks.put(task.taskId, task);
-        // 协调线程本身不占 evaluationExecutor 的名额——它全程 join 等 37 个 case 跑完，
+        // 协调任务本身不占 evaluationExecutor 的名额——它全程 join 等 37 个 case 跑完，
         // 真占进去会从池子里偷走一个线程，37 个 case 实际只能 3 路并发，不是预期的 4 路。
-        Thread coordinator = new Thread(() -> run(task, cases), "golden-evaluation-" + task.taskId);
-        coordinator.setDaemon(true);
-        coordinator.start();
+        coordinatorExecutor.execute(() -> run(task, cases));
         return task.response();
     }
 

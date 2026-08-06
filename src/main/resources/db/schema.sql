@@ -353,3 +353,31 @@ ON DUPLICATE KEY UPDATE name = VALUES(name), module = VALUES(module);
 INSERT INTO sys_role_permission (role_id, permission_id, created_at)
 SELECT 1, id, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 FROM sys_permission
 ON DUPLICATE KEY UPDATE created_at = VALUES(created_at);
+
+-- Golden Set 可写用例（问题反馈：评测页面只能跑，用例改不了、badcase 也加不进去）。
+--
+-- `analytics/golden/*.yml` 里的内建用例刻意保持只读——它们是随代码评审走查过的基线，
+-- 版本历史就是 git log，不应该被一次后台点击悄悄改掉。这张表是它们之外的第二条写入路径，
+-- 专供运营/QA 通过 API 增删改，不需要每次都改代码重新部署。两边用 id 各自的命名空间区分，
+-- `GoldenCaseService` 装配执行用例列表时二者合并，新增用例撞上内建 id 会在写入时就拒绝，
+-- 不会出现"救人一命"式的静默覆盖。
+--
+-- assertions/expected_tool_calls 整段存 JSON 而不是拆列，理由和 agent_pause_state 一样：
+-- 断言数组的形状按 type 各不相同（见 GoldenAssertion），不是天然扁平的记录。
+CREATE TABLE IF NOT EXISTS golden_case
+(
+    id                       VARCHAR(64)  NOT NULL COMMENT '用例 id：手工新增自己填，从生产 trace 提升时自动生成',
+    dimension                VARCHAR(64)  NOT NULL COMMENT '评测维度，决定报告里按维度分组统计',
+    question                 LONGTEXT     NOT NULL COMMENT '用户提问',
+    as_user                  VARCHAR(100) NOT NULL DEFAULT '' COMMENT '以哪个用户身份提问，权限维度用例必填',
+    reference_sql            LONGTEXT     NULL COMMENT '参照 SQL，供人工核对预期结果',
+    assertions_json          LONGTEXT     NOT NULL COMMENT '断言数组 JSON，结构见 GoldenAssertion#evaluate',
+    expected_tool_calls_json LONGTEXT     NOT NULL COMMENT '期望工具调用序列 JSON 数组，可为空数组；MySQL 的 TEXT 列不允许字面量 DEFAULT，写入永远由 GoldenCaseRepository 显式提供',
+    source                   VARCHAR(16)  NOT NULL DEFAULT 'MANUAL' COMMENT '来源：MANUAL 手工新增 / PROMOTED 从生产 trace 候选提升',
+    source_conversation_id   VARCHAR(100) NULL COMMENT 'PROMOTED 时记录来源会话 id，供追溯原始对话',
+    created_at               BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
+    updated_at               BIGINT       NOT NULL COMMENT '更新时刻（epoch millis）',
+    PRIMARY KEY (id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT 'Golden Set 可写用例：admin 通过 API 管理，YAML 内建用例仍只读';

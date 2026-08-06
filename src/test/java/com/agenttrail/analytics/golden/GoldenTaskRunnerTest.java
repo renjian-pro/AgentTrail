@@ -1,5 +1,6 @@
 package com.agenttrail.analytics.golden;
 
+import com.agenttrail.evaluation.GoldenCase;
 import com.agenttrail.evaluation.GoldenTaskReport;
 import com.agenttrail.evaluation.GoldenTaskRunner;
 import org.junit.jupiter.api.Test;
@@ -10,6 +11,17 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class GoldenTaskRunnerTest {
+
+    @Test
+    void loadAllMergesDbManagedCasesAlongsideTheYamlBaseline() {
+        GoldenCase extra = new GoldenCase("zz-extra", "sql_correctness", "count rentals", "admin", null, null,
+                List.of(Map.of("type", "tool_called", "name", "execute_sql")));
+
+        List<GoldenCase> cases = GoldenTaskRunner.loadAll(List.of(extra));
+
+        assertThat(cases).extracting(GoldenCase::id).contains("zz-extra", "sql-001");
+    }
+
     @Test
     void loadsAllFixturesAndAppliesDeterministicAssertions() {
         var report = GoldenTaskRunner.run(testCase -> {

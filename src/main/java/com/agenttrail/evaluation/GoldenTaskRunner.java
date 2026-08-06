@@ -23,7 +23,39 @@ import java.util.function.IntConsumer;
 public final class GoldenTaskRunner {
     private GoldenTaskRunner() { }
 
+    private static volatile List<GoldenCase> cachedBaseline;
+
     public static List<GoldenCase> loadAll() {
+        return loadAll(List.of());
+    }
+
+    /**
+     * {@code extra} is where admin-managed cases (see {@code GoldenCaseService}) join the YAML baseline for
+     * an actual evaluation run — the YAML loader itself stays oblivious to the database. The YAML baseline
+     * is a fixed classpath resource, so it's parsed once and cached rather than re-scanned on every call —
+     * this is on the request/evaluation-start path, not just at startup.
+     */
+    public static List<GoldenCase> loadAll(List<GoldenCase> extra) {
+        List<GoldenCase> cases = new ArrayList<>(baseline());
+        cases.addAll(extra);
+        return cases.stream().sorted(Comparator.comparing(GoldenCase::id)).toList();
+    }
+
+    private static List<GoldenCase> baseline() {
+        List<GoldenCase> loaded = cachedBaseline;
+        if (loaded == null) {
+            synchronized (GoldenTaskRunner.class) {
+                loaded = cachedBaseline;
+                if (loaded == null) {
+                    loaded = loadBaseline();
+                    cachedBaseline = loaded;
+                }
+            }
+        }
+        return loaded;
+    }
+
+    private static List<GoldenCase> loadBaseline() {
         try {
             Resource[] resources = new PathMatchingResourcePatternResolver()
                     .getResources("classpath*:analytics/golden/*.yml");
@@ -39,7 +71,7 @@ public final class GoldenTaskRunner {
                     }
                 }
             }
-            return cases.stream().sorted(Comparator.comparing(GoldenCase::id)).toList();
+            return List.copyOf(cases);
         } catch (Exception failure) {
             throw new IllegalStateException("Golden Set load failed", failure);
         }
@@ -51,17 +83,7 @@ public final class GoldenTaskRunner {
 
     public static GoldenTaskReport runCaseList(List<GoldenCase> cases,
                                                Function<GoldenCase, GoldenTaskReport.GoldenObservation> executor) {
-        return runCaseList(cases, executor, ignored -> { });
-    }
-
-    private static GoldenTaskReport runCaseList(List<GoldenCase> cases,
-                                                Function<GoldenCase, GoldenTaskReport.GoldenObservation> executor,
-                                                IntConsumer progress) {
-        List<GoldenTaskReport.GoldenObservation> results = new ArrayList<>();
-        for (int index = 0; index < cases.size(); index++) {
-            results.add(scoreCase(cases.get(index), executor));
-            progress.accept(index + 1);
-        }
+        List<GoldenTaskReport.GoldenObservation> results = cases.stream().map(testCase -> scoreCase(testCase, executor)).toList();
         return new GoldenTaskReport(results);
     }
 

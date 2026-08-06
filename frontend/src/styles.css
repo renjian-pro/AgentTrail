@@ -392,8 +392,14 @@ button { cursor: pointer; }
 .auth-subtitle { margin: 8px 0 25px; color: var(--muted); }
 .auth-card form, .user-form { display: grid; gap: 15px; }
 .auth-card label, .user-form > label { display: grid; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 650; }
-.auth-card input, .user-form input, .toolbar input { width: 100%; padding: 10px 11px; border: 1px solid var(--line-strong); border-radius: 9px; outline: none; color: var(--text); background: var(--surface); font-size: 14px; }
-.auth-card input:focus, .user-form input:focus, .toolbar input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.auth-card input, .user-form input, .user-form textarea, .toolbar input { width: 100%; padding: 10px 11px; border: 1px solid var(--line-strong); border-radius: 9px; outline: none; color: var(--text); background: var(--surface); font-size: 14px; }
+.auth-card input:focus, .user-form input:focus, .user-form textarea:focus, .toolbar input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.user-form textarea { resize: vertical; font-family: inherit; }
+.user-form textarea.mono { font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.hint { margin: -6px 0 0; color: var(--muted); font-size: 11px; }
+.hint code { font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.candidate-output { display: grid; gap: 4px; margin: -6px 0 16px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); font-size: 12px; }
+.candidate-output span { color: var(--muted); white-space: pre-wrap; }
 .primary-button, .secondary-button, .danger-button { padding: 9px 13px; border: 1px solid transparent; border-radius: 9px; font-size: 12px; }
 .primary-button { color: #fff; background: #292b28; }
 .primary-button:disabled { opacity: .5; cursor: not-allowed; }
@@ -432,6 +438,20 @@ button { cursor: pointer; }
 .dept-children { padding-left: 22px; }
 .tree-toggle, .tree-spacer { width: 20px; text-align: center; }
 .tree-toggle { padding: 0; border: 0; color: var(--muted); background: transparent; }
+
+.candidate-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; align-items: start; }
+.candidate-conversations h2, .candidate-detail h2 { margin: 0 0 10px; font-size: 14px; }
+.candidate-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.candidate-list-item { display: grid; gap: 3px; width: 100%; padding: 9px 10px; border: 1px solid transparent; border-radius: 9px; text-align: left; background: transparent; }
+.candidate-list-item:hover { background: var(--surface-soft); }
+.candidate-list-item.selected { border-color: var(--accent); background: var(--accent-soft); }
+.candidate-list-item strong { font-size: 13px; }
+.candidate-list-item code { color: var(--muted); font-size: 11px; }
+.candidate-card { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.candidate-card summary { cursor: pointer; font-size: 13px; }
+.candidate-card .candidate-output { margin: 10px 0; }
+
+.trend-chart svg { display: block; width: 100%; height: auto; }
 
 .analytics-page { width: min(1120px, calc(100% - 48px)); margin: 0 auto; padding: 44px 0 60px; }
 .feature-hero { margin-bottom: 24px; }
