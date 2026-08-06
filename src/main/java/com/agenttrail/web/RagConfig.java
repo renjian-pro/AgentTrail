@@ -1,7 +1,7 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.rag.FileVectorizationService;
-import com.agenttrail.loop.rag.RagRetrievalService;
+import com.agenttrail.capability.rag.FileVectorizationService;
+import com.agenttrail.capability.rag.RagRetrievalService;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.ai.chat.model.ChatModel;

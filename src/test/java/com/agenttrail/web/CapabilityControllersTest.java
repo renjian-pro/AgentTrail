@@ -1,10 +1,10 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.deepresearch.DeepResearchReport;
-import com.agenttrail.loop.deepresearch.DeepResearchService;
-import com.agenttrail.loop.ppt.PptGenerationService;
-import com.agenttrail.loop.ppt.PptState;
-import com.agenttrail.loop.ppt.PptTask;
+import com.agenttrail.capability.deepresearch.DeepResearchReport;
+import com.agenttrail.capability.deepresearch.DeepResearchService;
+import com.agenttrail.capability.ppt.PptGenerationService;
+import com.agenttrail.capability.ppt.PptState;
+import com.agenttrail.capability.ppt.PptTask;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;

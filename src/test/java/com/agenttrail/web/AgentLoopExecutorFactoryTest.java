@@ -3,7 +3,7 @@ package com.agenttrail.web;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
-import com.agenttrail.loop.file.FileQaService;
+import com.agenttrail.capability.file.FileQaService;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.task.AgentTaskManager;

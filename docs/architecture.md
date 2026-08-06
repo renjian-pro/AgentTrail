@@ -114,7 +114,7 @@ graph TB
 - 实线箭头 = 当前真实存在的调用关系；虚线 = 规划中（`CapPacks`）。
 - `AgentLoopExecutorConfig` 已接会话持久化；其它 `V1Opt/V1Tools` 仍按场景装配，虚线表达"可选依赖"而不是"未实现"。
 - `V1Opt` 那一层全部是**同一种模式**："这个参数传 null，行为和没有这个机制时完全一致"——不是"未实现的占位符"，是刻意设计成可插拔。第四节详细讲这个模式怎么用。
-- `CapPacks` 目前是纯规划，代码里连包目录都没建。
+- `CapPacks` 这块图和下面"虚线＝规划中"的说法已经过时，没有跟着后续更新重画：`capability/` 从 2026-08-05 起就不是空目录，2026-08-06 又把 `loop.deepresearch`/`loop.ppt`/`loop.file`/`loop.rag` 全部搬了进去（见第三节实际目录树、第七节 Capability Pack 行）——按那两处读，不要信这张图这一条。
 
 ---
 
@@ -304,7 +304,17 @@ com.agenttrail
 ├── capability/                                 # 2026-08-05 更新：Phase 2 已落地，不再是空目录
 │   ├── analytics/                              # SQL 数据分析能力包（issue #52-#61）：schema/sql/permission/glossary/tools 子包
 │   ├── auth/                                   # 登录、Sa-Token 会话、密码校验
-│   └── sys/                                    # RBAC：sys_user/sys_role/sys_dept 及 controller/service/store 分层
+│   ├── sys/                                    # RBAC：sys_user/sys_role/sys_dept 及 controller/service/store 分层
+│   ├── deepresearch/                           # 2026-08-06：从 loop.deepresearch 搬入——落地
+│   │                                            #   architecture-refactor-blueprint-2026-08-03.md P0-1；
+│   │                                            #   Plan-Execute-Critique 工作流，仍由 web.DeepResearchController 异步驱动
+│   ├── ppt/                                    # 2026-08-06：从 loop.ppt 搬入（含 image/、strategy/ 子包）；
+│   │                                            #   状态机 + JdbcPptTaskStore 落库 + Python 渲染
+│   ├── file/                                   # 2026-08-06：从 loop.file 搬入；文件上传/解析/问答
+│   │   └── multimodal/                         # 2026-08-06：从 loop.multimodal 搬入并挪到 file 下——
+│   │                                            #   图片描述只服务于文件问答（FileQaService 是唯一外部调用方），
+│   │                                            #   不该和 file 平级，搬迁时顺带修正了这层从属关系
+│   └── rag/                                    # 2026-08-06：从 loop.rag 搬入；向量化、检索
 │
 ├── observability/                              # issue #67：Micrometer + OTel 埋点
 │   └── AgentObservabilityConfig.java          # 自定义 Sampler（ParentBased(TraceIdRatioBased)）、TTFT/duration 独立 Timer
@@ -398,7 +408,7 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 | CONTEXT.md 术语 | 代码位置（当前实际） |
 |---|---|
 | Runtime | `loop.core` + `loop.context`/`stage`/`stageoutput`/`trace`/`structured`/`memory`/`persistence`/`pause`/`task`/`tools`/`skills`/`model`（V1，已接线，`/agent/v1/chat`）；`legacy.V0`（V0，`/agent/chat`，不再演进） |
-| Capability Pack | `capability/*`（analytics/auth/sys 已落地，见第三节包结构）；`loop.deepresearch`/`loop.ppt`/`loop.file`/`loop.rag` 同样是业务能力包，只是历史上挂在 `loop/` 下没跟着搬——`architecture-refactor-blueprint-2026-08-03.md` 的 P0-1 已经指出这个命名/分层不一致，尚未落地迁移 |
+| Capability Pack | `capability/*`：analytics/auth/sys（Phase 2，2026-08-05 落地）+ deepresearch/ppt/file(含 multimodal 子包)/rag（2026-08-06 从 `loop.*` 搬入）——`architecture-refactor-blueprint-2026-08-03.md` 的 P0-1 已全部落地，`loop/` 下不再有业务能力包，只剩纯 Runtime 机制 |
 | Tool | `loop.tools.*`（FileSystem/Bash/Grep/TodoWrite 是 Runtime 内置 Tool），未来 Capability Pack 各自的 tools 子包 |
 | Skill | `loop.skills.*` |
 | Hook | ✅ 已实现（`loop.hook`，issue #63）：`SessionStart`/`PreToolUse`/`PostToolUse`/`Budget`/`OnError`/`SessionEnd` 六个拦截点，纯观察型 void 接口，不做流程控制——真正的决策型机制（HITL 审批、Budget 熔断、限速）是独立于 Hook 之外的专用组件（`PauseConfig`/`SessionBudgetTracker`/`ToolRateLimiter`），见下方"治理层"小节。`StageOutputProvider` 仍然是它自己的东西，语义没变（"产出附加内容"不是"治理拦截"） |

@@ -3,7 +3,7 @@ package com.agenttrail.web;
 import com.agenttrail.capability.analytics.AnalyticsToolProvider;
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.core.AgentLoopExecutor;
-import com.agenttrail.loop.file.FileStore;
+import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.loop.hook.AgentHooks;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.loop.hook.ToolRiskRegistry;

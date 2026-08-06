@@ -1,7 +1,7 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.deepresearch.DeepResearchReport;
-import com.agenttrail.loop.deepresearch.DeepResearchService;
+import com.agenttrail.capability.deepresearch.DeepResearchReport;
+import com.agenttrail.capability.deepresearch.DeepResearchService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;

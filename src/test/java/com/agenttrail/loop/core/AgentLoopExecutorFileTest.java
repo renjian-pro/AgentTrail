@@ -1,9 +1,9 @@
 package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.core.support.ScriptedChatModel;
-import com.agenttrail.loop.file.FileKind;
-import com.agenttrail.loop.file.InMemoryFileStore;
-import com.agenttrail.loop.file.UploadedFile;
+import com.agenttrail.capability.file.FileKind;
+import com.agenttrail.capability.file.InMemoryFileStore;
+import com.agenttrail.capability.file.UploadedFile;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;

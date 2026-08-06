@@ -1,7 +1,7 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.ppt.PptGenerationService;
-import com.agenttrail.loop.ppt.PptTask;
+import com.agenttrail.capability.ppt.PptGenerationService;
+import com.agenttrail.capability.ppt.PptTask;
 import cn.dev33.satoken.stp.StpUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -165,7 +165,7 @@ public class PptGenerationController {
     private PptGenerationResponse toResponse(String userId, long taskId) {
         PptTask task = (userId == null ? pptGenerationService.describe(taskId) : pptGenerationService.describe(userId, taskId))
                 .orElseThrow(() -> new IllegalStateException("PPT 任务不存在: " + taskId));
-        String downloadUrl = task.status() == com.agenttrail.loop.ppt.PptState.SUCCESS
+        String downloadUrl = task.status() == com.agenttrail.capability.ppt.PptState.SUCCESS
                 && hasOutputFile(userId, taskId)
                 ? "/agent/v1/ppt/" + taskId + "/download"
                 : null;

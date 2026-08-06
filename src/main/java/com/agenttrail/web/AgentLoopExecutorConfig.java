@@ -1,7 +1,7 @@
 package com.agenttrail.web;
 
 import com.agenttrail.capability.analytics.AnalyticsToolProvider;
-import com.agenttrail.loop.file.FileStore;
+import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.loop.hook.ToolRiskLevel;
 import com.agenttrail.loop.hook.ToolRiskRegistry;

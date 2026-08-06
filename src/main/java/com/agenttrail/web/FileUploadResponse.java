@@ -1,7 +1,7 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.file.FileKind;
-import com.agenttrail.loop.file.IngestedFile;
+import com.agenttrail.capability.file.FileKind;
+import com.agenttrail.capability.file.IngestedFile;
 
 /** {@code POST /agent/v1/files} 的响应体——直接对应 {@link IngestedFile}。 */
 public record FileUploadResponse(long fileId, String fileName, FileKind kind, long sizeBytes, int parsedTextLength,

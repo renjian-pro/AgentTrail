@@ -1,13 +1,13 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.file.FileQaService;
-import com.agenttrail.loop.file.FileStore;
-import com.agenttrail.loop.file.FileTextParser;
-import com.agenttrail.loop.file.JdbcFileStore;
-import com.agenttrail.loop.multimodal.ImageDescriptionService;
+import com.agenttrail.capability.file.FileQaService;
+import com.agenttrail.capability.file.FileStore;
+import com.agenttrail.capability.file.FileTextParser;
+import com.agenttrail.capability.file.JdbcFileStore;
+import com.agenttrail.capability.file.multimodal.ImageDescriptionService;
 import com.agenttrail.loop.tools.FileContentTool;
-import com.agenttrail.loop.rag.FileVectorizationService;
-import com.agenttrail.loop.rag.RagRetrievalService;
+import com.agenttrail.capability.rag.FileVectorizationService;
+import com.agenttrail.capability.rag.RagRetrievalService;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;

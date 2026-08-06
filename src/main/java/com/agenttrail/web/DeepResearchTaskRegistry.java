@@ -1,6 +1,6 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.deepresearch.DeepResearchReport;
+import com.agenttrail.capability.deepresearch.DeepResearchReport;
 
 import java.util.Map;
 import java.util.Optional;
@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * DeepResearch 任务的进度追踪——纯内存，不像 {@code ppt_generation_task} 那样落库。
  *
- * <p>{@link com.agenttrail.loop.deepresearch.DeepResearchService#research} 本身是一次不带
+ * <p>{@link com.agenttrail.capability.deepresearch.DeepResearchService#research} 本身是一次不带
  * checkpoint 的单体调用（需求澄清→主题生成→逐任务检索→综合报告全部在一次方法调用里跑完，
  * 中途没有落库任何中间状态），不像 PPT 状态机天然自带断点续传的地基。给它补一套完整的、
  * 可崩溃恢复的持久化任务表是比"让前端能轮询到进度"大得多的工作，这里先只解决轮询这一个

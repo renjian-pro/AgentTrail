@@ -1,0 +1,544 @@
+package com.agenttrail.capability.deepresearch;
+
+import com.agenttrail.loop.context.ContextCompactor;
+import com.agenttrail.loop.context.ContextPolicy;
+import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.core.support.ScriptedChatModel;
+import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.Prompt;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static com.agenttrail.loop.core.support.ChatResponses.text;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * 用 {@link ScriptedChatModel} 驱动 plain/search 两个执行器，只验证
+ * {@link DeepResearchService} 自己的编排逻辑（该在什么条件下短路、该按什么顺序调哪个执行器、
+ * 计划 JSON 怎么解析、分层并发是否真的并发/跨层是否真的串行）——工具调用机制本身已经由
+ * {@code AgentLoopExecutor} 自己的测试覆盖，这里的测试替身都不需要真的触发工具调用。
+ * 真实联网搜索的端到端验证见 {@code DeepResearchServiceIT}。
+ *
+ * <p>{@link ScriptedChatModel} 内部用 {@code ArrayDeque}，不是线程安全的——凡是测试同一层
+ * 多任务并发的场景，必须换用本文件里的 {@link ConcurrentTrackingChatModel}，不能指望
+ * {@code ScriptedChatModel} 在多个虚拟线程并发调用下还能正常工作。跨层场景因为严格串行，
+ * 用 {@code ScriptedChatModel} 是安全的。
+ */
+class DeepResearchServiceTest {
+
+    @Test
+    void shortCircuitsWhenTheModelSaysMoreInfoIsNeeded() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【需要补充信息】\n请问你想研究哪个具体的公司或事件？")));
+        ScriptedChatModel searchModel = new ScriptedChatModel();
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5));
+
+        DeepResearchReport report = service.research("帮我研究一下");
+
+        assertThat(report.needsClarification()).isTrue();
+        assertThat(report.clarifyingQuestion()).contains("请问你想研究哪个具体的公司或事件");
+        assertThat(report.clarifyingQuestion()).doesNotContain("【需要补充信息】");
+        assertThat(searchModel.roundCount()).as("信息不足时不该跑到需要搜索的阶段").isZero();
+    }
+
+    @Test
+    void fallsBackToKeywordDetectionWhenNoMarkerIsPresent() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("这个问题不够明确，能否说明具体想了解哪个方面？")));
+        ScriptedChatModel searchModel = new ScriptedChatModel();
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5));
+
+        DeepResearchReport report = service.research("随便研究点什么");
+
+        assertThat(report.needsClarification()).isTrue();
+    }
+
+    @Test
+    void runsTheFullPipelineAcrossTwoSequentialLayersWhenInformationIsSufficient() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】研究某公司近期的市场表现")),
+                List.of(text("1. 近期财报表现\n2. 市场竞争格局")),
+                List.of(text("""
+                        {"tasks":[
+                          {"id":"task-1","instruction":"搜索该公司最新财报数据","order":1},
+                          {"id":"task-2","instruction":"搜索该公司主要竞争对手动态","order":2}
+                        ]}
+                        """)),
+                List.of(text("# 研究报告\n综合两项任务的结果...")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text("财报显示营收同比增长")),
+                List.of(text("主要竞争对手近期发布了新产品")));
+
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 1); // maxCritiqueRounds=1：这个用例不关心批判循环，跑完第一轮就该停
+
+        DeepResearchReport report = service.research("帮我研究一下某公司");
+
+        assertThat(report.needsClarification()).isFalse();
+        assertThat(report.researchTopic()).contains("近期财报表现");
+        assertThat(report.taskResults()).hasSize(2);
+        assertThat(report.taskResults().get(0).taskId()).isEqualTo("task-1");
+        assertThat(report.taskResults().get(0).output()).isEqualTo("财报显示营收同比增长");
+        assertThat(report.taskResults().get(1).taskId()).isEqualTo("task-2");
+        assertThat(report.report()).isEqualTo("# 研究报告\n综合两项任务的结果...");
+        assertThat(plainModel.roundCount()).as("澄清+主题+计划+总结，共 4 次纯文本调用").isEqualTo(4);
+        assertThat(searchModel.roundCount()).as("两层各一个任务，各跑一次").isEqualTo(2);
+
+        // 第二层（order=2）的任务应该带上第一层的结果作为依赖上下文
+        String secondCallPrompt = searchModel.messagesAtRound(1).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(secondCallPrompt).contains("财报显示营收同比增长");
+    }
+
+    @Test
+    void sameLayerTasksRunConcurrentlyButNeverExceedTheConfiguredCap() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[
+                          {"id":"task-1","instruction":"搜索1","order":1},
+                          {"id":"task-2","instruction":"搜索2","order":1},
+                          {"id":"task-3","instruction":"搜索3","order":1},
+                          {"id":"task-4","instruction":"搜索4","order":1}
+                        ]}
+                        """)),
+                List.of(text("# 报告")));
+        ConcurrentTrackingChatModel searchModel = new ConcurrentTrackingChatModel(Duration.ofMillis(300));
+
+        int concurrencyCap = 3;
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                concurrencyCap, 20, 2, 1); // maxCritiqueRounds=1：跑完第一轮就该停，不进批判
+
+        DeepResearchReport report = service.research("测试并发上限");
+
+        assertThat(report.taskResults()).hasSize(4);
+        assertThat(searchModel.maxObservedConcurrency())
+                .as("4 个同层任务应该真的并发跑，但不能超过配置的上限 %d", concurrencyCap)
+                .isGreaterThan(1)
+                .isLessThanOrEqualTo(concurrencyCap);
+    }
+
+    @Test
+    void truncatesThePlanWhenItExceedsTheConfiguredBreadthCap() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[
+                          {"id":"task-1","instruction":"搜索1","order":1},
+                          {"id":"task-2","instruction":"搜索2","order":1},
+                          {"id":"task-3","instruction":"搜索3","order":1}
+                        ]}
+                        """)),
+                List.of(text("# 报告")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text("结果1")),
+                List.of(text("结果2")));
+
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 2, 2, 1); // maxCritiqueRounds=1：跑完第一轮就该停，不进批判
+
+        DeepResearchReport report = service.research("测试广度上限");
+
+        assertThat(report.taskResults())
+                .as("计划给了 3 个任务，上限是 2，应该按原始顺序截断到前 2 个")
+                .hasSize(2);
+        assertThat(report.taskResults()).extracting(TaskResult::taskId).containsExactly("task-1", "task-2");
+    }
+
+    @Test
+    void retriesAFailingTaskAndSucceedsOnceItRecovers() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[{"id":"task-1","instruction":"搜索1","order":1}]}
+                        """)),
+                List.of(text("# 报告")));
+        FlakyChatModel searchModel = new FlakyChatModel(1); // 第一次失败，第二次（重试）成功
+
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 1); // maxCritiqueRounds=1：跑完第一轮就该停，不进批判
+
+        DeepResearchReport report = service.research("测试重试成功");
+
+        assertThat(report.taskResults()).hasSize(1);
+        TaskResult result = report.taskResults().get(0);
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).isEqualTo("success after retry");
+        assertThat(searchModel.callCount()).as("失败 1 次 + 成功 1 次，共调用 2 次").isEqualTo(2);
+    }
+
+    @Test
+    void givesUpAfterExhaustingRetriesButDoesNotBlockOtherTasksOrTheOverallReport() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[{"id":"task-1","instruction":"搜索1","order":1}]}
+                        """)),
+                List.of(text("# 报告：任务失败但依然生成了总结")));
+        FlakyChatModel alwaysFailingModel = new FlakyChatModel(Integer.MAX_VALUE); // 永远失败
+
+        int maxTaskRetries = 2;
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(alwaysFailingModel, List.of(), 5),
+                3, 20, maxTaskRetries, 1); // maxCritiqueRounds=1：跑完第一轮就该停，不进批判
+
+        DeepResearchReport report = service.research("测试重试耗尽");
+
+        assertThat(report.taskResults()).hasSize(1);
+        TaskResult result = report.taskResults().get(0);
+        assertThat(result.success()).isFalse();
+        assertThat(result.output()).isNull();
+        assertThat(result.errorMessage()).isNotBlank();
+        assertThat(alwaysFailingModel.callCount())
+                .as("1 次初始尝试 + %d 次重试，达到上限后不再继续", maxTaskRetries)
+                .isEqualTo(maxTaskRetries + 1);
+        assertThat(report.report()).as("单个任务失败不该阻塞总结阶段").isEqualTo("# 报告：任务失败但依然生成了总结");
+    }
+
+    @Test
+    void stopsAfterOneRoundWhenTheCritiquePassesImmediately() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[{"id":"task-1","instruction":"搜索1","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":true,"feedback":""}
+                        """)),
+                List.of(text("# 报告：一轮就通过了")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(List.of(text("结果1")));
+
+        // maxCritiqueRounds=3，但批判第一轮就判定通过，不应该再跑第二轮
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 3);
+
+        DeepResearchReport report = service.research("测试批判一次通过");
+
+        assertThat(report.taskResults()).hasSize(1);
+        assertThat(report.report()).isEqualTo("# 报告：一轮就通过了");
+        assertThat(plainModel.roundCount())
+                .as("澄清+主题+计划+批判+总结，共 5 次纯文本调用，批判通过后不该有第二轮计划调用")
+                .isEqualTo(5);
+        assertThat(searchModel.roundCount()).as("只有一轮任务执行").isEqualTo(1);
+    }
+
+    @Test
+    void feedsCritiqueFeedbackIntoTheNextRoundAndAccumulatesResultsAcrossRounds() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[{"id":"task-1","instruction":"搜索1","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":false,"feedback":"缺少最新一手数据来源，需要补充"}
+                        """)),
+                List.of(text("""
+                        {"tasks":[{"id":"task-2","instruction":"搜索2","order":1}]}
+                        """)),
+                List.of(text("# 报告：两轮之后的综合结果")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text("第一轮结果")),
+                List.of(text("第二轮结果")));
+
+        // maxCritiqueRounds=2：第一轮批判不通过，跑第二轮；第二轮已经是轮次上限，
+        // 不管批判结果如何都直接停止，不会有第三次计划调用
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 2);
+
+        DeepResearchReport report = service.research("测试批判反馈驱动下一轮");
+
+        assertThat(report.taskResults())
+                .as("两轮的任务结果都应该累加进最终结果，不能只保留最后一轮")
+                .hasSize(2);
+        assertThat(report.taskResults().get(0).taskId()).isEqualTo("task-1");
+        assertThat(report.taskResults().get(1).taskId()).isEqualTo("task-2");
+        assertThat(report.report()).isEqualTo("# 报告：两轮之后的综合结果");
+        assertThat(plainModel.roundCount())
+                .as("澄清+主题+计划1+批判1+计划2+总结，共 6 次；到达轮次上限后不再有第二次批判调用")
+                .isEqualTo(6);
+
+        // 第二轮的计划生成（第 5 次纯文本调用，index=4）应该带上第一轮批判反馈作为输入
+        String secondPlanPrompt = plainModel.messagesAtRound(4).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(secondPlanPrompt).contains("缺少最新一手数据来源，需要补充");
+    }
+
+    @Test
+    void throwsAClearErrorWhenThePlanIsNotValidJson() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("这不是合法的 JSON")));
+        ScriptedChatModel searchModel = new ScriptedChatModel();
+
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5));
+
+        assertThatThrownBy(() -> service.research("测试问题"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("执行计划解析失败");
+    }
+
+    // ==================== issue #37：DeepResearch 专用上下文压缩 ====================
+
+    /**
+     * 验证"历史 Critique 反馈只保留最新一条，更早的批判反馈在渲染/压缩时被过滤掉"这条验收标准，
+     * 直接对着真实累积状态断言，不是靠"分开一个变量就顺带满足"（issue #37 的关键区别，见票据说明：
+     * {@code previousFeedback} 那个单独变量早在 issue #35 就已经只存最新一条，但拼进 critique() 的
+     * 累积检索结果上下文里如果不专门处理，历史反馈还是会一条条堆起来）。
+     *
+     * <p>跑够 3 轮批判（第 3 轮通过，提前结束，不需要真的跑满 4 轮）：第 1 轮批判不通过留下反馈 A，
+     * 第 2 轮批判不通过留下反馈 B，断言第 3 轮批判实际收到的提示词里只有 B、没有 A——
+     * 如果没有"按标记只保留最新一条"这条规则，A 应该还在（未压缩场景下上下文只加不减）。
+     */
+    @Test
+    void keepsOnlyTheLatestCritiqueFeedbackInTheAccumulatedResearchContext() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[{"id":"task-1","instruction":"搜索1","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":false,"feedback":"缺A的信息"}
+                        """)),
+                List.of(text("""
+                        {"tasks":[{"id":"task-2","instruction":"搜索2","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":false,"feedback":"缺B的信息"}
+                        """)),
+                List.of(text("""
+                        {"tasks":[{"id":"task-3","instruction":"搜索3","order":1}]}
+                        """)),
+                List.of(text("""
+                        {"passed":true,"feedback":""}
+                        """)),
+                List.of(text("# 报告")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text("结果1")),
+                List.of(text("结果2")),
+                List.of(text("结果3")));
+
+        // 阈值给得很大，这个用例只关心标记过滤，不想让 token 阈值触发的整体摘要压缩掺进来干扰
+        ContextCompactor researchContextCompactor = new ContextCompactor(
+                ContextPolicy.builder()
+                        .tokenThreshold(100_000)
+                        .retainLatestOnlyMarkers(DeepResearchService.CRITIQUE_FEEDBACK_MARKER)
+                        .build(),
+                new ScriptedChatModel()); // 不会被调用——这个用例不会触发 autoCompact
+
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 2, 4, researchContextCompactor);
+
+        DeepResearchReport report = service.research("测试批判反馈只保留最新一条");
+
+        assertThat(report.taskResults()).hasSize(3);
+        assertThat(report.report()).isEqualTo("# 报告");
+
+        // 第 3 轮批判（第 8 次纯文本调用，index=7）实际收到的提示词
+        String thirdCritiquePrompt = plainModel.messagesAtRound(7).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(thirdCritiquePrompt)
+                .as("最新一轮（第 2 轮）批判反馈必须还在，供第 3 轮批判参考")
+                .contains("缺B的信息");
+        assertThat(thirdCritiquePrompt)
+                .as("更早一轮（第 1 轮）批判反馈已经被更新的一条取代，不该再出现")
+                .doesNotContain("缺A的信息");
+    }
+
+    /**
+     * 验证"触发阈值"和"压缩后的效果"两条验收标准：token 预算被撑爆时真的触发了整体摘要压缩
+     * （而不是无限累积原始检索结果），并且压缩产出的摘要确实被后续轮次的 LLM 调用看到了——
+     * 不是"压缩完信息就丢了"。用可控的摘要模型固定返回一段可识别的文本，直接断言这段文本
+     * 出现在触发压缩后的那一轮、以及再往后一轮的提示词里；同时反向断言被压掉的原始长文本
+     * 不再出现，证明确实发生了替换而不是简单追加。
+     */
+    @Test
+    void compactsResearchContextWhenTokenThresholdIsExceededAndTheSummaryStillDrivesLaterRounds() {
+        String longRawResult = "关于该主题的详细检索结果内容，包含大量细节数据。".repeat(20);
+        String summaryText = "摘要：已提炼三项检索结果的核心结论";
+
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("【开始研究】方向已明确")),
+                List.of(text("1. 分析点")),
+                List.of(text("""
+                        {"tasks":[
+                          {"id":"task-1","instruction":"搜索1","order":1},
+                          {"id":"task-2","instruction":"搜索2","order":1},
+                          {"id":"task-3","instruction":"搜索3","order":1}
+                        ]}
+                        """)),
+                List.of(text("""
+                        {"passed":false,"feedback":"还需要更多信息"}
+                        """)),
+                List.of(text("""
+                        {"tasks":[{"id":"task-4","instruction":"搜索4","order":1}]}
+                        """)),
+                List.of(text("# 报告：验证压缩仍能影响后续决策")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text(longRawResult)),
+                List.of(text(longRawResult)),
+                List.of(text(longRawResult)),
+                List.of(text("结果D")));
+
+        ChatModel summarisingModel = new ChatModel() {
+            @Override
+            public ChatResponse call(Prompt prompt) {
+                return text(summaryText);
+            }
+
+            @Override
+            public Flux<ChatResponse> stream(Prompt prompt) {
+                throw new UnsupportedOperationException("摘要走同步调用");
+            }
+        };
+        ContextCompactor researchContextCompactor = new ContextCompactor(
+                ContextPolicy.builder()
+                        .tokenThreshold(200)
+                        .retainLatestOnlyMarkers(DeepResearchService.CRITIQUE_FEEDBACK_MARKER)
+                        .build(),
+                summarisingModel);
+
+        // maxConcurrentTasksPerLayer=1：同一层 3 个任务强制串行调用 searchModel，
+        // ScriptedChatModel 本身不是线程安全的，真并发跑这一层会有竞态（见类注释）
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                1, 20, 2, 2, researchContextCompactor);
+
+        DeepResearchReport report = service.research("测试压缩触发且摘要能延续到后续轮次");
+
+        assertThat(report.taskResults())
+                .as("压缩只影响喂给 LLM 的文本，不该影响返回给调用方的结构化结果").hasSize(4);
+        assertThat(report.report()).isEqualTo("# 报告：验证压缩仍能影响后续决策");
+
+        // 第 1 轮批判（第 4 次纯文本调用，index=3）：3 个长文本已经超过 tokenThreshold=200，
+        // 这次调用自己的提示词就应该已经是压缩后的摘要，而不是原始长文本
+        String firstCritiquePrompt = plainModel.messagesAtRound(3).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(firstCritiquePrompt).as("压缩产出的摘要必须出现在触发压缩后的这一轮提示词里")
+                .contains(summaryText);
+        assertThat(firstCritiquePrompt).as("原始长文本应该已经被摘要替换掉，不该再原样出现")
+                .doesNotContain(longRawResult.substring(0, 50));
+
+        // 最终总结（第 6 次纯文本调用，index=5）：验证压缩效果跨轮次持续存在，不是"压完这一次就没了"
+        String summarizePrompt = plainModel.messagesAtRound(5).stream()
+                .map(m -> m.getText())
+                .reduce("", String::concat);
+        assertThat(summarizePrompt).as("摘要应该一路带到最终总结，证明压缩后的信息确实继续影响了后续决策")
+                .contains(summaryText);
+        assertThat(summarizePrompt).as("原始长文本不该在任何后续阶段死灰复燃")
+                .doesNotContain(longRawResult.substring(0, 50));
+    }
+
+    /**
+     * 线程安全的 {@link ChatModel} 测试替身，只用来验证"同一层任务确实并发跑、且并发数不超过
+     * 配置的上限"——不关心每次调用具体返回什么内容，靠 {@link AtomicInteger} 记录同时在跑的
+     * 调用数峰值。每次调用固定睡 {@code workDuration}，让并发窗口足够宽，能稳定观察到重叠。
+     */
+    private static final class ConcurrentTrackingChatModel implements ChatModel {
+
+        private final Duration workDuration;
+        private final AtomicInteger active = new AtomicInteger();
+        private final AtomicInteger maxObservedConcurrency = new AtomicInteger();
+
+        ConcurrentTrackingChatModel(Duration workDuration) {
+            this.workDuration = workDuration;
+        }
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            throw new UnsupportedOperationException("只支持 stream()");
+        }
+
+        @Override
+        public Flux<ChatResponse> stream(Prompt prompt) {
+            return Mono.fromRunnable(() -> {
+                        int current = active.incrementAndGet();
+                        maxObservedConcurrency.updateAndGet(prev -> Math.max(prev, current));
+                    })
+                    .then(Mono.delay(workDuration))
+                    .doFinally(signal -> active.decrementAndGet())
+                    .map(ignored -> (ChatResponse) new ChatResponse(
+                            List.of(new org.springframework.ai.chat.model.Generation(
+                                    AssistantMessage.builder().content("done").build()))))
+                    .flux();
+        }
+
+        int maxObservedConcurrency() {
+            return maxObservedConcurrency.get();
+        }
+    }
+
+    /**
+     * {@link ChatModel} 测试替身：前 {@code failuresBeforeSuccess} 次调用让上游 Flux 直接
+     * {@code onError}，之后（如果还有）才成功——用来驱动 issue #36 的重试逻辑，不需要真的
+     * 接网络就能确定性地验证"失败第 N 次后还会重试第 N+1 次"。
+     */
+    private static final class FlakyChatModel implements ChatModel {
+
+        private final int failuresBeforeSuccess;
+        private final AtomicInteger callCount = new AtomicInteger();
+
+        FlakyChatModel(int failuresBeforeSuccess) {
+            this.failuresBeforeSuccess = failuresBeforeSuccess;
+        }
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            throw new UnsupportedOperationException("只支持 stream()");
+        }
+
+        @Override
+        public Flux<ChatResponse> stream(Prompt prompt) {
+            int attempt = callCount.incrementAndGet();
+            if (attempt <= failuresBeforeSuccess) {
+                return Flux.error(new RuntimeException("simulated transient failure #" + attempt));
+            }
+            return Flux.just(text("success after retry"));
+        }
+
+        int callCount() {
+            return callCount.get();
+        }
+    }
+}

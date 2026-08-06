@@ -1,6 +1,6 @@
 package com.agenttrail.loop.tools;
 
-import com.agenttrail.loop.file.FileQaService;
+import com.agenttrail.capability.file.FileQaService;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.NoSuchElementException;

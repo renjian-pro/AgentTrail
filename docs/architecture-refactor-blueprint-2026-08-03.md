@@ -13,12 +13,12 @@
 > 该优先修什么"的）；其余条目仍按原文本理解，标注为"未复核"。
 >
 > **已经过时或需要修正的**：
-> - **P0-1（文档与代码状态漂移）过时**：`capability/`（analytics/auth/sys）已经在 2026-08-05
->   落地，`architecture.md` 也已同步到 2026-08-06，不再是"文档说 `capability/` 是空的但代码里
->   已经有"这个具体漂移状态了——`architecture.md` 自己现在就直接引用本文档的 P0-1 说明剩余差
->   距（见该文档"分包原则"表格）。但 P0-1 指出的更深问题（`loop.deepresearch`/`loop.ppt`/
->   `loop.file`/`loop.rag` 仍然挂在 `loop/` 下、没有跟着搬进 `capability/`）还在，只是症状描述
->   要换一下。
+> - **P0-1（文档与代码状态漂移）已解决**：`capability/`（analytics/auth/sys）2026-08-05 落地；
+>   2026-08-06 又把 `loop.deepresearch`/`loop.ppt`/`loop.file`/`loop.rag` 全部搬进了
+>   `capability/`（`loop.multimodal` 顺带挪到 `capability.file.multimodal`，修正了它其实只服务
+>   于文件问答这层从属关系）——纯包名搬迁，不改逻辑，129 个文件、116 处引用，编译和全量测试
+>   （606 个）一次性全绿。`loop/` 下现在只剩纯 Runtime 机制，不再有业务能力包，P0-1 描述的问题
+>   不再存在，`architecture.md` 第三节/第七节已同步。
 > - **P0-6（长任务同步占用 Web 请求）大部分过时**：`DeepResearchController`/
 >   `PptGenerationController` 现在都是提交即返回 `taskId`、后台线程池执行、前端轮询状态，
 >   并且都支持取消（issue #65）——不再是"直接调用同步 Service"或者"在请求线程内创建虚拟线程
@@ -356,7 +356,7 @@ flowchart LR
 
 | 编号 | 问题 | 证据 | 影响 |
 |---|---|---|---|
-| P0-1 | 文档与代码状态漂移 | `architecture.md`/`AGENTS.md` 仍描述 `capability/` 为空，但实际已有 `loop.ppt`、`loop.deepresearch`、`loop.file`、`loop.rag` | 面试叙事、开发判断和实际代码不一致 |
+| ~~P0-1~~ | ~~文档与代码状态漂移~~ | ~~`architecture.md`/`AGENTS.md` 仍描述 `capability/` 为空，但实际已有 `loop.ppt`、`loop.deepresearch`、`loop.file`、`loop.rag`~~ | **已解决**（见文首 2026-08-06 复核更新）：`capability/` 已落地，四个包已从 `loop/` 搬入 |
 | P0-2 | V0/V1 双入口同时暴露 | `/agent/chat` 仍装配 `V0.AgentScopeRuntime`，V1 另有 `/agent/v1/chat` | 调用关系、配置、监控和故障定位分裂 |
 | P0-3 | 业务直接依赖 `AgentLoopExecutor` | PPT 策略、DeepResearch、WebSearch 测试直接 `new/forModel().call()` | Runtime 无法替换，业务无法独立测试 |
 | P0-4 | `AgentLoopExecutor` 依赖过多 | 构造函数链包含任务、压缩、思考、持久化、工具搜索、暂停、阶段输出、追踪、记忆、文件等十多个可选依赖 | 空值语义、装配错误和回归风险持续增加 |

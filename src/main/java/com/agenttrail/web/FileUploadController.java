@@ -1,8 +1,8 @@
 package com.agenttrail.web;
 
-import com.agenttrail.loop.file.FileParsingException;
-import com.agenttrail.loop.file.FileQaService;
-import com.agenttrail.loop.rag.VectorizationException;
+import com.agenttrail.capability.file.FileParsingException;
+import com.agenttrail.capability.file.FileQaService;
+import com.agenttrail.capability.rag.VectorizationException;
 import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;

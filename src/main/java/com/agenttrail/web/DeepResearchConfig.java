@@ -2,7 +2,7 @@ package com.agenttrail.web;
 
 import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.ContextPolicy;
-import com.agenttrail.loop.deepresearch.DeepResearchService;
+import com.agenttrail.capability.deepresearch.DeepResearchService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
