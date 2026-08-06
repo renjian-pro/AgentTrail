@@ -256,6 +256,40 @@ class ToolCallExecutorTest {
         }
     }
 
+    /**
+     * 踩坑点 #92 的审计结论：一整轮工具调用没有应用层超时兜底时会永远卡住，和修复前的
+     * 6 处同步 {@code chatModel.call()} 是同一个故障模式。这里用一个真的 {@code Thread.sleep()}
+     * 卡住的工具 + 注入的短超时验证降级路径：调用方必须在配置的超时附近拿回控制权，
+     * 拿到的是超时错误结果，而不是无限期等待或者让异常炸穿整轮对话。
+     */
+    @Test
+    void degradesToTimeoutErrorsForEveryCallInTheRoundInsteadOfHangingForeverWhenAToolNeverReturns() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RecordingToolCallback neverReturns = new RecordingToolCallback("stuck", "never returns", arguments -> {
+            sleep(30_000);
+            return "too late";
+        });
+        RecordingToolCallback fast = new RecordingToolCallback("fast", "returns at once", "fast-result");
+        ToolCallExecutor executor = new ToolCallExecutor(
+                List.of(neverReturns, fast), registry, Duration.ofMillis(150));
+
+        long startedAt = System.currentTimeMillis();
+        List<ToolResponse> responses = executor.execute(List.of(
+                call("call-1", "stuck", "{}"),
+                call("call-2", "fast", "{}")), sink::tryEmitNext, NO_INJECTION);
+        long elapsed = System.currentTimeMillis() - startedAt;
+
+        assertThat(elapsed).as("调用方必须在配置的超时附近拿回控制权，不能陪 stuck 工具等 30 秒").isLessThan(2000);
+        assertThat(responses).extracting(ToolResponse::id).containsExactly("call-1", "call-2");
+        assertThat(responses).extracting(ToolResponse::responseData).allSatisfy(
+                data -> assertThat(data).asString().contains("timed out"));
+        assertThat(registry.get("agenttrail.tool.calls").tags("tool", "stuck", "outcome", "timeout").counter().count())
+                .as("超时必须计入指标，不能只进日志——不然 Grafana 面板上完全看不出发生过")
+                .isEqualTo(1);
+        assertThat(registry.get("agenttrail.tool.calls").tags("tool", "fast", "outcome", "timeout").counter().count())
+                .isEqualTo(1);
+    }
+
     /** 不传快照（null）时必须是完全的空操作，不能因为没有 MDC 就报错或者行为跑偏。 */
     @Test
     void toolExecutionWorksNormallyWhenNoMdcSnapshotIsProvided() {

@@ -2,6 +2,7 @@ package com.agenttrail.loop.security;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.agenttrail.loop.core.SynchronousLlmCall;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -54,7 +55,7 @@ public class PromptInjectionGuard {
         try {
             Prompt prompt = new Prompt(List.of(
                     new SystemMessage(CLASSIFIER_PROMPT), new UserMessage(userInput)));
-            String result = chatModel.call(prompt).getResult().getOutput().getText();
+            String result = SynchronousLlmCall.call(chatModel, prompt).getResult().getOutput().getText();
             return result != null && "true".equalsIgnoreCase(result.trim());
         } catch (Exception classificationFailed) {
             log.warn("Prompt Injection 分类调用失败，本次放行: {}", classificationFailed.getMessage());

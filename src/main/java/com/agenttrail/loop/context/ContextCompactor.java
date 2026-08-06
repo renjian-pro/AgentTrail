@@ -1,5 +1,6 @@
 package com.agenttrail.loop.context;
 
+import com.agenttrail.loop.core.SynchronousLlmCall;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -202,7 +203,7 @@ public class ContextCompactor {
             Prompt prompt = new Prompt(List.of(
                     new SystemMessage(SUMMARY_SYSTEM_PROMPT),
                     new UserMessage(buildSummaryRequest(history, currentQuestion))));
-            String summary = chatModel.call(prompt).getResult().getOutput().getText();
+            String summary = SynchronousLlmCall.call(chatModel, prompt).getResult().getOutput().getText();
             return (summary != null) ? summary : truncationFallback(history);
         } catch (Exception summaryFailed) {
             log.warn("摘要生成失败，降级为保留最近 {} 条消息: {}", FALLBACK_KEEP_MESSAGES, summaryFailed.getMessage());

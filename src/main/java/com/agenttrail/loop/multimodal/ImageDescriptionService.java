@@ -1,5 +1,6 @@
 package com.agenttrail.loop.multimodal;
 
+import com.agenttrail.loop.core.SynchronousLlmCall;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -50,7 +51,7 @@ public class ImageDescriptionService {
                 .build();
         Prompt prompt = new Prompt(List.of(message), OpenAiChatOptions.builder().model(model).build());
 
-        ChatResponse response = visionCapableChatModel.call(prompt);
+        ChatResponse response = SynchronousLlmCall.call(visionCapableChatModel, prompt);
         String text = response.getResult().getOutput().getText();
         return (text == null || text.isBlank()) ? UNRECOGNIZABLE_NOTICE : text.trim();
     }

@@ -1,5 +1,6 @@
 package com.agenttrail.loop.memory;
 
+import com.agenttrail.loop.core.SynchronousLlmCall;
 import com.agenttrail.loop.structured.JsonRepair;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -75,7 +76,7 @@ public class MemoryExtractor {
         Prompt prompt = new Prompt(List.of(
                 new SystemMessage(EXTRACTION_SYSTEM_PROMPT),
                 new UserMessage("用户: " + question + "\n助手: " + answer)));
-        String rawOutput = chatModel.call(prompt).getResult().getOutput().getText();
+        String rawOutput = SynchronousLlmCall.call(chatModel, prompt).getResult().getOutput().getText();
         String fixedJson = JsonRepair.fixJson(rawOutput);
         List<ExtractionItem> items = JSON.readValue(fixedJson, new TypeReference<List<ExtractionItem>>() {
         });

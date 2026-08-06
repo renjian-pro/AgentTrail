@@ -48,9 +48,11 @@ import org.slf4j.MDC;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -59,6 +61,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -83,6 +86,17 @@ public class AgentLoopExecutor {
 
     private static final ZoneId APP_ZONE = ZoneId.of("Asia/Shanghai");
 
+    /**
+     * 一整轮（含可能的工具调用）的绝对时钟上限——踩坑点 #93：{@link LlmInvoker} 的 TTFT/idle 超时
+     * 按"距上一个信号多久"计时，2026-08-06 用一次真实 DashScope 卡顿复现过它会被无限重置——模型
+     * 文字已经吐完，但连接持续零星发一些不产出可见内容的收尾帧（对 Reactor 而言仍是"收到了新信号"），
+     * 30 秒 idle 超时因此从未触发，单飞锁永久卡住。这道兜底不看"有没有信号"，只看这一轮从订阅开始
+     * 算的绝对时长——不管卡在等首字节、卡在逐 chunk 间隔，还是卡在"有信号但从不真正完成"，统一在
+     * 这个时间点强制收尾。8 分钟给足了正常场景的余量（{@link ToolCallExecutor} 自己的工具轮次上限
+     * 已经是 5 分钟，这里是它之上、覆盖整轮（含 LLM 流式阶段）的最后一道防线）。
+     */
+    static final Duration DEFAULT_ROUND_TIMEOUT = Duration.ofMinutes(8);
+
     private final LlmInvoker llmInvoker;
     private final ToolCallExecutor toolCallExecutor;
     private final AgentTaskManager taskManager;
@@ -106,6 +120,7 @@ public class AgentLoopExecutor {
     private final PromptInjectionGuard promptInjectionGuard;
     private final PiiMasker piiMasker;
     private final ToolRateLimiter toolRateLimiter;
+    private final Duration roundTimeout;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
         this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
@@ -285,6 +300,23 @@ public class AgentLoopExecutor {
                       MeterRegistry meterRegistry, String modelName,
                       PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
                       ToolRateLimiter toolRateLimiter) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
+                maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
+                promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT);
+    }
+
+    /** 测试专用：注入一个短得多的 {@code roundTimeout}，不用真的等 8 分钟才能验证超时降级。 */
+    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                      StageOutputManager stageOutputManager, TraceStore traceStore,
+                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
+                      AgentHooks hooks, SessionBudgetTracker budgetTracker,
+                      MeterRegistry meterRegistry, String modelName,
+                      PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
+                      ToolRateLimiter toolRateLimiter, Duration roundTimeout) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog), meterRegistry);
         this.taskManager = taskManager;
@@ -308,6 +340,7 @@ public class AgentLoopExecutor {
         this.promptInjectionGuard = promptInjectionGuard;
         this.piiMasker = piiMasker;
         this.toolRateLimiter = toolRateLimiter;
+        this.roundTimeout = (roundTimeout == null) ? DEFAULT_ROUND_TIMEOUT : roundTimeout;
     }
 
     /**
@@ -623,6 +656,27 @@ public class AgentLoopExecutor {
 
         // 每轮都要重新登记，否则停止请求作用在上一轮早已结束的订阅上（踩坑点 #9）
         taskManager.setDisposable(context.conversationId(), subscription);
+        scheduleRoundWatchdog(context, state, requestSnapshot, subscription);
+    }
+
+    /**
+     * 绝对时钟兜底（踩坑点 #93）：不看这一轮此刻处于什么状态，只看 {@code roundTimeout} 之后
+     * {@code subscription} 是不是还没结束——{@code Disposable#isDisposed()} 在订阅正常完成/出错
+     * 时会自然变 true（不需要显式调用 {@code dispose()}），所以这里不用关心"要不要在成功路径上
+     * 提前取消这个 watchdog"：到点一看已经结束了，直接返回，不做任何事，每轮多出的这一次
+     * 延迟调度是唯一的常驻代价。真正命中超时时才会执行 dispose + failRun，和其它失败路径
+     * 走同一套收尾逻辑（落库、Hook、释放单飞锁、给前端一个明确的 Error 事件）。
+     */
+    private void scheduleRoundWatchdog(RunContext context, RoundState state, String requestSnapshot,
+                                       Disposable subscription) {
+        Mono.delay(roundTimeout).subscribe(tick -> {
+            if (subscription.isDisposed()) {
+                return;
+            }
+            subscription.dispose();
+            failRun(new TimeoutException("round exceeded absolute timeout of " + roundTimeout),
+                    context, state, requestSnapshot);
+        });
     }
 
     private Timer timer(String name) {

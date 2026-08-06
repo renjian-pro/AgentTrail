@@ -189,11 +189,19 @@ com.agenttrail
 │
 ├── loop/                                      # loop 根包下现在只有子包，没有散落的顶层文件
 │   ├── core/                                  # ★ V1 主线：手写 ReAct 引擎本体
-│   │   ├── AgentLoopExecutor.java            # 编排入口：stream()/call()/resume()，唯一的公开门面
+│   │   ├── AgentLoopExecutor.java            # 编排入口：stream()/call()/resume()，唯一的公开门面；
+│   │   │                                      #   踩坑点 #93：call() 里为每一轮额外挂一个不依赖 Flux 内部信号的
+│   │   │                                      #   绝对时钟 watchdog（默认 8 分钟），LlmInvoker 的 TTFT/idle 超时
+│   │   │                                      #   会被不产出可见内容的 chunk 无限重置，这是它们之上的第三道防线
 │   │   ├── AgentLoopExecutor.Builder         # 装配用 builder（见第四节），和既有构造函数并存
 │   │   ├── RunContext.java / RoundState.java / RoundMode.java   # 单次请求 / 单轮的状态
-│   │   ├── LlmInvoker.java                   # 唯一模型调用出口：直调 ChatModel.stream
-│   │   ├── ToolCallExecutor.java             # 工具执行（独立调度器隔离，MDC 跨线程传播）
+│   │   ├── LlmInvoker.java                   # 流式模型调用唯一出口：直调 ChatModel.stream，两段式超时（TTFT+idle）——
+│   │   │                                      #   踩坑点 #93：这两段超时按"距上一个信号多久"计时，会被不产出可见
+│   │   │                                      #   内容的 chunk 无限重置，不是靠它自己就能兜住所有卡死场景
+│   │   ├── SynchronousLlmCall.java           # 踩坑点 #92：同步模型调用唯一出口（分类/检索/摘要/提取/判分），
+│   │   │                                      #   复用 LlmInvoker 同款 Reactor 超时，替换掉 6 处曾经裸调 chatModel.call() 的调用点
+│   │   ├── ToolCallExecutor.java             # 工具执行（独立调度器隔离，MDC 跨线程传播）；踩坑点 #92 审计后
+│   │   │                                      #   补了 .timeout(5min) + 超时降级为逐条 ToolResponse + 指标计数
 │   │   ├── ToolCallAccumulator.java          # 流式 tool_call 分片按 id 重组
 │   │   ├── ToolParamInjector.java            # toolParams 白名单注入
 │   │   ├── ThinkingModeProcessor.java        # REASONING_CONTENT/THINK_TAG/DISABLED 三分支
@@ -284,7 +292,14 @@ com.agenttrail
 │   ├── GoldenCase.java / GoldenTaskReport.java / GoldenAssertion.java / GoldenTaskRunner.java
 │   ├── GoldenCaseCandidateExtractor.java      # 从 agent_trace 筛候选样本，强制人工确认，不自动信任生产流量
 │   ├── LlmJudge.java                          # 结构化 LLM-as-Judge + 一致性方差校验
-│   └── GoldenEvaluationService.java           # 异步任务编排，供 GoldenEvaluationController 调用
+│   ├── GoldenCaseRecord.java / GoldenCaseView.java / GoldenCaseRequest.java  # 2026-08-06：评测页面反馈
+│   │   （"只能跑、用例改不了、badcase 加不进去"）之后新增的可写用例——db/schema.sql 的 golden_case
+│   │   表，YAML 内建用例仍只读；GoldenCaseView 把两边合并成一份列表，editable 标出哪些能改
+│   ├── GoldenCaseRepository.java              # golden_case 表的 JdbcClient 读写，断言/工具调用整段存 JSON
+│   ├── GoldenCaseService.java                 # 合并 YAML + DB、id 冲突校验；casesForExecution() 是
+│   │   GoldenEvaluationService 实际跑的用例来源，和管理页面看到的列表共用同一份合并逻辑
+│   └── GoldenEvaluationService.java           # 异步任务编排，供 GoldenEvaluationController 调用；
+│       用例来源已从 GoldenTaskRunner.loadAll() 改成 GoldenCaseService.casesForExecution()
 │
 ├── capability/                                 # 2026-08-05 更新：Phase 2 已落地，不再是空目录
 │   ├── analytics/                              # SQL 数据分析能力包（issue #52-#61）：schema/sql/permission/glossary/tools 子包
@@ -303,6 +318,9 @@ com.agenttrail
     ├── CapabilityConversationService.java       # Research/PPT 复用 agent_session
     ├── DeepResearchController.java / PptGenerationController.java  # 均已异步化：提交立即返回 taskId，后台线程池执行，前端轮询 /{taskId} 查状态；均已支持取消（issue #65）
     ├── GoldenEvaluationController.java          # issue #69/#70：/agent/v1/evaluation/{run,{taskId},history}，供前端评测页面轮询
+    ├── GoldenCaseController.java                 # 2026-08-06：/agent/v1/evaluation/cases 的增删改查，只对 DB 里的用例生效
+    ├── GoldenCandidateController.java            # 2026-08-06：/agent/v1/evaluation/conversations(/{id}/candidates)，
+    │                                              #   浏览跨用户的会话、拉取某会话的可提升候选；提升本身走 GoldenCaseController#create
     └── FileUploadController.java                # 文件上传/问答/删除，含向量库联动清理
 ```
 

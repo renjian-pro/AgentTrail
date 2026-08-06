@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage.ToolCall;
 import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
 import org.springframework.ai.tool.ToolCallback;
@@ -14,8 +16,10 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -23,21 +27,38 @@ import java.util.stream.Collectors;
 /**
  * 执行一轮里全部的工具调用，并把结果按原始调用顺序拼回。
  *
- * <p>本类是"模型的不确定输出"和"确定性的工具执行"之间的隔离层，两类异常都在这里被吸收成
+ * <p>本类是"模型的不确定输出"和"确定性的工具执行"之间的隔离层，几类异常都在这里被吸收成
  * 普通的工具结果喂回模型，而不是抛出去中断整个循环：
  * <ul>
  *   <li>参数不是合法 JSON（流被截断、maxTokens 砍掉了后半段）→ 降级成空参数（踩坑点 #2）
  *   <li>模型幻觉出一个不存在的工具 → 把"工具不存在"作为结果返回
+ *   <li>单个工具调用抛异常（MCP 超时、远端 5xx）→ {@link #executeOne} 内部已经 catch 住
+ *   <li>一整轮工具调用集体卡住太久（踩坑点 #92 的审计结论：这里原来没有任何应用层超时兜底，
+ *       和修复前的 6 处同步 {@code chatModel.call()} 是同一个模式）→ {@link #DEFAULT_ROUND_TIMEOUT}
+ *       兜底，超时后把这一轮里每个工具调用都合成一条超时错误喂回模型
  * </ul>
- * 两种情况模型下一轮都能看到错误、有机会自我纠正；直接抛异常则整轮对话直接死掉。
+ * 这几种情况模型下一轮都能看到错误、有机会自我纠正；直接抛异常则整轮对话直接死掉。
  *
  * <p>工具名到实现的映射在构造时建成 Map，而不是每次调用都线性扫一遍工具列表——
  * 工具数量上去之后（尤其挂了 MCP 和 Skills 之后）线性查找是没必要的开销。
  */
 class ToolCallExecutor {
 
+    private static final Logger log = LoggerFactory.getLogger(ToolCallExecutor.class);
+
     /** 参数缺失时的兜底值，必须是合法 JSON 空对象——工具侧统一按"没传参数"处理。 */
     private static final String EMPTY_ARGUMENTS = "{}";
+
+    /**
+     * 一轮里全部工具调用（并发跑）合在一起的硬上限——不是"单个工具调用"的超时，那个由每个
+     * 工具自己的实现负责（Bash 有 {@code process.waitFor}，Tavily/图表工具有各自的
+     * {@code timeout-seconds}）。这里兜的是"某个工具没有做好自己的超时、或者实现有 bug 真的
+     * 卡死"这类兜不住的情况——没有这一层，{@link #execute} 底部的 {@code .block()} 会跟着永远
+     * 卡住，整轮对话（乃至沿用同一个 {@link #TOOL_EXECUTION_SCHEDULER} 的其它对话）一起陪葬，
+     * 和踩坑点 #92 里 6 处裸调 {@code chatModel.call()} 是同一个故障模式。5 分钟给单个工具留了
+     * 远超正常预期的余量（对比逐个工具自己的超时基本都在几十秒量级），只在"确实没人兜底"时才触发。
+     */
+    static final Duration DEFAULT_ROUND_TIMEOUT = Duration.ofMinutes(5);
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -54,17 +75,24 @@ class ToolCallExecutor {
 
     private final Map<String, ToolCallback> toolsByName;
     private final MeterRegistry meterRegistry;
+    private final Duration roundTimeout;
 
     ToolCallExecutor(List<ToolCallback> tools) {
         this(tools, null);
     }
 
     ToolCallExecutor(List<ToolCallback> tools, MeterRegistry meterRegistry) {
+        this(tools, meterRegistry, DEFAULT_ROUND_TIMEOUT);
+    }
+
+    /** 测试专用：注入一个短得多的 {@code roundTimeout}，不用真的等 5 分钟才能验证超时降级。 */
+    ToolCallExecutor(List<ToolCallback> tools, MeterRegistry meterRegistry, Duration roundTimeout) {
         this.toolsByName = tools.stream().collect(Collectors.toMap(
                 tool -> tool.getToolDefinition().name(),
                 Function.identity(),
                 (first, duplicate) -> first));
         this.meterRegistry = meterRegistry;
+        this.roundTimeout = roundTimeout;
     }
 
     List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
@@ -105,13 +133,51 @@ class ToolCallExecutor {
     List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
                                ToolParamInjector paramInjector, ToolCallback sessionScopedTool,
                                Map<String, String> mdcSnapshot) {
-        return Flux.fromIterable(toolCalls)
-                .flatMapSequential(toolCall -> Mono
-                        .fromCallable(() -> MdcPropagation.call(mdcSnapshot,
-                                () -> executeOne(toolCall, emit, paramInjector, sessionScopedTool)))
-                        .subscribeOn(TOOL_EXECUTION_SCHEDULER))
-                .collectList()
-                .block();
+        try {
+            return Flux.fromIterable(toolCalls)
+                    .flatMapSequential(toolCall -> Mono
+                            .fromCallable(() -> MdcPropagation.call(mdcSnapshot,
+                                    () -> executeOne(toolCall, emit, paramInjector, sessionScopedTool)))
+                            .subscribeOn(TOOL_EXECUTION_SCHEDULER))
+                    .collectList()
+                    .timeout(roundTimeout)
+                    .block();
+        } catch (RuntimeException failure) {
+            if (!(failure.getCause() instanceof TimeoutException)) {
+                throw failure;
+            }
+            log.warn("本轮 {} 个工具调用超过 {} 未全部完成，按超时降级为错误结果喂回模型",
+                    toolCalls.size(), roundTimeout);
+            return toolCalls.stream()
+                    .map(toolCall -> timeoutResponse(toolCall, emit))
+                    .toList();
+        }
+    }
+
+    /**
+     * 超时时说不清楚这次调用到底跑到哪一步——{@code collectList()} 只在整条 Flux 完成时才
+     * 一次性吐出结果，个别调用即使已经悄悄跑完也拿不到；统一按"没跑完"处理，同时补一个
+     * {@code ToolEnd} 让前端不会有一个 {@code ToolStart} 永远等不到收尾，也补一次
+     * {@code agenttrail.tool.calls} 计数——第一版实现漏了这一步，超时只进日志、不进指标，
+     * Grafana 面板上完全看不出来，靠人去翻日志才发现，这不是"能不能上生产"该有的可观测性。
+     */
+    private ToolResponse timeoutResponse(ToolCall toolCall, Consumer<AgentStreamEvent> emit) {
+        String result = errorPayload("tool call timed out after " + roundTimeout.toMinutes() + " minutes");
+        emit.accept(new AgentStreamEvent.ToolEnd(toolCall.name(), toolCall.id(), result));
+        recordTimeoutMetric(toolCall.name());
+        return new ToolResponse(toolCall.id(), toolCall.name(), result);
+    }
+
+    /**
+     * 只加计数，不补 {@code agenttrail.tool.duration}：超时的调用到底跑了多久是未知的
+     * （可能刚起步就被整轮超时拖下水，也可能已经跑了 4 分 59 秒），编一个耗时数字进 Timer
+     * 会污染这个指标的分布，比"没有这条数据"更误导人。
+     */
+    private void recordTimeoutMetric(String toolName) {
+        if (meterRegistry == null) {
+            return;
+        }
+        incrementCallCounter(toolName, "timeout");
     }
 
     private ToolResponse executeOne(ToolCall toolCall, Consumer<AgentStreamEvent> emit,
@@ -164,6 +230,10 @@ class ToolCallExecutor {
                 .tag("outcome", outcome)
                 .register(meterRegistry);
         sample.stop(timer);
+        incrementCallCounter(toolName, outcome);
+    }
+
+    private void incrementCallCounter(String toolName, String outcome) {
         Counter.builder("agenttrail.tool.calls")
                 .description("Tool execution count")
                 .tag("tool", toolName)

@@ -1,5 +1,6 @@
 package com.agenttrail.loop.tools.search;
 
+import com.agenttrail.loop.core.SynchronousLlmCall;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -138,13 +139,15 @@ final class ToolSearchCallback implements ToolCallback {
         return merged;
     }
 
-    /** 失败（模型报错、返回不是合法 JSON）一律降级成空结果，不让检索本身的故障打断整轮对话。 */
+    /** 失败（模型报错、超时、返回不是合法 JSON）一律降级成空结果，不让检索本身的故障打断整轮对话——
+     *  {@link SynchronousLlmCall} 保证"模型不回应"也会在有限时间内变成一次可以被这里 catch 住的超时异常，
+     *  而不是让这条调用链一直卡住（踩坑点 #92）。 */
     private List<ToolIndexEntry> llmSearch(String query) {
         try {
             Prompt prompt = new Prompt(List.of(
                     new SystemMessage(LLM_SEARCH_SYSTEM_PROMPT.formatted(config.maxResults())),
                     new UserMessage("查询: " + query + "\n\n候选工具:\n" + renderCatalog())));
-            String content = chatModel.call(prompt).getResult().getOutput().getText();
+            String content = SynchronousLlmCall.call(chatModel, prompt).getResult().getOutput().getText();
             return resolveNames(parseNames(content));
         } catch (Exception failure) {
             log.warn("ToolSearch 的 LLM 检索失败，本次返回空结果: {}", failure.getMessage());

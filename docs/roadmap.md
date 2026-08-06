@@ -184,6 +184,7 @@
 | 成本治理 | `SessionBudgetTracker` 见上（#64）——按 conversationId 聚合 token 消耗，超限熔断，不是独立一票 | ✅ 并入 #64 |
 | 评测体系 | `GoldenTaskRunner` 从 `src/test/java` 提升为生产可调用能力（此前不在生产 classpath 上，前端/后端都调不到）；新增真实样本筛选（强制人工确认，不自动信任生产流量）、LLM-as-Judge（含一致性方差校验）、Agent 指标（工具选择准确率/参数准确率/不必要调用率）、压缩 trade-off 实测 | ✅ #69 |
 | 评测前端页面 | `EvaluationView.vue`：触发评测、轮询进度、按 dimension 看通过率、失败 case 详情、历史报告两两对比 | ✅ #70 |
+| 评测用例可维护 + badcase 回流 | 反馈"页面只有一个跑按钮，用例改不了、badcase 也加不进去"——`golden_case` 表 + `GoldenCaseController` 增删改查用例（YAML 内建用例仍只读，二者合并后一起跑）；`GoldenCaseCandidateExtractor` 接线为真实 API（此前是孤立代码，没有 Controller 调它），新增 `GoldenCasesView.vue`/`GoldenCandidatesView.vue` 两个管理页；`EvaluationView.vue` 加了通过率趋势图 | ✅ 2026-08-06 |
 | 结构化输出的业务审核层 | **不在这次范围内**——见上方 2026-08-06 更新说明 | ❌ 有意跳过 |
 | 安全纵深（AI 特有） | Prompt Injection 检测（小模型分类）、工具调用速率限制（Redisson `RRateLimiter`，防 ReAct 死循环烧 token）、PII 打码（手机号/身份证号/银行卡号）、Bash 工具凭据隔离审查（发现并修复了真实的环境变量泄露） | ✅ #71 |
 | A/B 测试 | 讨论过设计思路（模型/Prompt 版本分流 + 效果对比），本轮明确**不做**——见 `docs/specs/backend-phase3-governance.md` 的 Out of Scope | ❌ 有意跳过 |
@@ -387,3 +388,14 @@ Hooks/PauseConfig/TraceStore 生产接线同一批改动，合并做掉了，不
 - V1 的 HTTP 入口（`AgentLoopExecutorConfig` + `AgentLoopController`，`POST /agent/v1/chat`）目前
   已接入会话持久化、联网搜索和图表工具，并通过 `stream()` 返回 SSE；暂停恢复、追踪审计、分层记忆
   等机制仍按场景扩展。V0 的旧入口（`AgentController`，`/agent/chat`）保留不动，两者互不影响
+- `GoldenEvaluationService.executeCase()`（`/agent/v1/evaluation/run` 实际跑的路径）从没计算过
+  `rowCount`/`scalar.*`/`resultMatchesReference` 这几个 metrics，只有 `GoldenTaskLiveIT` 测试代码里的
+  `populateMetrics()` 真的算了。用到 `result_matches_reference`/`row_count_*`/`scalar_*` 断言的用例
+  （含内建的 `sql-001`/`sql-003`）在页面上跑永远失败，不是这次"用例可维护"改动引入的新问题，是
+  2026-08-06 顺手查出来的既有缺口，见踩坑点 #91；把 `populateMetrics` 那套"重跑 referenceSql 并按行
+  对比"的逻辑搬进生产服务是后续单独一票
+- 2026-08-06 因为一次真实的全站卡死事故，连续补了三道模型/工具调用的超时防线（踩坑点 #92/#93）：
+  `SynchronousLlmCall`（6 处同步小模型调用统一超时出口）、`ToolCallExecutor` 的工具轮次超时、
+  `AgentLoopExecutor` 的整轮绝对时钟兜底。`legacy/V0.java` 的 `agent.call(...).block()` 是审计出来
+  但**没有**一起修的同一类问题——V0 触达面小（前端只走 V1），且要不要继续维护 V0 是另一个独立决定，
+  见踩坑点 #92 的审计结论
