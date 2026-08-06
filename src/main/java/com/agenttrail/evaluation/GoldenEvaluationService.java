@@ -2,7 +2,7 @@ package com.agenttrail.evaluation;
 
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
-import com.agenttrail.web.AgentLoopExecutorFactory;
+import com.agenttrail.web.service.AgentLoopExecutorFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 

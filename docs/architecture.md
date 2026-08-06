@@ -319,19 +319,42 @@ com.agenttrail
 ├── observability/                              # issue #67：Micrometer + OTel 埋点
 │   └── AgentObservabilityConfig.java          # 自定义 Sampler（ParentBased(TraceIdRatioBased)）、TTFT/duration 独立 Timer
 │
-└── web/
-    ├── AgentController.java                    # V0 入口：POST /agent/chat
-    ├── AgentRuntimeConfig.java                  # @Bean 装配 V0.AgentScopeRuntime
-    ├── AgentLoopController.java                 # V1 入口：POST /agent/v1/chat（SSE）
-    ├── AgentLoopExecutorConfig.java             # 装配模型、任务管理与 TurnPersistenceHook
-    ├── ConversationHistoryService.java          # 会话列表/详情；首轮问题作稳定标题
-    ├── CapabilityConversationService.java       # Research/PPT 复用 agent_session
-    ├── DeepResearchController.java / PptGenerationController.java  # 均已异步化：提交立即返回 taskId，后台线程池执行，前端轮询 /{taskId} 查状态；均已支持取消（issue #65）
-    ├── GoldenEvaluationController.java          # issue #69/#70：/agent/v1/evaluation/{run,{taskId},history}，供前端评测页面轮询
-    ├── GoldenCaseController.java                 # 2026-08-06：/agent/v1/evaluation/cases 的增删改查，只对 DB 里的用例生效
-    ├── GoldenCandidateController.java            # 2026-08-06：/agent/v1/evaluation/conversations(/{id}/candidates)，
-    │                                              #   浏览跨用户的会话、拉取某会话的可提升候选；提升本身走 GoldenCaseController#create
-    └── FileUploadController.java                # 文件上传/问答/删除，含向量库联动清理
+└── web/                                        # 2026-08-06：按职责拆成四个子包，之前 38 个文件全摊平在
+    │                                              #   一个包里混着 Controller/Config/DTO/Service（用户反馈"很乱"）
+    ├── controller/                              # @RestController，只做鉴权、参数校验、调用、返回
+    │   ├── AgentController.java                # V0 入口：POST /agent/chat
+    │   ├── AgentLoopController.java             # V1 入口：POST /agent/v1/chat（SSE）
+    │   ├── DeepResearchController.java / DeepResearchTaskRegistry.java  # 均已异步化：提交立即返回
+    │   │                                        #   taskId，后台线程池执行，前端轮询 /{taskId} 查状态，支持取消（issue #65）；
+    │   │                                        #   TaskRegistry 是纯内存注册表，和 DeepResearchController 同包是因为
+    │   │                                        #   它的工厂方法是包私有的，本来就没打算被这层之外的代码直接用
+    │   ├── PptGenerationController.java         # 同样异步化 + 支持取消
+    │   ├── FileUploadController.java            # 文件上传/问答/删除，含向量库联动清理
+    │   ├── GoldenEvaluationController.java      # issue #69/#70：/agent/v1/evaluation/{run,{taskId},history}
+    │   ├── GoldenCaseController.java            # /agent/v1/evaluation/cases 的增删改查，只对 DB 里的用例生效
+    │   ├── GoldenCandidateController.java       # /agent/v1/evaluation/conversations(/{id}/candidates)，
+    │   │                                        #   浏览跨用户的会话、拉取某会话的可提升候选；提升本身走 GoldenCaseController#create
+    │   ├── AnalyticsQueryController.java        # 数据分析能力包的查询入口
+    │   └── TraceAuditController.java            # 内部运维用的审计哈希链校验入口
+    ├── config/                                  # @Configuration，纯 Bean 装配，不含业务逻辑
+    │   ├── AgentLoopExecutorConfig.java         # 装配模型、任务管理与 TurnPersistenceHook（V1 生产装配的核心）
+    │   ├── AgentRuntimeConfig.java              # @Bean 装配 V0.AgentScopeRuntime
+    │   ├── DeepResearchConfig.java / PptGenerationConfig.java / FileQaConfig.java / RagConfig.java
+    │   ├── PrimaryDataSourceConfig.java         # 主数据源装配
+    │   └── SpaFallbackConfig.java               # 前端 SPA 路由回退到 index.html，/agent/**、/api/** 除外
+    ├── dto/                                     # 纯 record，HTTP 请求/响应体——不含任何行为，
+    │   │                                        #   工厂方法（如 DeepResearchTaskResponse.running(...)）
+    │   │                                        #   拆包时从包私有改成了 public，本来就是给 controller 层调的
+    │   └── AgentChatRequest.java / AgentChatResponse.java / ConversationHistoryResponse.java / ... 共 15 个
+    └── service/                                 # 不属于任何单一 Controller、也不属于某个 capability 的
+        │                                        #   横切服务——P0-8（architecture-refactor-blueprint-2026-08-03.md）
+        │                                        #   指出 CapabilityConversationService 这类东西放在 web 包名不副实，
+        │                                        #   这次先归到 web.service，没有搬去 capability/（那需要先拍板
+        │                                        #   它到底该属于哪个能力包，或者要不要新开一个 conversation 能力包）
+        ├── CapabilityConversationService.java  # Research/PPT 复用 agent_session
+        ├── ConversationHistoryService.java     # 会话列表/详情；首轮问题作稳定标题
+        ├── AgentLoopExecutorFactory.java        # issue #20：按模型标识可选的一批 V1 执行器
+        └── RegisteredModel.java                 # AgentLoopExecutorFactory 的模型注册值类型
 ```
 
 **分包原则（不变）**：

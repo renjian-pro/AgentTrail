@@ -33,6 +33,11 @@
 >   （`architecture.md` 原话"和既有构造函数并存"）——已经有人往 Builder 方向迈了一步，但原来的
 >   8 个 telescoping 构造函数一个都没删，本文档 Phase 3 第 7 条（"删除除兼容层外的 telescoping
 >   constructors"）仍然是待办，不是已经做完。
+> - **P0-8（能力历史写入属于 Web）部分缓解，本质没解决**：2026-08-06 把 `web/` 下摊平的 38 个
+>   文件按职责拆成了 `controller/config/dto/service` 四个子包，`CapabilityConversationService`/
+>   `ConversationHistoryService` 现在待在 `web.service` 里，不再和 Controller/DTO 混一起——但
+>   P0-8 真正要问的是"它们该不该继续算 web 的东西"，这次选的是"先分类、不搬家"的小范围选项，
+>   `capability/` 之外的非 HTTP 入口依旧复用不了它们，这条本质问题原样留着。
 >
 > **复核后依然完全成立的**：P0-2（V0/V1 双入口同时暴露）——今天从一次真实生产事故（DashScope
 > 慢请求挂死全站）反向审计出来的问题独立确认了这条：`legacy/V0.java` 的 `agent.call(...).block()`

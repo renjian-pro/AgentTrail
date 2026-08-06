@@ -13,7 +13,7 @@ import com.agenttrail.sys.datascope.DataScopeResolver;
 import com.agenttrail.evaluation.GoldenCase;
 import com.agenttrail.evaluation.GoldenTaskReport;
 import com.agenttrail.evaluation.GoldenTaskRunner;
-import com.agenttrail.web.AgentLoopExecutorFactory;
+import com.agenttrail.web.service.AgentLoopExecutorFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
