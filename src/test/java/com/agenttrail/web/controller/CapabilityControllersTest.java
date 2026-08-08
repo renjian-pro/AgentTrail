@@ -43,7 +43,8 @@ class CapabilityControllersTest {
         when(researchService.research("研究 Java")).thenReturn(report);
         DeepResearchController controller = new DeepResearchController(researchService, conversationService, DIRECT_EXECUTOR);
 
-        DeepResearchTaskResponse created = controller.research(new DeepResearchRequest("conversation-1", "研究 Java"));
+        DeepResearchTaskResponse created = controller.research(
+                new DeepResearchRequest("conversation-1", "研究 Java", null, null));
         // DIRECT_EXECUTOR 是同线程执行，research() 返回时后台任务其实已经跑完了——
         // 轮询端点应该已经能读到 SUCCESS，不用真的等。
         DeepResearchTaskResponse polled = controller.status(created.taskId());

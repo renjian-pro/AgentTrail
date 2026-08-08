@@ -141,7 +141,24 @@ public class DeepResearchService {
         if (needsMoreInfo(clarification)) {
             return DeepResearchReport.needsClarification(stripMarkers(clarification));
         }
+        return proceedFromTopic(question);
+    }
 
+    /**
+     * 需求澄清后的续接入口：只追问一轮，用户回复后不管信息是否依然不够都直接开始研究，
+     * 不再反复打断——{@code previousQuestion}/{@code previousClarifyingQuestion} 拼回用户这轮的
+     * 回复，合成一份完整问题直接跳过 {@link #needsMoreInfo} 判断（该判断只在第一次调用
+     * {@link #research(String)} 时跑一次）。
+     */
+    public DeepResearchReport continueAfterClarification(String previousQuestion, String previousClarifyingQuestion,
+            String userReply) {
+        String combinedQuestion = "【此前的研究请求】\n" + previousQuestion
+                + "\n\n【助手追问】\n" + previousClarifyingQuestion
+                + "\n\n【用户补充】\n" + userReply;
+        return proceedFromTopic(combinedQuestion);
+    }
+
+    private DeepResearchReport proceedFromTopic(String question) {
         String topic = plainExecutor.call(DeepResearchPrompts.TOPIC_GENERATION + question, freshParams(null));
         log.info("DeepResearch 研究主题：{}", topic);
 

@@ -58,7 +58,10 @@ public class DeepResearchController {
         long taskId = taskRegistry.start(userId);
         Future<?> future = deepResearchExecutor.submit(() -> {
             try {
-                DeepResearchReport report = deepResearchService.research(request.question());
+                DeepResearchReport report = isClarificationReply(request)
+                        ? deepResearchService.continueAfterClarification(
+                                request.previousQuestion(), request.previousClarifyingQuestion(), request.question())
+                        : deepResearchService.research(request.question());
                 taskRegistry.complete(taskId, report);
                 String answer = report.needsClarification() ? report.clarifyingQuestion() : report.report();
                 if (userId == null) {
@@ -120,6 +123,10 @@ public class DeepResearchController {
     @GetMapping("/agent/v1/deepresearch/running")
     public List<Long> runningTaskIds() {
         return taskRegistry.runningTaskIdsFor(currentUserId());
+    }
+
+    private static boolean isClarificationReply(DeepResearchRequest request) {
+        return request.previousQuestion() != null && !request.previousQuestion().isBlank();
     }
 
     private static long elapsedMillis(long startedAt) {

@@ -8,11 +8,13 @@ import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.loop.hook.AgentHooks;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
+import com.agenttrail.loop.memory.MemoryStore;
 import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.security.PiiMasker;
 import com.agenttrail.loop.security.PromptInjectionGuard;
 import com.agenttrail.loop.security.ToolRateLimiter;
+import com.agenttrail.loop.skills.SkillManager;
 import com.agenttrail.loop.trace.TraceStore;
 import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.task.AgentTaskManager;
@@ -88,6 +90,19 @@ public class AgentLoopExecutorFactory {
     private final PromptInjectionGuard promptInjectionGuard;
     private final PiiMasker piiMasker;
     private final ToolRateLimiter toolRateLimiter;
+    /**
+     * 传 null 表示这套装配完全不提供 Skill 工具——只接进"普通对话"这一路（{@link #buildExecutor}
+     * 服务的 plain/webSearch/chart 三种变体），不接 {@link #forAnalytics}（DataAgent 明确"不复用
+     * 文件/Shell 等其它工具"）也不接 {@link #forInternalOrchestration}（DeepResearch 内部子调用，
+     * 不是用户直接发起的一轮对话）。
+     */
+    private final SkillManager skillManager;
+    /**
+     * 传 null 表示这套装配完全不提供分层记忆——只接普通对话执行器（{@link #buildExecutor}），
+     * 不接 {@link #forAnalytics}/{@link #forInternalOrchestration}，接入范围和 {@link #skillManager}
+     * 保持一致（DataAgent/DeepResearch 子调用都不是"这个用户的一次对话"语义）。
+     */
+    private final MemoryStore memoryStore;
 
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
             AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider) {
@@ -181,6 +196,38 @@ public class AgentLoopExecutorFactory {
             ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
             TraceStore traceStore, MeterRegistry meterRegistry,
             PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker, ToolRateLimiter toolRateLimiter) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
+                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
+                sessionBudgetTracker, traceStore, meterRegistry, promptInjectionGuard, piiMasker,
+                toolRateLimiter, null);
+    }
+
+    /** 生产装配扩展：接入 Skill 能力（普通对话执行器现取当下启用的技能，见 {@link #buildExecutor}）。 */
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool, FileStore fileStore,
+            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
+            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
+            TraceStore traceStore, MeterRegistry meterRegistry,
+            PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker, ToolRateLimiter toolRateLimiter,
+            SkillManager skillManager) {
+        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
+                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
+                sessionBudgetTracker, traceStore, meterRegistry, promptInjectionGuard, piiMasker,
+                toolRateLimiter, skillManager, null);
+    }
+
+    /** 生产装配扩展：接入分层记忆（issue #19，见 {@link #memoryStore} 字段的接入范围说明）。 */
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
+            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
+            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
+            FileContentTool fileContentTool, FileStore fileStore,
+            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
+            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
+            TraceStore traceStore, MeterRegistry meterRegistry,
+            PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker, ToolRateLimiter toolRateLimiter,
+            SkillManager skillManager, MemoryStore memoryStore) {
         if (models.stream().noneMatch(model -> model.id().equals(defaultModelId))) {
             throw new IllegalArgumentException("默认模型 " + defaultModelId + " 不在注册的模型列表里");
         }
@@ -203,6 +250,8 @@ public class AgentLoopExecutorFactory {
         this.promptInjectionGuard = promptInjectionGuard;
         this.piiMasker = piiMasker;
         this.toolRateLimiter = toolRateLimiter;
+        this.skillManager = skillManager;
+        this.memoryStore = memoryStore;
         this.baseTools = fileContentTool != null ? List.of(fileContentTool.toolCallback()) : List.of();
         // baseTools 现在可能非空（文件工具无条件挂载），所以这里也必须经过
         // resolveToolCallingModel 那道 qwen-plus→deepseek-chat 的安全切换——之前这里直接
@@ -244,7 +293,9 @@ public class AgentLoopExecutorFactory {
                 .modelName(model.id())
                 .promptInjectionGuard(promptInjectionGuard)
                 .piiMasker(piiMasker)
-                .toolRateLimiter(toolRateLimiter);
+                .toolRateLimiter(toolRateLimiter)
+                .skillManager(skillManager)
+                .memoryStore(memoryStore);
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
         }

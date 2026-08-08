@@ -347,7 +347,9 @@ VALUES (1, 'sys:user:view', '查看用户', '用户管理', UNIX_TIMESTAMP(CURRE
        (5, 'sys:user:delete', '删除用户', '用户管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
        (6, 'sys:role:view', '查看角色', '角色管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
        (7, 'sys:role:manage-permission', '分配角色权限', '角色管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
-       (8, 'sys:dept:view', '查看部门', '部门管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
+       (8, 'sys:dept:view', '查看部门', '部门管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (9, 'skill:view', '查看技能', '技能管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (10, 'skill:manage-status', '启用/禁用技能', '技能管理', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
 ON DUPLICATE KEY UPDATE name = VALUES(name), module = VALUES(module);
 
 INSERT INTO sys_role_permission (role_id, permission_id, created_at)

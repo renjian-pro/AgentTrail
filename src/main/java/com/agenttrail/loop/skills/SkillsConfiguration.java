@@ -35,4 +35,9 @@ public class SkillsConfiguration {
                                      @Value("${agenttrail.skills.directory}") String skillsDirectory) {
         return new SkillManager(Path.of(skillsDirectory), skillRepository);
     }
+
+    @Bean
+    public SkillController skillController(SkillManager skillManager) {
+        return new SkillController(skillManager);
+    }
 }

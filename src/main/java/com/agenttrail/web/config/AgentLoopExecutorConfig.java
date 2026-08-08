@@ -10,6 +10,8 @@ import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.loop.hook.ToolRiskLevel;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
+import com.agenttrail.loop.memory.JdbcMemoryStore;
+import com.agenttrail.loop.memory.MemoryStore;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.pause.JdbcPauseStateStore;
 import com.agenttrail.loop.pause.PauseConfig;
@@ -19,6 +21,7 @@ import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.security.PiiMasker;
 import com.agenttrail.loop.security.PromptInjectionGuard;
 import com.agenttrail.loop.security.ToolRateLimiter;
+import com.agenttrail.loop.skills.SkillManager;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.task.RedisInterruptBroadcaster;
 import com.agenttrail.loop.task.RedisTaskLock;
@@ -39,6 +42,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -139,6 +143,18 @@ public class AgentLoopExecutorConfig {
     @Bean
     public TraceStore traceStore(@Qualifier("dataSource") DataSource dataSource) {
         return new JdbcTraceStore(dataSource);
+    }
+
+    /**
+     * 分层记忆（issue #19）默认关闭——和 trace/pause 这些纯本地 DB 写入不同，
+     * 每轮结束时的 {@code MemoryExtractor} 会用主对话模型多发一次同步 LLM 调用，是真实的成本，
+     * 不能默认静默打开。{@code ObjectProvider.getIfAvailable()} 在
+     * {@link #agentLoopExecutorFactory} 里拿不到这个 Bean 时，行为与没有这个机制时完全一致。
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "agenttrail.memory", name = "enabled")
+    public MemoryStore memoryStore(@Qualifier("dataSource") DataSource dataSource) {
+        return new JdbcMemoryStore(dataSource);
     }
 
     /** 评测页面「badcase 怎么加」的答案：把生产 trace 变成可复核候选，从不自动信任生产流量。 */
@@ -256,7 +272,9 @@ public class AgentLoopExecutorConfig {
             ObjectProvider<MeterRegistry> meterRegistryProvider,
             PromptInjectionGuard promptInjectionGuard,
             PiiMasker piiMasker,
-            ToolRateLimiter toolRateLimiter) {
+            ToolRateLimiter toolRateLimiter,
+            ObjectProvider<SkillManager> skillManagerProvider,
+            ObjectProvider<MemoryStore> memoryStoreProvider) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
@@ -264,6 +282,7 @@ public class AgentLoopExecutorConfig {
         return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider,
                 chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
                 analyticsToolProvider.getIfAvailable(), pauseConfig, toolRiskRegistry, sessionBudgetTracker, traceStore,
-                meterRegistryProvider.getIfAvailable(), promptInjectionGuard, piiMasker, toolRateLimiter);
+                meterRegistryProvider.getIfAvailable(), promptInjectionGuard, piiMasker, toolRateLimiter,
+                skillManagerProvider.getIfAvailable(), memoryStoreProvider.getIfAvailable());
     }
 }

@@ -27,6 +27,7 @@ import com.agenttrail.loop.persistence.TurnRecord;
 import com.agenttrail.loop.security.PiiMasker;
 import com.agenttrail.loop.security.PromptInjectionGuard;
 import com.agenttrail.loop.security.ToolRateLimiter;
+import com.agenttrail.loop.skills.SkillManager;
 import com.agenttrail.loop.stageoutput.StageContext;
 import com.agenttrail.loop.stageoutput.StageOutputManager;
 import com.agenttrail.loop.task.AgentTaskManager;
@@ -121,6 +122,15 @@ public class AgentLoopExecutor {
     private final PiiMasker piiMasker;
     private final ToolRateLimiter toolRateLimiter;
     private final Duration roundTimeout;
+    /**
+     * 传 null 表示这套装配完全不提供 Skill 工具，行为与没有这个机制时一致。非 null 时，
+     * {@link #scheduleRound} 每一轮都现取一次 {@link SkillManager#buildSkillsTool()}——
+     * 和 {@link #toolCatalog} 驱动的 {@link com.agenttrail.loop.tools.search.ToolSearchSession}
+     * 共用同一个"这次对话请求专属工具"的解析槽位（见 {@link #finishRound}）。两者在当前生产装配下
+     * 互斥（{@code toolCatalog} 只在 {@code forAnalytics} 启用，{@code skillManager} 只在普通对话
+     * 执行器启用），复用同一个槽位不会撞车。
+     */
+    private final SkillManager skillManager;
 
     public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
         this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
@@ -303,7 +313,7 @@ public class AgentLoopExecutor {
         this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
                 toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
                 maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
-                promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT);
+                promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT, null);
     }
 
     /** 测试专用：注入一个短得多的 {@code roundTimeout}，不用真的等 8 分钟才能验证超时降级。 */
@@ -317,6 +327,23 @@ public class AgentLoopExecutor {
                       MeterRegistry meterRegistry, String modelName,
                       PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
                       ToolRateLimiter toolRateLimiter, Duration roundTimeout) {
+        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
+                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
+                maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
+                promptInjectionGuard, piiMasker, toolRateLimiter, roundTimeout, null);
+    }
+
+    /** 真正的规范构造函数：{@link #skillManager} 是最后加入的可选机制，只通过 {@link Builder} 设置。 */
+    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
+                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
+                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
+                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
+                      StageOutputManager stageOutputManager, TraceStore traceStore,
+                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
+                      AgentHooks hooks, SessionBudgetTracker budgetTracker,
+                      MeterRegistry meterRegistry, String modelName,
+                      PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
+                      ToolRateLimiter toolRateLimiter, Duration roundTimeout, SkillManager skillManager) {
         this.llmInvoker = new LlmInvoker(chatModel);
         this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog), meterRegistry);
         this.taskManager = taskManager;
@@ -341,6 +368,7 @@ public class AgentLoopExecutor {
         this.piiMasker = piiMasker;
         this.toolRateLimiter = toolRateLimiter;
         this.roundTimeout = (roundTimeout == null) ? DEFAULT_ROUND_TIMEOUT : roundTimeout;
+        this.skillManager = skillManager;
     }
 
     /**
@@ -376,6 +404,7 @@ public class AgentLoopExecutor {
         private PromptInjectionGuard promptInjectionGuard;
         private PiiMasker piiMasker;
         private ToolRateLimiter toolRateLimiter;
+        private SkillManager skillManager;
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
             this.chatModel = chatModel;
@@ -476,11 +505,16 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        public Builder skillManager(SkillManager skillManager) {
+            this.skillManager = skillManager;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
             return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
                     persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
                     fileStore, maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
-                    promptInjectionGuard, piiMasker, toolRateLimiter);
+                    promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT, skillManager);
         }
     }
 
@@ -615,7 +649,10 @@ public class AgentLoopExecutor {
     private void scheduleRound(RunContext context) {
         // 超出轮次预算后，本轮改成不挂任何工具——模型看不见工具，就没法再发起调用
         boolean toolsExhausted = maxRounds > 0 && context.nextRound() > maxRounds;
-        List<ToolCallback> roundTools = toolsExhausted ? List.of() : withDiscoveredTools(context.toolSearchSession());
+        // 每轮现取一次——技能中途被后台停用/启用，下一轮就是新状态，不用等新会话（见 SkillManager#buildSkillsTool）
+        ToolCallback skillTool = (skillManager == null) ? null : skillManager.buildSkillsTool().orElse(null);
+        List<ToolCallback> roundTools = toolsExhausted
+                ? List.of() : withDiscoveredTools(context.toolSearchSession(), skillTool);
 
         // 压缩放在发请求之前：此时上一轮的工具结果刚落进历史，正是上下文最膨胀的时刻
         if (contextCompactor != null) {
@@ -643,7 +680,7 @@ public class AgentLoopExecutor {
                 })
                 .doOnComplete(() -> {
                     stopTimer(totalSample, totalTimer);
-                    finishRound(state, context, requestSnapshot);
+                    finishRound(state, context, requestSnapshot, skillTool);
                 })
                 .doOnError(error -> {
                     stopTimer(totalSample, totalTimer);
@@ -696,19 +733,27 @@ public class AgentLoopExecutor {
     }
 
     /**
-     * 本轮该暴露给模型的工具清单：固定工具 + 检索元工具本身 + 这次会话目前为止已经搜到的工具。
+     * 本轮该暴露给模型的工具清单：固定工具 + 检索元工具本身 + 这次会话目前为止已经搜到的工具
+     * + 这一轮现取的 Skill 工具（如果配了 {@link #skillManager}）。
      *
      * <p>"搜到"和"能调用"之间天然隔一轮：工具在第 N 轮的工具调用里被搜索元工具发现，
      * discoveredNames 立刻更新，但第 N 轮已经在用（甚至已经收到）的模型响应不会重新协商工具清单——
      * 只有第 N+1 轮重新组装 roundTools 时，新发现的工具才第一次出现在模型可选列表里。
+     *
+     * @param skillTool 调用方（{@link #scheduleRound}）这一轮现取的结果；传 null 表示这一轮不挂 Skill 工具
      */
-    private List<ToolCallback> withDiscoveredTools(ToolSearchSession toolSearchSession) {
-        if (toolSearchSession == null) {
+    private List<ToolCallback> withDiscoveredTools(ToolSearchSession toolSearchSession, ToolCallback skillTool) {
+        if (toolSearchSession == null && skillTool == null) {
             return tools;
         }
         List<ToolCallback> roundTools = new ArrayList<>(tools);
-        roundTools.add(toolSearchSession.toolSearchCallback());
-        roundTools.addAll(toolSearchSession.discoveredTools());
+        if (toolSearchSession != null) {
+            roundTools.add(toolSearchSession.toolSearchCallback());
+            roundTools.addAll(toolSearchSession.discoveredTools());
+        }
+        if (skillTool != null) {
+            roundTools.add(skillTool);
+        }
         return roundTools;
     }
 
@@ -735,8 +780,13 @@ public class AgentLoopExecutor {
         thinkingModeProcessor.processText(output.getText(), state, context.sink());
     }
 
-    /** 一轮流结束后的分支：无工具调用即终局；有工具调用则执行、拼回消息、递归下一轮。 */
-    private void finishRound(RoundState state, RunContext context, String requestSnapshot) {
+    /**
+     * 一轮流结束后的分支：无工具调用即终局；有工具调用则执行、拼回消息、递归下一轮。
+     *
+     * @param skillTool 和这一轮喂给模型看的是同一个实例（见 {@link #scheduleRound}），
+     *                  保证"模型看到的"和"执行层能解析到的"是同一份技能清单，不会重新查一次库
+     */
+    private void finishRound(RoundState state, RunContext context, String requestSnapshot, ToolCallback skillTool) {
         // 先让标签解析器把攒住的尾巴吐出来，否则最后几个字会丢
         thinkingModeProcessor.finishRound(state, context.sink());
 
@@ -762,8 +812,10 @@ public class AgentLoopExecutor {
         }
 
         ToolParamInjector paramInjector = new ToolParamInjector(context.params().toolParams());
-        ToolCallback sessionScopedTool = (context.toolSearchSession() == null)
-                ? null : context.toolSearchSession().toolSearchCallback();
+        // toolSearchSession 和 skillTool 在当前生产装配下互斥（见 skillManager 字段的说明），
+        // 复用同一个"会话专属工具"解析槽位不会撞车；两者都为空时这里就是 null，行为和以前一致
+        ToolCallback sessionScopedTool = (context.toolSearchSession() != null)
+                ? context.toolSearchSession().toolSearchCallback() : skillTool;
         HookContext hookContext = toHookContext(context);
         firePreToolUse(hookContext, toolCalls);
 

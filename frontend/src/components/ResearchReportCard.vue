@@ -4,10 +4,19 @@ import type { ResearchEntry } from '../stores/chat'
 import { parseReport } from '../utils/markdown'
 
 const props = defineProps<{ entry: ResearchEntry }>()
+const emit = defineEmits<{ reply: [answer: string] }>()
 
 const reportBlocks = computed(() => parseReport(props.entry.result?.report ?? ''))
 const elapsedSeconds = ref(0)
 let timer: ReturnType<typeof setInterval> | undefined
+
+const replyText = ref('')
+function submitReply() {
+  const answer = replyText.value.trim()
+  if (!answer) return
+  emit('reply', answer)
+  replyText.value = ''
+}
 
 function stopTimer() {
   if (timer) clearInterval(timer)
