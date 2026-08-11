@@ -22,6 +22,7 @@ import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -56,12 +57,16 @@ public class DeepResearchController {
         long startedAt = System.nanoTime();
         String userId = currentUserId();
         long taskId = taskRegistry.start(userId);
-        Future<?> future = deepResearchExecutor.submit(() -> {
+        Future<?> future;
+        try {
+            future = deepResearchExecutor.submit(() -> {
             try {
                 DeepResearchReport report = isClarificationReply(request)
                         ? deepResearchService.continueAfterClarification(
-                                request.previousQuestion(), request.previousClarifyingQuestion(), request.question())
-                        : deepResearchService.research(request.question());
+                                request.previousQuestion(), request.previousClarifyingQuestion(), request.question(),
+                                step -> taskRegistry.updateStep(taskId, step))
+                        : deepResearchService.research(request.question(),
+                                step -> taskRegistry.updateStep(taskId, step));
                 taskRegistry.complete(taskId, report);
                 String answer = report.needsClarification() ? report.clarifyingQuestion() : report.report();
                 if (userId == null) {
@@ -82,7 +87,12 @@ public class DeepResearchController {
                             "research", failure.getMessage(), elapsedMillis(startedAt));
                 }
             }
-        });
+            });
+        } catch (RejectedExecutionException rejected) {
+            String message = "DeepResearch 后台任务队列已满，请稍后重试";
+            taskRegistry.fail(taskId, message);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, message, rejected);
+        }
         taskRegistry.attachFuture(taskId, future);
         return DeepResearchTaskResponse.running(taskId);
     }

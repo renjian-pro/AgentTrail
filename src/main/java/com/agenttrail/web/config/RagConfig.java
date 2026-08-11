@@ -64,6 +64,13 @@ public class RagConfig {
         return store;
     }
 
+    @Bean(name = "pgVectorJdbcTemplate")
+    public JdbcTemplate pgVectorJdbcTemplate(PgVectorDataSource pgVectorDataSource) {
+        JdbcTemplate jdbcTemplate = pgVectorDataSource.jdbcTemplate();
+        jdbcTemplate.setQueryTimeout(2);
+        return jdbcTemplate;
+    }
+
     @Bean
     public FileVectorizationService fileVectorizationService(VectorStore fileChunkVectorStore) {
         return new FileVectorizationService(fileChunkVectorStore);

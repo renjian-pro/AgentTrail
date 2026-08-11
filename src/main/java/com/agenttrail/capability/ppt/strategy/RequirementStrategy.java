@@ -1,6 +1,7 @@
 package com.agenttrail.capability.ppt.strategy;
 
 import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.core.StructuredLlmCall;
 import com.agenttrail.loop.model.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.capability.ppt.PptGenerationContext;
@@ -9,8 +10,6 @@ import com.agenttrail.capability.ppt.PptGenerationStrategy;
 import com.agenttrail.capability.ppt.PptPrompts;
 import com.agenttrail.capability.ppt.PptRequirement;
 import com.agenttrail.capability.ppt.PptState;
-import com.agenttrail.loop.structured.JsonRepair;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * REQUIREMENT 状态（issue #24）：一次结构化输出的 LLM 调用，把用户原始需求提炼成
@@ -19,8 +18,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * {@code ResearchPlan} 是同一套用法。
  */
 public class RequirementStrategy implements PptGenerationStrategy {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AgentLoopExecutor executor;
 
@@ -39,7 +36,7 @@ public class RequirementStrategy implements PptGenerationStrategy {
                 OutputType.of(PptRequirement.class));
         String rawJson = executor.call(PptPrompts.REQUIREMENT + context.userRequirement(), params);
         try {
-            PptRequirement requirement = MAPPER.readValue(JsonRepair.fixJson(rawJson), PptRequirement.class);
+            PptRequirement requirement = StructuredLlmCall.parse(rawJson, PptRequirement.class);
             return context.withRequirement(requirement);
         } catch (Exception malformed) {
             throw new PptGenerationException(

@@ -3,6 +3,20 @@ import { describe, expect, it } from 'vitest'
 import ResearchReportCard from './ResearchReportCard.vue'
 
 describe('ResearchReportCard', () => {
+  it('highlights the current backend progress step', () => {
+    const wrapper = mount(ResearchReportCard, {
+      props: {
+        entry: { kind: 'research', question: '测试', currentStep: 'SEARCHING' }
+      }
+    })
+
+    const steps = wrapper.findAll('.research-flow span')
+    expect(steps[0].classes()).not.toContain('active')
+    expect(steps[1].classes()).toContain('active')
+    expect(steps[2].classes()).not.toContain('active')
+    expect(steps[3].classes()).not.toContain('active')
+  })
+
   it('renders report markdown as readable sections and lists', () => {
     const wrapper = mount(ResearchReportCard, {
       props: {

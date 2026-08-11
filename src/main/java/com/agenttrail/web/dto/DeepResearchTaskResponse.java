@@ -11,7 +11,8 @@ import com.agenttrail.capability.deepresearch.DeepResearchReport;
  * @param report 只有 status 为 {@link #SUCCESS} 时非空
  * @param errorMsg 只有 status 为 {@link #FAILED} 时非空
  */
-public record DeepResearchTaskResponse(long taskId, String status, DeepResearchReport report, String errorMsg) {
+public record DeepResearchTaskResponse(long taskId, String status, DeepResearchReport report, String errorMsg,
+        String currentStep) {
 
     public static final String RUNNING = "RUNNING";
     public static final String SUCCESS = "SUCCESS";
@@ -19,18 +20,39 @@ public record DeepResearchTaskResponse(long taskId, String status, DeepResearchR
     public static final String CANCELLED = "CANCELLED";
 
     public static DeepResearchTaskResponse running(long taskId) {
-        return new DeepResearchTaskResponse(taskId, RUNNING, null, null);
+        return running(taskId, "CLARIFYING");
+    }
+
+    public static DeepResearchTaskResponse running(long taskId, String currentStep) {
+        return new DeepResearchTaskResponse(taskId, RUNNING, null, null, currentStep);
     }
 
     public static DeepResearchTaskResponse success(long taskId, DeepResearchReport report) {
-        return new DeepResearchTaskResponse(taskId, SUCCESS, report, null);
+        return success(taskId, report, null);
+    }
+
+    public static DeepResearchTaskResponse success(long taskId, DeepResearchReport report, String currentStep) {
+        return new DeepResearchTaskResponse(taskId, SUCCESS, report, null, currentStep);
     }
 
     public static DeepResearchTaskResponse failed(long taskId, String errorMsg) {
-        return new DeepResearchTaskResponse(taskId, FAILED, null, errorMsg);
+        return failed(taskId, errorMsg, null);
+    }
+
+    public static DeepResearchTaskResponse failed(long taskId, String errorMsg, String currentStep) {
+        return new DeepResearchTaskResponse(taskId, FAILED, null, errorMsg, currentStep);
     }
 
     public static DeepResearchTaskResponse cancelled(long taskId) {
-        return new DeepResearchTaskResponse(taskId, CANCELLED, null, null);
+        return cancelled(taskId, null);
+    }
+
+    public static DeepResearchTaskResponse cancelled(long taskId, String currentStep) {
+        return new DeepResearchTaskResponse(taskId, CANCELLED, null, null, currentStep);
+    }
+
+    /** Terminal states keep the last observed step; only RUNNING tasks can be updated later. */
+    public DeepResearchTaskResponse withCurrentStep(String currentStep) {
+        return new DeepResearchTaskResponse(taskId, status, report, errorMsg, currentStep);
     }
 }

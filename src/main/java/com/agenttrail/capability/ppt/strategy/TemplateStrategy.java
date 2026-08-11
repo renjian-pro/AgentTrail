@@ -20,9 +20,15 @@ import java.nio.file.Path;
 public class TemplateStrategy implements PptGenerationStrategy {
 
     private final String templatePath;
+    private final Path allowlistDir;
 
     public TemplateStrategy(String templatePath) {
+        this(templatePath, Path.of(templatePath).toAbsolutePath().normalize().getParent().toString());
+    }
+
+    public TemplateStrategy(String templatePath, String allowlistDir) {
         this.templatePath = templatePath;
+        this.allowlistDir = Path.of(allowlistDir).toAbsolutePath().normalize();
     }
 
     @Override
@@ -32,9 +38,10 @@ public class TemplateStrategy implements PptGenerationStrategy {
 
     @Override
     public PptGenerationContext execute(PptGenerationContext context) {
-        if (!Files.isRegularFile(Path.of(templatePath))) {
+        Path candidate = Path.of(templatePath).toAbsolutePath().normalize();
+        if (!candidate.startsWith(allowlistDir) || !Files.isRegularFile(candidate)) {
             throw new PptGenerationException("PPT 模板文件不存在: " + templatePath);
         }
-        return context.withTemplatePath(templatePath);
+        return context.withTemplatePath(candidate.toString());
     }
 }

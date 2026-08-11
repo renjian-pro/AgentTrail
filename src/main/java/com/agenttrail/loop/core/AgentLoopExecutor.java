@@ -344,8 +344,9 @@ public class AgentLoopExecutor {
                       MeterRegistry meterRegistry, String modelName,
                       PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
                       ToolRateLimiter toolRateLimiter, Duration roundTimeout, SkillManager skillManager) {
-        this.llmInvoker = new LlmInvoker(chatModel);
-        this.toolCallExecutor = new ToolCallExecutor(withDeferredPool(tools, toolCatalog), meterRegistry);
+        List<ToolCallback> allTools = withDeferredPool(tools, toolCatalog);
+        this.llmInvoker = new LlmInvoker(chatModel, allTools);
+        this.toolCallExecutor = new ToolCallExecutor(allTools, meterRegistry);
         this.taskManager = taskManager;
         this.contextCompactor = (contextPolicy == null) ? null : new ContextCompactor(contextPolicy, chatModel);
         this.thinkingModeProcessor = new ThinkingModeProcessor(thinkingMode);
@@ -650,7 +651,7 @@ public class AgentLoopExecutor {
         // 超出轮次预算后，本轮改成不挂任何工具——模型看不见工具，就没法再发起调用
         boolean toolsExhausted = maxRounds > 0 && context.nextRound() > maxRounds;
         // 每轮现取一次——技能中途被后台停用/启用，下一轮就是新状态，不用等新会话（见 SkillManager#buildSkillsTool）
-        ToolCallback skillTool = (skillManager == null) ? null : skillManager.buildSkillsTool().orElse(null);
+        ToolCallback skillTool = resolveSkillTool(context);
         List<ToolCallback> roundTools = toolsExhausted
                 ? List.of() : withDiscoveredTools(context.toolSearchSession(), skillTool);
 
@@ -667,6 +668,8 @@ public class AgentLoopExecutor {
         Timer totalTimer = timer("agenttrail.llm.duration");
         Timer ttftTimer = timer("agenttrail.llm.ttft");
         AtomicBoolean firstChunkSeen = new AtomicBoolean();
+        AtomicBoolean mainSubscriptionTerminated = new AtomicBoolean();
+        AtomicReference<Disposable> watchdogRef = new AtomicReference<>();
         Disposable subscription = llmInvoker.streamRound(context.messages(), roundTools)
                 // 真实的 HTTP ChatModel（Reactor Netty 实现）在自己的 I/O 线程上信号 onComplete——
                 // finishRound 出现工具调用时会走到 ToolCallExecutor.execute() 内部的 .block()，
@@ -689,11 +692,27 @@ public class AgentLoopExecutor {
                 // failRun 已把异常转成协议内的 Error + Complete；继续把 error 冒给无 error consumer 的
                 // subscribe 只会制造 onErrorDropped 噪声，且前端不会得到任何额外信息。
                 .onErrorComplete()
+                .doFinally(signalType -> {
+                    mainSubscriptionTerminated.set(true);
+                    Disposable watchdog = watchdogRef.getAndSet(null);
+                    if (watchdog != null) {
+                        watchdog.dispose();
+                    }
+                })
                 .subscribe();
 
         // 每轮都要重新登记，否则停止请求作用在上一轮早已结束的订阅上（踩坑点 #9）
         taskManager.setDisposable(context.conversationId(), subscription);
-        scheduleRoundWatchdog(context, state, requestSnapshot, subscription);
+        Disposable watchdog = scheduleRoundWatchdog(context, state, requestSnapshot, subscription);
+        if (mainSubscriptionTerminated.get()) {
+            watchdog.dispose();
+        } else {
+            watchdogRef.set(watchdog);
+            // The stream may terminate between the check and the set above.
+            if (mainSubscriptionTerminated.get() && watchdogRef.compareAndSet(watchdog, null)) {
+                watchdog.dispose();
+            }
+        }
     }
 
     /**
@@ -704,9 +723,9 @@ public class AgentLoopExecutor {
      * 延迟调度是唯一的常驻代价。真正命中超时时才会执行 dispose + failRun，和其它失败路径
      * 走同一套收尾逻辑（落库、Hook、释放单飞锁、给前端一个明确的 Error 事件）。
      */
-    private void scheduleRoundWatchdog(RunContext context, RoundState state, String requestSnapshot,
-                                       Disposable subscription) {
-        Mono.delay(roundTimeout).subscribe(tick -> {
+    private Disposable scheduleRoundWatchdog(RunContext context, RoundState state, String requestSnapshot,
+                                            Disposable subscription) {
+        return Mono.delay(roundTimeout).subscribe(tick -> {
             if (subscription.isDisposed()) {
                 return;
             }
@@ -742,6 +761,19 @@ public class AgentLoopExecutor {
      *
      * @param skillTool 调用方（{@link #scheduleRound}）这一轮现取的结果；传 null 表示这一轮不挂 Skill 工具
      */
+    private ToolCallback resolveSkillTool(RunContext context) {
+        if (skillManager == null) {
+            return null;
+        }
+        AtomicReference<java.util.Optional<ToolCallback>> cache = context.cachedSkillTool();
+        java.util.Optional<ToolCallback> cached = cache.get();
+        if (cached == null) {
+            cached = skillManager.buildSkillsTool();
+            cache.set(cached);
+        }
+        return cached.orElse(null);
+    }
+
     private List<ToolCallback> withDiscoveredTools(ToolSearchSession toolSearchSession, ToolCallback skillTool) {
         if (toolSearchSession == null && skillTool == null) {
             return tools;

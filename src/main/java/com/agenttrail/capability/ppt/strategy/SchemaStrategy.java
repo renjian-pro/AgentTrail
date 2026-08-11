@@ -1,6 +1,7 @@
 package com.agenttrail.capability.ppt.strategy;
 
 import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.core.StructuredLlmCall;
 import com.agenttrail.loop.model.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.capability.ppt.PptGenerationContext;
@@ -10,8 +11,6 @@ import com.agenttrail.capability.ppt.PptOutlineSlide;
 import com.agenttrail.capability.ppt.PptPrompts;
 import com.agenttrail.capability.ppt.PptSchema;
 import com.agenttrail.capability.ppt.PptState;
-import com.agenttrail.loop.structured.JsonRepair;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * SCHEMA 状态（issue #24）：把 {@link com.agenttrail.capability.ppt.PptOutline} 翻译成"填进这份具体
@@ -25,8 +24,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * 只有让它看到修改指令，"在已有 PPT 基础上改"才是真的在改，而不是照抄一遍旧大纲。
  */
 public class SchemaStrategy implements PptGenerationStrategy {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AgentLoopExecutor executor;
 
@@ -46,7 +43,7 @@ public class SchemaStrategy implements PptGenerationStrategy {
         String prompt = PptPrompts.SCHEMA + renderOutline(context);
         String rawJson = executor.call(prompt, params);
         try {
-            PptSchema schema = MAPPER.readValue(JsonRepair.fixJson(rawJson), PptSchema.class);
+            PptSchema schema = StructuredLlmCall.parse(rawJson, PptSchema.class);
             return context.withSchema(schema);
         } catch (Exception malformed) {
             throw new PptGenerationException(

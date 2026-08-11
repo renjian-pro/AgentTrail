@@ -105,11 +105,6 @@ class ToolCallExecutor {
      *                          ToolSearch 的检索元工具本身，每个会话各有一个独立实例）；
      *                          传 null 等价于不存在这类工具
      */
-    List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
-                               ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
-        return execute(toolCalls, emit, paramInjector, sessionScopedTool, null);
-    }
-
     /**
      * 并发执行本轮全部工具调用，但结果按模型请求的原始顺序回填。
      *

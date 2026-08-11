@@ -1,4 +1,5 @@
 package com.agenttrail.web.controller;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.agenttrail.web.dto.TraceAuditVerificationResponse;
 
 import com.agenttrail.loop.trace.TraceStore;
@@ -16,7 +17,8 @@ public class TraceAuditController {
         this.traceStore = traceStore;
     }
 
-    @GetMapping("/internal/audit/{conversationId}/verify")
+    @GetMapping("/api/internal/audit/{conversationId}/verify")
+    @SaCheckPermission("audit:trace:verify")
     public TraceAuditVerificationResponse verify(@PathVariable String conversationId) {
         return traceStore.verifyChain(conversationId)
                 .map(TraceAuditVerificationResponse::tamperedAt)

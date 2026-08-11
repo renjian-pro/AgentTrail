@@ -76,14 +76,12 @@ class AgentLoopExecutorSkillsTest {
         assertThat(chatModel.toolNamesAtRound(0)).doesNotContain("Skill");
     }
 
-    /** 每一轮都现取一次——技能中途被后台停用，下一轮模型就再也看不到它，不用等新会话。 */
+    /** 同一次 stream() 调用内缓存 Skill 工具；下一条用户消息创建新 RunContext 后才重新读取。 */
     @Test
-    void reflectsSkillManagerStateFreshOnEveryRoundNotJustOnce() {
+    void cachesSkillToolForWholeStreamInvocation() {
         RecordingToolCallback skillTool = new RecordingToolCallback("Skill", "加载技能", "ok");
         SkillManager skillManager = mock(SkillManager.class);
-        when(skillManager.buildSkillsTool())
-                .thenReturn(Optional.of(skillTool))
-                .thenReturn(Optional.empty());
+        when(skillManager.buildSkillsTool()).thenReturn(Optional.of(skillTool));
 
         ScriptedChatModel chatModel = new ScriptedChatModel(
                 List.of(toolCall("call-1", "Skill", "{\"command\":\"data-analysis\"}")),
@@ -96,6 +94,7 @@ class AgentLoopExecutorSkillsTest {
         executor.stream("先用后停", new RunnableParams("conv-1", "user-1")).collectList().block(Duration.ofSeconds(5));
 
         assertThat(chatModel.toolNamesAtRound(0)).contains("Skill");
-        assertThat(chatModel.toolNamesAtRound(1)).doesNotContain("Skill");
+        assertThat(chatModel.toolNamesAtRound(1)).contains("Skill");
+        org.mockito.Mockito.verify(skillManager, org.mockito.Mockito.times(1)).buildSkillsTool();
     }
 }

@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { chatApi, type ConversationSummary, type HistoryTurn } from '../api/chat-api'
 import type { PptTask } from '../api/ppt-api'
-import type { DeepResearchReport } from '../api/research-api'
+import type { DeepResearchReport, ResearchStep } from '../api/research-api'
 import type { StreamEvent, TodoItem } from '../types/stream-event'
 
 /** 三种能力共用同一条时间线，靠 kind 区分渲染方式——不再是三个独立页面。 */
@@ -14,7 +14,13 @@ export type ChatTurn = {
   tools?: { name: string; toolCallId: string; detail: string; argumentsText: string; result?: string }[]
 }
 export type PptEntry = { kind: 'ppt'; prompt: string; task?: PptTask; error?: string }
-export type ResearchEntry = { kind: 'research'; question: string; result?: DeepResearchReport; error?: string }
+export type ResearchEntry = {
+  kind: 'research'
+  question: string
+  result?: DeepResearchReport
+  currentStep?: ResearchStep | null
+  error?: string
+}
 export type ChatMessage = ChatTurn | PptEntry | ResearchEntry
 
 export type ChatSession = { id: string; title: string }

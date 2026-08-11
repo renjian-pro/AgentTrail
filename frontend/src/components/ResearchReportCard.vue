@@ -46,7 +46,12 @@ onUnmounted(stopTimer)
         <div class="research-status"><span /> 深度研究进行中 <time>{{ elapsedSeconds }} 秒</time></div>
         <h3>正在为这个问题建立可靠答案</h3>
         <p>服务端正在规划研究路径、检索多来源资料并交叉验证，完成后报告会自动出现在这里。</p>
-        <div class="research-flow"><span>规划</span><i /><span>检索</span><i /><span>验证</span><i /><span>综合</span></div>
+        <div class="research-flow">
+          <span :class="{ active: entry.currentStep === 'PLANNING' }">规划</span><i />
+          <span :class="{ active: entry.currentStep === 'SEARCHING' }">检索</span><i />
+          <span :class="{ active: entry.currentStep === 'CRITIQUING' }">验证</span><i />
+          <span :class="{ active: entry.currentStep === 'SUMMARIZING' }">综合</span>
+        </div>
       </div>
     </div>
     <div v-else-if="entry.error" class="research-error"><b>研究请求未完成</b><p>{{ entry.error }}</p></div>

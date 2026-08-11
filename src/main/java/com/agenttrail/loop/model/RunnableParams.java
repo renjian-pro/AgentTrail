@@ -21,6 +21,11 @@ import java.util.Map;
  * @param outputType     期望的结构化输出类型（issue #18）；为 null 表示不启用，
  *                       循环既不注入格式指令也不做 JSON 修复，行为和没有这个机制时完全一致
  */
+/**
+ * @deprecated New public code should use {@link com.agenttrail.runtime.api.AgentRequest}.
+ *             This type remains for the legacy executor and adapter until the runtime split is complete.
+ */
+@Deprecated
 public record RunnableParams(String conversationId, String userId, Map<String, Object> toolParams,
                              OutputType outputType) {
 

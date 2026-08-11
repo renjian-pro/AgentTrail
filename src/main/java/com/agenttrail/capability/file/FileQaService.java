@@ -43,6 +43,7 @@ public class FileQaService {
     private final ImageDescriptionService imageDescriptionService;
     private final int ragThresholdChars;
     private final Clock clock;
+    private final FileUploadPolicy uploadPolicy;
 
     public FileQaService(FileStore fileStore, FileTextParser parser, FileVectorizationService vectorizationService,
             RagRetrievalService retrievalService, ImageDescriptionService imageDescriptionService,
@@ -54,6 +55,13 @@ public class FileQaService {
     FileQaService(FileStore fileStore, FileTextParser parser, FileVectorizationService vectorizationService,
             RagRetrievalService retrievalService, ImageDescriptionService imageDescriptionService,
             int ragThresholdChars, Clock clock) {
+        this(fileStore, parser, vectorizationService, retrievalService, imageDescriptionService, ragThresholdChars,
+                clock, FileUploadPolicy.defaults());
+    }
+
+    FileQaService(FileStore fileStore, FileTextParser parser, FileVectorizationService vectorizationService,
+            RagRetrievalService retrievalService, ImageDescriptionService imageDescriptionService,
+            int ragThresholdChars, Clock clock, FileUploadPolicy uploadPolicy) {
         this.fileStore = fileStore;
         this.parser = parser;
         this.vectorizationService = vectorizationService;
@@ -61,6 +69,7 @@ public class FileQaService {
         this.imageDescriptionService = imageDescriptionService;
         this.ragThresholdChars = ragThresholdChars;
         this.clock = clock;
+        this.uploadPolicy = uploadPolicy;
     }
 
     /**
@@ -81,6 +90,7 @@ public class FileQaService {
     /** 带资源归属的生产入口；userId 在最外层冻结后一路传到持久化。 */
     public IngestedFile ingest(String userId, String conversationId, String fileName, String contentType,
             InputStream content, long sizeBytes) {
+        uploadPolicy.validate(fileName, contentType, sizeBytes);
         FileKind kind = FileKindDetector.detect(contentType, fileName);
 
         if (kind == FileKind.IMAGE) {

@@ -155,6 +155,12 @@
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<dependency>
+			<groupId>com.tngtech.archunit</groupId>
+			<artifactId>archunit-junit5</artifactId>
+			<version>1.3.0</version>
+			<scope>test</scope>
+		</dependency>
 
 		<!-- V1 生产环境的 ChatModel 供应方——自动装配 DeepSeekChatModel Bean（spring.ai.deepseek.*
 		     配置项），替代之前只在 test scope 声明的 spring-ai-deepseek（该依赖已被这个 starter

@@ -17,8 +17,15 @@ export type DeepResearchReport = {
   report: string | null
 }
 
-export type ResearchTaskStatus = 'RUNNING' | 'SUCCESS' | 'FAILED'
-export type ResearchTask = { taskId: number; status: ResearchTaskStatus; report: DeepResearchReport | null; errorMsg: string | null }
+export type ResearchTaskStatus = 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED'
+export type ResearchStep = 'CLARIFYING' | 'PLANNING' | 'SEARCHING' | 'CRITIQUING' | 'SUMMARIZING'
+export type ResearchTask = {
+  taskId: number
+  status: ResearchTaskStatus
+  report: DeepResearchReport | null
+  errorMsg: string | null
+  currentStep?: ResearchStep | null
+}
 
 export const researchApi = {
   // 请求一返回就代表"任务已提交"，status 永远是 RUNNING——真正的报告要靠下面的 status() 轮询。

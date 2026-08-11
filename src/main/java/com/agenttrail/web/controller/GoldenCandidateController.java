@@ -1,4 +1,5 @@
 package com.agenttrail.web.controller;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.agenttrail.web.service.ConversationHistoryService;
 import com.agenttrail.web.dto.ConversationPageResponse;
 
@@ -27,12 +28,14 @@ public class GoldenCandidateController {
     }
 
     @GetMapping("/agent/v1/evaluation/conversations")
+    @SaCheckPermission("golden:candidate:view")
     public ConversationPageResponse conversations(@RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         return conversationHistoryService.findConversations(page, size);
     }
 
     @GetMapping("/agent/v1/evaluation/conversations/{conversationId}/candidates")
+    @SaCheckPermission("golden:candidate:view")
     public List<GoldenCaseCandidateExtractor.GoldenCaseCandidate> candidates(@PathVariable String conversationId) {
         return candidateExtractor.extract(conversationId);
     }

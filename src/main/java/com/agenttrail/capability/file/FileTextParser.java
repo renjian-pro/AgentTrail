@@ -2,6 +2,7 @@ package com.agenttrail.capability.file;
 
 import org.apache.tika.Tika;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.metadata.Metadata;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -13,6 +14,18 @@ import java.io.InputStream;
 public class FileTextParser {
 
     private final Tika tika = new Tika();
+    private final int maxChars;
+
+    public FileTextParser() {
+        this(500_000);
+    }
+
+    public FileTextParser(int maxChars) {
+        if (maxChars <= 0) {
+            throw new IllegalArgumentException("maxChars must be positive");
+        }
+        this.maxChars = maxChars;
+    }
 
     /**
      * 解析文件内容为纯文本。
@@ -23,7 +36,7 @@ public class FileTextParser {
      */
     public String parse(InputStream content, String fileName) {
         try {
-            String text = tika.parseToString(content);
+            String text = tika.parseToString(content, new Metadata(), maxChars);
             return text == null ? "" : text.trim();
         } catch (IOException | TikaException failure) {
             throw new FileParsingException("文件解析失败：" + fileName, failure);

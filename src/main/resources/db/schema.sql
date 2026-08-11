@@ -356,6 +356,22 @@ INSERT INTO sys_role_permission (role_id, permission_id, created_at)
 SELECT 1, id, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 FROM sys_permission
 ON DUPLICATE KEY UPDATE created_at = VALUES(created_at);
 
+-- Golden case and trace-audit endpoints use the same fine-grained permission model as the sys controllers.
+INSERT INTO sys_permission (id, code, name, module, created_at)
+VALUES (11, 'golden:case:view', 'View Golden cases', 'Golden', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (12, 'golden:case:create', 'Create Golden cases', 'Golden', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (13, 'golden:case:update', 'Update Golden cases', 'Golden', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (14, 'golden:case:delete', 'Delete Golden cases', 'Golden', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (15, 'golden:candidate:view', 'View Golden candidates', 'Golden', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000),
+       (16, 'audit:trace:verify', 'Verify trace audit', 'Audit', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
+ON DUPLICATE KEY UPDATE name = VALUES(name), module = VALUES(module);
+
+INSERT INTO sys_role_permission (role_id, permission_id, created_at)
+SELECT 1, id, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000
+FROM sys_permission
+WHERE id BETWEEN 11 AND 16
+ON DUPLICATE KEY UPDATE created_at = VALUES(created_at);
+
 -- Golden Set 可写用例（问题反馈：评测页面只能跑，用例改不了、badcase 也加不进去）。
 --
 -- `analytics/golden/*.yml` 里的内建用例刻意保持只读——它们是随代码评审走查过的基线，
@@ -366,6 +382,78 @@ ON DUPLICATE KEY UPDATE created_at = VALUES(created_at);
 --
 -- assertions/expected_tool_calls 整段存 JSON 而不是拆列，理由和 agent_pause_state 一样：
 -- 断言数组的形状按 type 各不相同（见 GoldenAssertion），不是天然扁平的记录。
+-- Unified Run/Task/Checkpoint/Event infrastructure (Ticket 15).
+CREATE TABLE IF NOT EXISTS agent_run
+(
+    task_id             VARCHAR(64)  NOT NULL COMMENT 'Task identifier',
+    capability_id       VARCHAR(100) NOT NULL COMMENT 'Capability label',
+    tenant_id           VARCHAR(100) NULL COMMENT 'Tenant placeholder',
+    user_id             VARCHAR(100) NOT NULL COMMENT 'Owning user',
+    conversation_id     VARCHAR(100) NULL COMMENT 'Related conversation',
+    status              VARCHAR(20)  NOT NULL COMMENT 'Run status',
+    current_stage       VARCHAR(100) NULL COMMENT 'Capability stage',
+    attempt             INT          NOT NULL DEFAULT 0 COMMENT 'Retry attempt',
+    lease_owner         VARCHAR(100) NULL COMMENT 'Last known lease owner',
+    lease_until         BIGINT       NULL COMMENT 'Lease expiry epoch millis',
+    idempotency_key     VARCHAR(200) NULL COMMENT 'Client idempotency key',
+    checkpoint_version  BIGINT       NOT NULL DEFAULT 0 COMMENT 'Latest checkpoint version',
+    input_ref           VARCHAR(500) NULL COMMENT 'Input reference',
+    output_ref          VARCHAR(500) NULL COMMENT 'Output reference',
+    error_code          VARCHAR(100) NULL COMMENT 'Failure code',
+    created_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    updated_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    PRIMARY KEY (task_id),
+    UNIQUE KEY uk_agent_run_idempotency (idempotency_key),
+    KEY idx_agent_run_user_status (user_id, status),
+    KEY idx_agent_run_conversation (conversation_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT 'Unified run/task state';
+
+CREATE TABLE IF NOT EXISTS agent_run_event
+(
+    id               BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Write order',
+    event_id         VARCHAR(64)  NOT NULL COMMENT 'Global event identifier',
+    run_id           VARCHAR(64)  NOT NULL COMMENT 'Run identifier',
+    task_id          VARCHAR(64)  NULL COMMENT 'Task identifier',
+    conversation_id  VARCHAR(100) NULL COMMENT 'Conversation identifier',
+    sequence         BIGINT       NOT NULL COMMENT 'Per-run monotonic sequence',
+    occurred_at      BIGINT       NOT NULL COMMENT 'Event epoch millis',
+    type             VARCHAR(50)  NOT NULL COMMENT 'Event type',
+    source           VARCHAR(50)  NOT NULL COMMENT 'Producing module',
+    visibility       VARCHAR(20)  NOT NULL COMMENT 'CLIENT or INTERNAL',
+    payload          LONGTEXT     NOT NULL COMMENT 'JSON event payload',
+    created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Persist time',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_run_event_id (event_id),
+    UNIQUE KEY uk_agent_run_event_sequence (run_id, sequence)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT 'Replayable run event stream';
+
+CREATE TABLE IF NOT EXISTS agent_run_checkpoint
+(
+    id                 BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    task_id            VARCHAR(64)  NOT NULL COMMENT 'Task identifier',
+    checkpoint_version BIGINT       NOT NULL COMMENT 'Task-local version',
+    stage              VARCHAR(100) NOT NULL COMMENT 'Capability stage',
+    state_snapshot     LONGTEXT     NOT NULL COMMENT 'Capability-owned JSON snapshot',
+    created_at         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_checkpoint_version (task_id, checkpoint_version)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT 'Recoverable run checkpoints';
+
+CREATE TABLE IF NOT EXISTS agent_run_outbox
+(
+    id             BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Publish order',
+    aggregate_type VARCHAR(50)  NOT NULL COMMENT 'Aggregate type',
+    aggregate_id   VARCHAR(64)  NOT NULL COMMENT 'Aggregate identifier',
+    event_type     VARCHAR(50)  NOT NULL COMMENT 'Event type',
+    payload        LONGTEXT     NOT NULL COMMENT 'JSON payload',
+    status         VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/PUBLISHED/FAILED',
+    retry_count    INT          NOT NULL DEFAULT 0 COMMENT 'Publish retry count',
+    created_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    published_at   TIMESTAMP    NULL COMMENT 'Publish time',
+    PRIMARY KEY (id),
+    KEY idx_agent_outbox_status_created (status, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT 'Transactional outbox';
+
 CREATE TABLE IF NOT EXISTS golden_case
 (
     id                       VARCHAR(64)  NOT NULL COMMENT '用例 id：手工新增自己填，从生产 trace 提升时自动生成',

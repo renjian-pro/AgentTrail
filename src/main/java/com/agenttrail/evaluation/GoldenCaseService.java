@@ -43,8 +43,6 @@ public class GoldenCaseService {
     public GoldenCaseView create(GoldenCaseRequest request) {
         String id = (request.id() == null || request.id().isBlank())
                 ? "promoted-" + UUID.randomUUID().toString().substring(0, 8) : request.id().trim();
-        requireNonBlank(request.dimension(), "dimension");
-        requireNonBlank(request.question(), "question");
         Set<String> builtinIds = builtinIds();
         if (builtinIds.contains(id)) {
             throw new ResponseStatusException(CONFLICT, "id 与内建用例冲突，内建用例只读: " + id);
@@ -55,10 +53,7 @@ public class GoldenCaseService {
         String source = request.source() == null || request.source().isBlank()
                 ? GoldenCaseRecord.SOURCE_MANUAL : request.source();
         long now = System.currentTimeMillis();
-        GoldenCaseRecord record = new GoldenCaseRecord(id, request.dimension(), request.question(),
-                request.asUser() == null ? "" : request.asUser(), request.referenceSql(),
-                normalizeAssertions(request.assertions()), normalizeToolCalls(request.expectedToolCalls()),
-                source, request.sourceConversationId(), now, now);
+        GoldenCaseRecord record = buildRecord(id, request, source, request.sourceConversationId(), now, now);
         repository.insert(record);
         return GoldenCaseView.ofRecord(record);
     }
@@ -67,15 +62,20 @@ public class GoldenCaseService {
         GoldenCaseRecord existing = repository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(NOT_FOUND,
                         builtinIds().contains(id) ? "内建用例只读，不能编辑: " + id : "用例不存在: " + id));
-        requireNonBlank(request.dimension(), "dimension");
-        requireNonBlank(request.question(), "question");
-        GoldenCaseRecord updated = new GoldenCaseRecord(id, request.dimension(), request.question(),
-                request.asUser() == null ? "" : request.asUser(), request.referenceSql(),
-                normalizeAssertions(request.assertions()), normalizeToolCalls(request.expectedToolCalls()),
-                existing.source(), existing.sourceConversationId(), existing.createdAtMillis(),
-                System.currentTimeMillis());
+        GoldenCaseRecord updated = buildRecord(id, request, existing.source(), existing.sourceConversationId(),
+                existing.createdAtMillis(), System.currentTimeMillis());
         repository.update(updated);
         return GoldenCaseView.ofRecord(updated);
+    }
+
+    private static GoldenCaseRecord buildRecord(String id, GoldenCaseRequest request, String source,
+            String sourceConversationId, long createdAtMillis, long updatedAtMillis) {
+        requireNonBlank(request.dimension(), "dimension");
+        requireNonBlank(request.question(), "question");
+        return new GoldenCaseRecord(id, request.dimension(), request.question(),
+                request.asUser() == null ? "" : request.asUser(), request.referenceSql(),
+                normalizeAssertions(request.assertions()), normalizeToolCalls(request.expectedToolCalls()),
+                source, sourceConversationId, createdAtMillis, updatedAtMillis);
     }
 
     public void delete(String id) {

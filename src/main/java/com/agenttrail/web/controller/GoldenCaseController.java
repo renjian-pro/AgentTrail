@@ -1,5 +1,6 @@
 package com.agenttrail.web.controller;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.agenttrail.evaluation.GoldenCaseRequest;
 import com.agenttrail.evaluation.GoldenCaseService;
 import com.agenttrail.evaluation.GoldenCaseView;
@@ -27,21 +28,25 @@ public class GoldenCaseController {
     }
 
     @GetMapping("/agent/v1/evaluation/cases")
+    @SaCheckPermission("golden:case:view")
     public List<GoldenCaseView> list() {
         return caseService.listAll();
     }
 
     @PostMapping("/agent/v1/evaluation/cases")
+    @SaCheckPermission("golden:case:create")
     public GoldenCaseView create(@RequestBody GoldenCaseRequest request) {
         return caseService.create(request);
     }
 
     @PutMapping("/agent/v1/evaluation/cases/{id}")
+    @SaCheckPermission("golden:case:update")
     public GoldenCaseView update(@PathVariable String id, @RequestBody GoldenCaseRequest request) {
         return caseService.update(id, request);
     }
 
     @DeleteMapping("/agent/v1/evaluation/cases/{id}")
+    @SaCheckPermission("golden:case:delete")
     public void delete(@PathVariable String id) {
         caseService.delete(id);
     }

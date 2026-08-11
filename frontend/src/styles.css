@@ -301,6 +301,7 @@ button { cursor: pointer; }
 .research-flow { display: flex; align-items: center; margin-top: 17px; color: var(--muted); font-size: 11px; }
 .research-flow i { min-width: 16px; height: 1px; flex: 1; margin: 0 8px; overflow: hidden; background: var(--line-strong); }
 .research-flow i::after { content: ""; display: block; width: 45%; height: 100%; background: var(--accent); animation: flow 1.8s ease-in-out infinite; }
+.research-flow span.active { color: var(--accent); font-weight: 700; }
 .research-error { padding: 16px 18px; border-left: 3px solid #c55b51; border-radius: 9px; color: #7d2924; background: #fff2f0; }
 .clarification-card,
 .report,

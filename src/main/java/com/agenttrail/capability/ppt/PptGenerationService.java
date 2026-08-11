@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * PPT 生成状态机的编排入口（issue #24）——把 Spring 自动收集的全部 {@link PptGenerationStrategy}
@@ -38,6 +39,8 @@ public class PptGenerationService {
 
     private final PptTaskStore taskStore;
     private final Map<PptState, PptGenerationStrategy> strategiesByState;
+    private final Map<String, Long> idempotencyKeys = new ConcurrentHashMap<>();
+    private final java.util.Set<Long> idempotencyReplays = ConcurrentHashMap.newKeySet();
 
     public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies) {
         this.taskStore = taskStore;
@@ -79,12 +82,39 @@ public class PptGenerationService {
      * 方式复用同一份意图识别/建档逻辑，不是分叉维护两套。
      */
     public long prepare(String userId, String conversationId, String userMessage) {
+        return prepare(userId, conversationId, userMessage, null);
+    }
+
+    public long prepare(String userId, String conversationId, String userMessage, String idempotencyKey) {
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            String scopedKey = String.valueOf(userId) + ":" + idempotencyKey;
+            Long existing = idempotencyKeys.get(scopedKey);
+            if (existing != null) {
+                idempotencyReplays.add(existing);
+                return existing;
+            }
+            long created = prepareByIntent(userId, conversationId, userMessage);
+            Long winner = idempotencyKeys.putIfAbsent(scopedKey, created);
+            if (winner != null) {
+                idempotencyReplays.add(winner);
+                return winner;
+            }
+            return created;
+        }
+        return prepareByIntent(userId, conversationId, userMessage);
+    }
+
+    private long prepareByIntent(String userId, String conversationId, String userMessage) {
         PptIntent intent = PptIntentRecognizer.recognize(userMessage);
         return switch (intent) {
             case CREATE -> prepareNew(userId, conversationId, userMessage);
             case RESUME -> prepareResume(userId, conversationId);
             case MODIFY -> prepareModify(userId, conversationId, userMessage);
         };
+    }
+
+    public boolean consumeIdempotencyReplay(long taskId) {
+        return idempotencyReplays.remove(taskId);
     }
 
     private long prepareNew(String userId, String conversationId, String userMessage) {
@@ -189,6 +219,15 @@ public class PptGenerationService {
     /** 请求在下一个状态边界停止；实际终态由 {@link #run(long)} 写入。 */
     public void requestCancel(long taskId) {
         taskStore.requestCancel(taskId);
+    }
+
+    /** Persist a user-visible failure when the asynchronous executor rejected a submission. */
+    public void markSchedulingFailure(long taskId, String errorMsg) {
+        taskStore.findById(taskId).ifPresent(task -> {
+            if (task.status() != PptState.SUCCESS && task.status() != PptState.CANCELLED) {
+                taskStore.markFailed(taskId, task.status(), errorMsg);
+            }
+        });
     }
 
     public List<Long> runningTaskIdsFor(String userId) {

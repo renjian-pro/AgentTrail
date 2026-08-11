@@ -136,7 +136,7 @@ async function pollUntilTerminal<T>(fetchStatus: () => Promise<T>, isTerminal: (
 
 async function runResearch(question: string) {
   pendingMode.value = undefined
-  const entry = reactive<ResearchEntry>({ kind: 'research', question })
+  const entry = reactive<ResearchEntry>({ kind: 'research', question, currentStep: null })
   chat.ensureConversation(question)
   messages.value.push(entry)
   busy.value = true
@@ -163,6 +163,7 @@ async function runResearch(question: string) {
 }
 
 function applyResearchTask(entry: ResearchEntry, task: ResearchTask) {
+  entry.currentStep = task.currentStep ?? null
   if (task.status === 'SUCCESS') entry.result = task.report ?? undefined
   else if (task.status === 'FAILED') entry.error = task.errorMsg ?? '深度研究失败，请重试'
 }

@@ -3,9 +3,9 @@ package com.agenttrail.capability.deepresearch;
 import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.MessageRendering;
 import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.core.StructuredLlmCall;
 import com.agenttrail.loop.model.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
-import com.agenttrail.loop.structured.JsonRepair;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,7 +22,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -77,6 +77,7 @@ public class DeepResearchService {
     private final int maxTaskRetries;
     private final int maxCritiqueRounds;
     private final ContextCompactor researchContextCompactor;
+    private final ConcurrencyPolicy concurrencyPolicy;
 
     public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor) {
         this(plainExecutor, searchExecutor, 3, 20, 2, 3);
@@ -127,6 +128,13 @@ public class DeepResearchService {
     public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor,
             int maxConcurrentTasksPerLayer, int maxTasksPerPlan, int maxTaskRetries, int maxCritiqueRounds,
             ContextCompactor researchContextCompactor) {
+        this(plainExecutor, searchExecutor, maxConcurrentTasksPerLayer, maxTasksPerPlan, maxTaskRetries,
+                maxCritiqueRounds, researchContextCompactor, new SemaphoreConcurrencyPolicy(maxConcurrentTasksPerLayer));
+    }
+
+    public DeepResearchService(AgentLoopExecutor plainExecutor, AgentLoopExecutor searchExecutor,
+            int maxConcurrentTasksPerLayer, int maxTasksPerPlan, int maxTaskRetries, int maxCritiqueRounds,
+            ContextCompactor researchContextCompactor, ConcurrencyPolicy concurrencyPolicy) {
         this.plainExecutor = plainExecutor;
         this.searchExecutor = searchExecutor;
         this.maxConcurrentTasksPerLayer = maxConcurrentTasksPerLayer;
@@ -134,14 +142,20 @@ public class DeepResearchService {
         this.maxTaskRetries = maxTaskRetries;
         this.maxCritiqueRounds = maxCritiqueRounds;
         this.researchContextCompactor = researchContextCompactor;
+        this.concurrencyPolicy = concurrencyPolicy;
     }
 
     public DeepResearchReport research(String question) {
+        return research(question, null);
+    }
+
+    public DeepResearchReport research(String question, Consumer<String> onStepChange) {
+        notifyStep(onStepChange, "CLARIFYING");
         String clarification = plainExecutor.call(DeepResearchPrompts.CLARIFICATION + question, freshParams(null));
         if (needsMoreInfo(clarification)) {
             return DeepResearchReport.needsClarification(stripMarkers(clarification));
         }
-        return proceedFromTopic(question);
+        return proceedFromTopic(question, onStepChange);
     }
 
     /**
@@ -152,18 +166,26 @@ public class DeepResearchService {
      */
     public DeepResearchReport continueAfterClarification(String previousQuestion, String previousClarifyingQuestion,
             String userReply) {
+        return continueAfterClarification(previousQuestion, previousClarifyingQuestion, userReply, null);
+    }
+
+    public DeepResearchReport continueAfterClarification(String previousQuestion, String previousClarifyingQuestion,
+            String userReply, Consumer<String> onStepChange) {
+        notifyStep(onStepChange, "CLARIFYING");
         String combinedQuestion = "【此前的研究请求】\n" + previousQuestion
                 + "\n\n【助手追问】\n" + previousClarifyingQuestion
                 + "\n\n【用户补充】\n" + userReply;
-        return proceedFromTopic(combinedQuestion);
+        return proceedFromTopic(combinedQuestion, onStepChange);
     }
 
-    private DeepResearchReport proceedFromTopic(String question) {
+    private DeepResearchReport proceedFromTopic(String question, Consumer<String> onStepChange) {
+        notifyStep(onStepChange, "PLANNING");
         String topic = plainExecutor.call(DeepResearchPrompts.TOPIC_GENERATION + question, freshParams(null));
         log.info("DeepResearch 研究主题：{}", topic);
 
-        ResearchLoopOutcome outcome = planExecuteCritiqueLoop(topic);
+        ResearchLoopOutcome outcome = planExecuteCritiqueLoop(topic, onStepChange);
 
+        notifyStep(onStepChange, "SUMMARIZING");
         String report = summarize(question, topic, outcome.researchContext());
         return DeepResearchReport.completed(topic, outcome.allResults(), report);
     }
@@ -177,18 +199,22 @@ public class DeepResearchService {
      *         {@code researchContext} 是喂给 {@link #critique}/{@link #summarize} 的累积上下文，
      *         每一轮结束都可能被 {@link #researchContextCompactor} 原地压缩过
      */
-    private ResearchLoopOutcome planExecuteCritiqueLoop(String topic) {
+    private ResearchLoopOutcome planExecuteCritiqueLoop(String topic, Consumer<String> onStepChange) {
         List<TaskResult> allResults = new ArrayList<>();
         List<Message> researchContext = new ArrayList<>();
         String previousFeedback = null;
 
         for (int round = 1; round <= maxCritiqueRounds; round++) {
+            if (round > 1) {
+                notifyStep(onStepChange, "PLANNING");
+            }
             String planInput = previousFeedback == null
                     ? topic
                     : topic + "\n\n【上一轮批判反馈，本轮需针对性补充】\n" + previousFeedback;
             ResearchPlan plan = applyBreadthCap(generatePlan(planInput));
             log.info("DeepResearch 第 {} 轮执行计划：{} 个任务", round, plan.tasks().size());
 
+            notifyStep(onStepChange, "SEARCHING");
             List<TaskResult> roundResults = executeLayered(plan);
             allResults.addAll(roundResults);
             roundResults.forEach(result -> researchContext.add(taskResultToContextMessage(result)));
@@ -198,6 +224,7 @@ public class DeepResearchService {
                 break;
             }
 
+            notifyStep(onStepChange, "CRITIQUING");
             CritiqueResult critique = critique(topic, researchContext);
             log.info("DeepResearch 第 {} 轮批判：{}{}", round, critique.passed() ? "通过" : "不通过",
                     critique.passed() ? "" : "，反馈：" + critique.feedback());
@@ -253,15 +280,13 @@ public class DeepResearchService {
                 .append(renderResearchContext(researchContext, topic));
 
         RunnableParams params = freshParams(OutputType.of(CritiqueResult.class));
-        String rawJson = plainExecutor.call(input.toString(), params);
-        String fixed = JsonRepair.fixJson(rawJson);
         try {
-            return MAPPER.readValue(fixed, CritiqueResult.class);
-        } catch (Exception malformed) {
+            return StructuredLlmCall.call(plainExecutor, input.toString(), params, CritiqueResult.class);
+        } catch (StructuredLlmCall.StructuredLlmCallException malformed) {
             // 和 generatePlan() 同样的兜底手法：JsonRepair 修不动时可能落到 {"content": "..."} 信封，
             // 里面往往还是一份合法的 CritiqueResult JSON。这里解不开就不再深究——批判判定失败时
             // 保守地当作"不通过"处理，让循环继续跑而不是让一次解析失败直接中断整个研究流程。
-            CritiqueResult unwrapped = tryUnwrapCritiqueContentFallback(fixed);
+            CritiqueResult unwrapped = tryUnwrapCritiqueContentFallback(malformed.fixedJson());
             if (unwrapped != null) {
                 return unwrapped;
             }
@@ -301,15 +326,14 @@ public class DeepResearchService {
     private ResearchPlan generatePlan(String topic) {
         RunnableParams params = freshParams(OutputType.of(ResearchPlan.class));
         String rawJson = plainExecutor.call(DeepResearchPrompts.PLAN + topic, params);
-        String fixed = JsonRepair.fixJson(rawJson);
         try {
-            return MAPPER.readValue(fixed, ResearchPlan.class);
-        } catch (Exception malformed) {
+            return StructuredLlmCall.parse(rawJson, ResearchPlan.class);
+        } catch (StructuredLlmCall.StructuredLlmCallException malformed) {
             // JsonRepair 修不动时的最后兜底是把原文整个包成 {"content": "..."}（见其类注释）——
             // 真实模型输出偶尔会因为夹带解释性文字这类小瑕疵落到这条兜底路径，但被包起来的
             // "content" 字符串本身往往仍是一份完整合法的 ResearchPlan JSON，只是外面多包了一层。
             // 先试着拆开这一层再解析一次，比直接判定"整个计划解析失败"更不容易被无谓地拒绝。
-            ResearchPlan unwrapped = tryUnwrapPlainContentFallback(fixed);
+            ResearchPlan unwrapped = tryUnwrapPlainContentFallback(malformed.fixedJson());
             if (unwrapped != null) {
                 return unwrapped;
             }
@@ -363,16 +387,12 @@ public class DeepResearchService {
 
     /** 虚拟线程按任务数量各起一个，真正的并发上限由 {@link Semaphore} 控制，不依赖线程池大小。 */
     private List<TaskResult> executeLayerConcurrently(List<ResearchTask> tasks, String dependencyContext) {
-        Semaphore concurrencyGate = new Semaphore(maxConcurrentTasksPerLayer);
         try (ExecutorService virtualThreads = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<TaskResult>> futures = new ArrayList<>();
             for (ResearchTask task : tasks) {
                 futures.add(virtualThreads.submit(() -> {
-                    concurrencyGate.acquire();
-                    try {
+                    try (ConcurrencyPolicy.Permit ignored = concurrencyPolicy.acquire("default", "deepresearch.search")) {
                         return executeTask(task, dependencyContext);
-                    } finally {
-                        concurrencyGate.release();
                     }
                 }));
             }
@@ -440,5 +460,11 @@ public class DeepResearchService {
 
     private static RunnableParams freshParams(OutputType outputType) {
         return new RunnableParams(UUID.randomUUID().toString(), "deepresearch", Map.of(), outputType);
+    }
+
+    private static void notifyStep(Consumer<String> onStepChange, String step) {
+        if (onStepChange != null) {
+            onStepChange.accept(step);
+        }
     }
 }

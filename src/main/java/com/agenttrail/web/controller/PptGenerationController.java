@@ -29,6 +29,7 @@ import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -64,10 +65,10 @@ public class PptGenerationController {
     public PptGenerationResponse create(@RequestBody PptGenerationRequest request) {
         long startedAt = System.nanoTime();
         String userId = currentUserId();
-        long taskId = userId == null
-                ? pptGenerationService.prepare("legacy", request.conversationId(), request.message())
-                : pptGenerationService.prepare(userId, request.conversationId(), request.message());
-        runInBackgroundThenRecord(userId, taskId, request.conversationId(), request.message(), startedAt);
+        long taskId = prepareTask(userId, request);
+        if (!pptGenerationService.consumeIdempotencyReplay(taskId)) {
+            runInBackgroundThenRecord(userId, taskId, request.conversationId(), request.message(), startedAt);
+        }
         return toResponse(userId, taskId);
     }
 
@@ -78,7 +79,13 @@ public class PptGenerationController {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
         }
         // /resume 原本就不记会话历史（只有 /create 记）——异步化不改变这一点，行为对齐旧实现。
-        pptGenerationExecutor.execute(() -> runAndSwallow(userId, taskId));
+        try {
+            pptGenerationExecutor.execute(() -> runAndSwallow(userId, taskId));
+        } catch (RejectedExecutionException rejected) {
+            String message = "PPT 后台任务队列已满，请稍后重试";
+            pptGenerationService.markSchedulingFailure(taskId, message);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, message, rejected);
+        }
         return toResponse(userId, taskId);
     }
 
@@ -113,7 +120,8 @@ public class PptGenerationController {
 
     private void runInBackgroundThenRecord(String userId, long taskId, String conversationId, String message,
             long startedAt) {
-        pptGenerationExecutor.execute(() -> {
+        try {
+            pptGenerationExecutor.execute(() -> {
             RuntimeException failure = null;
             try {
                 if (userId == null) pptGenerationService.run(taskId); else pptGenerationService.run(userId, taskId);
@@ -130,7 +138,12 @@ public class PptGenerationController {
                 if (userId == null) conversationService.recordFailure(conversationId, message, "ppt", failure.getMessage(), elapsed);
                 else conversationService.recordFailure(userId, conversationId, message, "ppt", failure.getMessage(), elapsed);
             }
-        });
+            });
+        } catch (RejectedExecutionException rejected) {
+            String errorMessage = "PPT 后台任务队列已满，请稍后重试";
+            pptGenerationService.markSchedulingFailure(taskId, errorMessage);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, errorMessage, rejected);
+        }
     }
 
     /** {@code run(taskId)} 失败时已经在内部把 errorMsg 落库了（{@code taskStore.markFailed}）——
@@ -173,6 +186,15 @@ public class PptGenerationController {
                 ? "/agent/v1/ppt/" + taskId + "/download"
                 : null;
         return new PptGenerationResponse(taskId, task.status(), task.errorMsg(), downloadUrl);
+    }
+
+    private long prepareTask(String userId, PptGenerationRequest request) {
+        String scopedUserId = userId == null ? "legacy" : userId;
+        if (request.idempotencyKey() == null || request.idempotencyKey().isBlank()) {
+            return pptGenerationService.prepare(scopedUserId, request.conversationId(), request.message());
+        }
+        return pptGenerationService.prepare(scopedUserId, request.conversationId(), request.message(),
+                request.idempotencyKey());
     }
 
     private boolean hasOutputFile(String userId, long taskId) {

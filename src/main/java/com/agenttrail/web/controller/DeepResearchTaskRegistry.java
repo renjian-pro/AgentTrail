@@ -3,6 +3,9 @@ import com.agenttrail.web.dto.DeepResearchTaskResponse;
 
 import com.agenttrail.capability.deepresearch.DeepResearchReport;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.List;
@@ -23,11 +26,26 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 final class DeepResearchTaskRegistry {
 
+    static final Duration RETENTION = Duration.ofMinutes(10);
+
     private final AtomicLong taskIdSequence = new AtomicLong();
     private final Map<Long, DeepResearchTaskResponse> tasks = new ConcurrentHashMap<>();
     private final Map<Long, TaskHandle> handles = new ConcurrentHashMap<>();
+    private final Map<Long, Instant> terminalAt = new ConcurrentHashMap<>();
+    private final Clock clock;
+    private final Duration retention;
+
+    DeepResearchTaskRegistry() {
+        this(Clock.systemUTC(), RETENTION);
+    }
+
+    DeepResearchTaskRegistry(Clock clock, Duration retention) {
+        this.clock = clock;
+        this.retention = retention;
+    }
 
     long start(String userId) {
+        evictExpired();
         long taskId = taskIdSequence.incrementAndGet();
         tasks.put(taskId, DeepResearchTaskResponse.running(taskId));
         handles.put(taskId, new TaskHandle(userId, null));
@@ -39,13 +57,23 @@ final class DeepResearchTaskRegistry {
     }
 
     void complete(long taskId, DeepResearchReport report) {
-        tasks.compute(taskId, (ignored, existing) -> existing != null && DeepResearchTaskResponse.CANCELLED.equals(existing.status())
-                ? existing : DeepResearchTaskResponse.success(taskId, report));
+        tasks.compute(taskId, (ignored, existing) -> {
+            if (existing == null || !DeepResearchTaskResponse.RUNNING.equals(existing.status())) {
+                return existing;
+            }
+            terminalAt.put(taskId, clock.instant());
+            return DeepResearchTaskResponse.success(taskId, report, existing.currentStep());
+        });
     }
 
     void fail(long taskId, String errorMsg) {
-        tasks.compute(taskId, (ignored, existing) -> existing != null && DeepResearchTaskResponse.CANCELLED.equals(existing.status())
-                ? existing : DeepResearchTaskResponse.failed(taskId, errorMsg));
+        tasks.compute(taskId, (ignored, existing) -> {
+            if (existing == null || !DeepResearchTaskResponse.RUNNING.equals(existing.status())) {
+                return existing;
+            }
+            terminalAt.put(taskId, clock.instant());
+            return DeepResearchTaskResponse.failed(taskId, errorMsg, existing.currentStep());
+        });
     }
 
     boolean belongsTo(long taskId, String userId) {
@@ -61,13 +89,25 @@ final class DeepResearchTaskRegistry {
         }
         boolean cancelled = handle.future().cancel(true);
         if (cancelled) {
-            tasks.put(taskId, DeepResearchTaskResponse.cancelled(taskId));
+            tasks.computeIfPresent(taskId, (ignored, existing) -> {
+                if (!DeepResearchTaskResponse.RUNNING.equals(existing.status())) {
+                    return existing;
+                }
+                terminalAt.put(taskId, clock.instant());
+                return DeepResearchTaskResponse.cancelled(taskId, existing.currentStep());
+            });
         }
         return cancelled;
     }
 
     Optional<DeepResearchTaskResponse> find(long taskId) {
         return Optional.ofNullable(tasks.get(taskId));
+    }
+
+    void updateStep(long taskId, String currentStep) {
+        tasks.computeIfPresent(taskId, (ignored, existing) ->
+                DeepResearchTaskResponse.RUNNING.equals(existing.status())
+                        ? existing.withCurrentStep(currentStep) : existing);
     }
 
     List<Long> runningTaskIdsFor(String userId) {
@@ -80,6 +120,18 @@ final class DeepResearchTaskRegistry {
                 .map(Map.Entry::getKey)
                 .sorted()
                 .toList();
+    }
+
+    private void evictExpired() {
+        Instant cutoff = clock.instant().minus(retention);
+        terminalAt.entrySet().removeIf(entry -> {
+            if (entry.getValue().isAfter(cutoff)) {
+                return false;
+            }
+            tasks.remove(entry.getKey());
+            handles.remove(entry.getKey());
+            return true;
+        });
     }
 
     private record TaskHandle(String userId, Future<?> future) {

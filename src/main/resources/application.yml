@@ -18,6 +18,11 @@ spring:
       embedding:
         options:
           model: text-embedding-v4
+  datasource:
+    hikari:
+      maximum-pool-size: 80
+      connection-timeout: 5000
+      pool-name: primary-pool
   sql:
     init:
       mode: always
@@ -85,9 +90,17 @@ agenttrail:
   minio:
     bucket: agenttrail-charts
   ppt:
+    executor:
+      pool-size: 4
+      queue-capacity: 20
+    render:
+      executor:
+        pool-size: 2
+        queue-capacity: 8
     python-executable: python
     render-script-path: src/main/resources/ppt-scripts/render_ppt.py
     template-path: src/main/resources/ppt-templates/default-template.pptx
+    template-allowlist-dir: src/main/resources/ppt-templates
     output-dir: target/ppt-output
     render-timeout-seconds: 60
     model: deepseek-chat
@@ -98,6 +111,9 @@ agenttrail:
       timeout-seconds: 60
       minio-bucket: agenttrail-ppt-images
   deepresearch:
+    executor:
+      pool-size: 4
+      queue-capacity: 20
     model: qwen-plus
     search-model: deepseek-chat
     max-concurrent-tasks-per-layer: 3

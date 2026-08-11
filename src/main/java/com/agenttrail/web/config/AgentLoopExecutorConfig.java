@@ -1,4 +1,6 @@
 package com.agenttrail.web.config;
+
+import java.util.Map;
 import com.agenttrail.web.service.RegisteredModel;
 import com.agenttrail.web.service.AgentLoopExecutorFactory;
 import com.agenttrail.web.service.ConversationHistoryService;
@@ -45,6 +47,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.List;
@@ -71,6 +75,8 @@ import javax.sql.DataSource;
  */
 @Configuration
 public class AgentLoopExecutorConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentLoopExecutorConfig.class);
 
     /**
      * 当前工程使用的是精简 MVC starter，不依赖 JSON starter 的隐式自动装配。
@@ -223,6 +229,32 @@ public class AgentLoopExecutorConfig {
         return new CapabilityConversationService(turnPersistenceHook, objectMapper);
     }
 
+    @Bean
+    public com.agenttrail.capability.chat.application.RuntimeProfileRegistry runtimeProfileRegistry(
+            AgentLoopExecutorFactory executorFactory, AgentTaskManager agentTaskManager) {
+        return new com.agenttrail.capability.chat.application.RuntimeProfileRegistry(
+                Map.of(
+                        "qwen-plus", new com.agenttrail.runtime.api.legacy.LegacyAgentLoopExecutorAdapter(
+                                executorFactory.forModel("qwen-plus"), agentTaskManager),
+                        "deepseek-chat", new com.agenttrail.runtime.api.legacy.LegacyAgentLoopExecutorAdapter(
+                                executorFactory.forModel("deepseek-chat"), agentTaskManager)),
+                "qwen-plus", "deepseek-chat");
+    }
+
+    @Bean
+    public com.agenttrail.conversation.application.ConversationPort conversationPort(
+            ConversationHistoryService historyService, CapabilityConversationService capabilityService) {
+        return new com.agenttrail.conversation.application.JdbcConversationPort(historyService, capabilityService);
+    }
+
+    @Bean
+    public com.agenttrail.capability.chat.application.ChatApplicationService chatApplicationService(
+            com.agenttrail.capability.chat.application.RuntimeProfileRegistry runtimeProfileRegistry,
+            com.agenttrail.conversation.application.ConversationPort conversationPort) {
+        return new com.agenttrail.capability.chat.application.ChatApplicationService(runtimeProfileRegistry,
+                conversationPort);
+    }
+
     /**
      * 构造这个 Bean 本身不发一次网络请求——{@code toolCallbacks()} 懒加载，第一次真正
      * 有对话要用联网搜索时才建连 MCP 客户端，不能在这里同步 {@code initialize()}，
@@ -279,10 +311,17 @@ public class AgentLoopExecutorConfig {
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
                 new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
-        return new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager, tavilySearchToolProvider,
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager,
+                tavilySearchToolProvider,
                 chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
                 analyticsToolProvider.getIfAvailable(), pauseConfig, toolRiskRegistry, sessionBudgetTracker, traceStore,
                 meterRegistryProvider.getIfAvailable(), promptInjectionGuard, piiMasker, toolRateLimiter,
                 skillManagerProvider.getIfAvailable(), memoryStoreProvider.getIfAvailable());
+        log.info("agentLoopExecutorFactory configured: profile=chat-default model={} models={} "
+                        + "tools=[web-search,chart] pause={} memory={} trace={} metrics={}",
+                "qwen-plus", models.stream().map(RegisteredModel::id).toList(), pauseConfig != null,
+                memoryStoreProvider.getIfAvailable() != null, traceStore != null,
+                meterRegistryProvider.getIfAvailable() != null);
+        return factory;
     }
 }

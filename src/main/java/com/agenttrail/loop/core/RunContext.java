@@ -8,13 +8,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Sinks;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 一次完整推理（可能跨多轮）共享的运行时上下文。
@@ -47,7 +50,8 @@ record RunContext(
         ToolSearchSession toolSearchSession,
         Map<String, String> mdcSnapshot,
         Map<String, ToolTimelineEntry> toolTimeline,
-        Map<String, Integer> consecutiveToolFailures) {
+        Map<String, Integer> consecutiveToolFailures,
+        AtomicReference<Optional<ToolCallback>> cachedSkillTool) {
 
     private static final Logger log = LoggerFactory.getLogger(RunContext.class);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -56,7 +60,7 @@ record RunContext(
                AtomicInteger roundCounter, long startTimeMillis, ToolSearchSession toolSearchSession,
                Map<String, String> mdcSnapshot) {
         this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
-                new LinkedHashMap<>(), new HashMap<>());
+                new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>());
     }
 
     String conversationId() {

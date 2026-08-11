@@ -9,8 +9,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -60,13 +62,18 @@ public class DeepResearchConfig {
      * 完全一致：单独命名池，不跟 Tomcat 请求线程或别的阻塞代码共用。
      */
     @Bean(name = "deepResearchExecutor", destroyMethod = "shutdown")
-    public ExecutorService deepResearchExecutor() {
+    public ExecutorService deepResearchExecutor(
+            @Value("${agenttrail.deepresearch.executor.pool-size:4}") int poolSize,
+            @Value("${agenttrail.deepresearch.executor.queue-capacity:20}") int queueCapacity) {
         AtomicInteger threadCount = new AtomicInteger();
         ThreadFactory namedDaemonThreads = runnable -> {
             Thread thread = new Thread(runnable, "deep-research-" + threadCount.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         };
-        return Executors.newFixedThreadPool(4, namedDaemonThreads);
+        return new ThreadPoolExecutor(
+                poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(queueCapacity), namedDaemonThreads,
+                new ThreadPoolExecutor.AbortPolicy());
     }
 }

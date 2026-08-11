@@ -24,6 +24,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -40,7 +41,7 @@ class CapabilityControllersTest {
         DeepResearchService researchService = mock(DeepResearchService.class);
         CapabilityConversationService conversationService = mock(CapabilityConversationService.class);
         DeepResearchReport report = DeepResearchReport.completed("Java 就业趋势", List.of(), "研究结论");
-        when(researchService.research("研究 Java")).thenReturn(report);
+        when(researchService.research(eq("研究 Java"), any())).thenReturn(report);
         DeepResearchController controller = new DeepResearchController(researchService, conversationService, DIRECT_EXECUTOR);
 
         DeepResearchTaskResponse created = controller.research(

@@ -13,6 +13,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -33,6 +34,29 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 用 {@code ScriptedChatModel} 是安全的。
  */
 class DeepResearchServiceTest {
+
+    @Test
+    void reportsCoarseProgressInOrderAcrossAReplanningRound() {
+        ScriptedChatModel plainModel = new ScriptedChatModel(
+                List.of(text("澄清完成")),
+                List.of(text("研究主题")),
+                List.of(text("{\"tasks\":[{\"id\":\"task-1\",\"instruction\":\"搜索\",\"order\":1}]}")),
+                List.of(text("{\"passed\":false,\"feedback\":\"请更深入\"}")),
+                List.of(text("{\"tasks\":[{\"id\":\"task-2\",\"instruction\":\"补充搜索\",\"order\":1}]}")),
+                List.of(text("报告")));
+        ScriptedChatModel searchModel = new ScriptedChatModel(
+                List.of(text("素材1")), List.of(text("素材2")));
+        DeepResearchService service = new DeepResearchService(
+                new AgentLoopExecutor(plainModel, List.of(), 5),
+                new AgentLoopExecutor(searchModel, List.of(), 5),
+                3, 20, 0, 2);
+        List<String> steps = new ArrayList<>();
+
+        service.research("测试进度", steps::add);
+
+        assertThat(steps).containsExactly("CLARIFYING", "PLANNING", "SEARCHING", "CRITIQUING",
+                "PLANNING", "SEARCHING", "SUMMARIZING");
+    }
 
     @Test
     void shortCircuitsWhenTheModelSaysMoreInfoIsNeeded() {

@@ -19,6 +19,8 @@ import com.agenttrail.capability.ppt.strategy.RequirementStrategy;
 import com.agenttrail.capability.ppt.strategy.SchemaStrategy;
 import com.agenttrail.capability.ppt.strategy.SearchStrategy;
 import com.agenttrail.capability.ppt.strategy.TemplateStrategy;
+import io.minio.MinioClient;
+import okhttp3.OkHttpClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
@@ -28,8 +30,10 @@ import javax.sql.DataSource;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -57,14 +61,33 @@ public class PptGenerationConfig {
      * 是同一个理由：不跟 Tomcat 的请求线程池或别的阻塞代码共用，互不排队。
      */
     @Bean(name = "pptGenerationExecutor", destroyMethod = "shutdown")
-    public ExecutorService pptGenerationExecutor() {
+    public ExecutorService pptGenerationExecutor(
+            @Value("${agenttrail.ppt.executor.pool-size:4}") int poolSize,
+            @Value("${agenttrail.ppt.executor.queue-capacity:20}") int queueCapacity) {
         AtomicInteger threadCount = new AtomicInteger();
         ThreadFactory namedDaemonThreads = runnable -> {
             Thread thread = new Thread(runnable, "ppt-generation-" + threadCount.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         };
-        return Executors.newFixedThreadPool(4, namedDaemonThreads);
+        return new ThreadPoolExecutor(
+                poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(queueCapacity), namedDaemonThreads,
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    @Bean(name = "pptRenderExecutor", destroyMethod = "shutdown")
+    public ExecutorService pptRenderExecutor(
+            @Value("${agenttrail.ppt.render.executor.pool-size:2}") int poolSize,
+            @Value("${agenttrail.ppt.render.executor.queue-capacity:8}") int queueCapacity) {
+        AtomicInteger threadCount = new AtomicInteger();
+        ThreadFactory namedDaemonThreads = runnable -> {
+            Thread thread = new Thread(runnable, "ppt-render-" + threadCount.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        return new ThreadPoolExecutor(poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(queueCapacity), namedDaemonThreads, new ThreadPoolExecutor.AbortPolicy());
     }
 
     @Bean
@@ -103,8 +126,9 @@ public class PptGenerationConfig {
     @Bean
     public TemplateStrategy pptTemplateStrategy(
             @Value("${agenttrail.ppt.template-path:src/main/resources/ppt-templates/default-template.pptx}")
-            String templatePath) {
-        return new TemplateStrategy(templatePath);
+            String templatePath,
+            @Value("${agenttrail.ppt.template-allowlist-dir:src/main/resources/ppt-templates}") String allowlistDir) {
+        return new TemplateStrategy(templatePath, allowlistDir);
     }
 
     @Bean
@@ -121,8 +145,10 @@ public class PptGenerationConfig {
 
     @Bean
     public RenderStrategy pptRenderStrategy(PptPythonRenderer pptPythonRenderer,
+            @Qualifier("pptRenderExecutor") ExecutorService pptRenderExecutor,
             @Value("${agenttrail.ppt.output-dir:target/ppt-output}") String outputDir) {
-        return new RenderStrategy(pptPythonRenderer, outputDir);
+        return new RenderStrategy(new com.agenttrail.capability.ppt.ProcessBuilderRenderPort(pptPythonRenderer),
+                outputDir, pptRenderExecutor);
     }
 
     /**
@@ -146,13 +172,30 @@ public class PptGenerationConfig {
      * 复用同一套 {@code agenttrail.minio.*} 连接配置。
      */
     @Bean
-    public PptImageStore pptImageStore(
+    public MinioClient minioClient(
             @Value("${agenttrail.minio.endpoint}") String endpoint,
             @Value("${agenttrail.minio.access-key}") String accessKey,
             @Value("${agenttrail.minio.secret-key}") String secretKey,
-            @Value("${agenttrail.ppt.image.minio-bucket}") String bucket,
             @Value("${agenttrail.ppt.image.timeout-seconds}") long timeoutSeconds) {
-        return new MinioPptImageStore(endpoint, accessKey, secretKey, bucket, Duration.ofSeconds(timeoutSeconds));
+        OkHttpClient httpClient = new OkHttpClient.Builder()
+                .connectTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .readTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .writeTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .build();
+        return MinioClient.builder()
+                .endpoint(endpoint)
+                .credentials(accessKey, secretKey)
+                .httpClient(httpClient)
+                .build();
+    }
+
+    @Bean
+    public PptImageStore pptImageStore(
+            @Value("${agenttrail.minio.endpoint}") String endpoint,
+            @Value("${agenttrail.ppt.image.minio-bucket}") String bucket,
+            @Value("${agenttrail.ppt.image.timeout-seconds}") long timeoutSeconds,
+            MinioClient minioClient) {
+        return new MinioPptImageStore(minioClient, endpoint, bucket, Duration.ofSeconds(timeoutSeconds));
     }
 
     @Bean

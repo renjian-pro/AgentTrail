@@ -1,43 +1,32 @@
 package com.agenttrail.loop.core;
 
+import com.agenttrail.infrastructure.llm.springai.SpringAiModelGateway;
+import com.agenttrail.runtime.model.ModelChunk;
+import com.agenttrail.runtime.model.ModelGateway;
+import com.agenttrail.runtime.model.ModelRequest;
+import com.agenttrail.runtime.tool.ToolDefinition;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
-/**
- * 模型调用的唯一出口：每轮直接打到 {@link ChatModel#stream(Prompt)}，不经过
- * {@code ChatClient}/Advisor 链（ADR-0002），工具执行全在自己手里。
- *
- * <p>工具列表按轮传入而非构造时固定——为 ToolSearch 延迟工具发现留出空间。
- *
- * <h2>分阶段超时（issue #10）</h2>
- * <p>思考模型的首 token 延迟（等模型"想清楚"）和后续 token 间隔（纯输出速度）是两种性质不同的
- * 等待，用同一个超时值要么首 token 还没等到就误杀，要么输出卡住了迟迟不触发。这里用 Reactor
- * 的通用 {@code timeout(firstTimeout, nextTimeoutFactory)} 重载分开设：{@link #ttftTimeout} 管
- * "订阅到第一个 chunk"这段窗口，{@link #idleTimeout} 管"每个 chunk 之后到下一个 chunk"这段窗口，
- * 每次收到新 chunk 都重新起一个新的 idle 窗口。
- *
- * <p>超时触发后 Reactor 的 {@code timeout} 操作符会真正取消上游订阅（不只是不再往下游转发），
- * 详见 {@code LlmInvokerTest} 里用 {@code doOnCancel} 探针做的验证——不能只信操作符文档，
- * 这条链路的取消语义必须有测试锁住。
- */
+/** The legacy Spring AI response facade used by AgentLoopExecutor. */
 class LlmInvoker {
-
-    /** 思考模型"想清楚"再开口可能要一段时间，给得比 idle 超时宽松很多。 */
     private static final Duration DEFAULT_TTFT_TIMEOUT = Duration.ofSeconds(60);
-
-    /** 已经开始吐字之后，纯输出卡顿超过这个值就判定为连接/模型侧异常。 */
     private static final Duration DEFAULT_IDLE_TIMEOUT = Duration.ofSeconds(30);
 
+    private final ModelGateway modelGateway;
     private final ChatModel chatModel;
     private final Duration ttftTimeout;
     private final Duration idleTimeout;
@@ -47,29 +36,75 @@ class LlmInvoker {
     }
 
     LlmInvoker(ChatModel chatModel, Duration ttftTimeout, Duration idleTimeout) {
+        this.modelGateway = null;
         this.chatModel = chatModel;
         this.ttftTimeout = ttftTimeout;
         this.idleTimeout = idleTimeout;
     }
 
-    Flux<ChatResponse> streamRound(List<Message> messages, List<ToolCallback> tools) {
-        return chatModel.stream(new Prompt(messages, buildOptions(tools)))
-                .timeout(Mono.delay(ttftTimeout), chunk -> Mono.delay(idleTimeout));
+    LlmInvoker(ChatModel chatModel, List<ToolCallback> tools) {
+        this.modelGateway = new SpringAiModelGateway(chatModel, tools, DEFAULT_TTFT_TIMEOUT, DEFAULT_IDLE_TIMEOUT);
+        this.chatModel = chatModel;
+        this.ttftTimeout = DEFAULT_TTFT_TIMEOUT;
+        this.idleTimeout = DEFAULT_IDLE_TIMEOUT;
     }
 
-    /**
-     * mutate 自 {@link ChatModel#getOptions()}，保留厂商具体的 options 子类型（如
-     * DeepSeekChatOptions）——直接 new 一个通用 {@code ToolCallingChatOptions} 会在部分厂商的
-     * createRequest 里被硬转类型时 ClassCastException（#5a⑤）。
-     */
-    private ChatOptions buildOptions(List<ToolCallback> tools) {
-        ChatOptions defaultOptions = chatModel.getOptions();
-        ChatOptions.Builder<?> builder = defaultOptions != null
-                ? defaultOptions.mutate()
-                : ToolCallingChatOptions.builder();
-        if (builder instanceof ToolCallingChatOptions.Builder<?> toolBuilder) {
-            toolBuilder.toolCallbacks(tools);
+    LlmInvoker(ModelGateway modelGateway) {
+        this.modelGateway = modelGateway;
+        this.chatModel = null;
+        this.ttftTimeout = DEFAULT_TTFT_TIMEOUT;
+        this.idleTimeout = DEFAULT_IDLE_TIMEOUT;
+    }
+
+    Flux<ChatResponse> streamRound(List<Message> messages, List<ToolCallback> tools) {
+        ModelRequest request = new ModelRequest(
+                messages.stream().flatMap(message -> toModelMessages(message).stream()).toList(),
+                tools.stream().map(LlmInvoker::toToolDefinition).toList());
+        ModelGateway gateway = chatModel == null
+                ? modelGateway
+                : new SpringAiModelGateway(chatModel, tools, ttftTimeout, idleTimeout);
+        return Flux.from(gateway.streamRound(request)).map(LlmInvoker::toChatResponse);
+    }
+
+    private static List<ModelRequest.ModelMessage> toModelMessages(Message message) {
+        if (message instanceof ToolResponseMessage toolResponseMessage) {
+            return toolResponseMessage.getResponses().stream()
+                    .map(response -> new ModelRequest.ModelMessage(ModelRequest.ModelMessage.Role.TOOL,
+                            response.responseData(), response.id(), response.name(), Map.of()))
+                    .toList();
         }
-        return builder.build();
+        ModelRequest.ModelMessage.Role role = switch (message.getMessageType()) {
+            case SYSTEM -> ModelRequest.ModelMessage.Role.SYSTEM;
+            case USER -> ModelRequest.ModelMessage.Role.USER;
+            case ASSISTANT -> ModelRequest.ModelMessage.Role.ASSISTANT;
+            case TOOL -> ModelRequest.ModelMessage.Role.TOOL;
+        };
+        List<ModelRequest.ToolCall> toolCalls = message instanceof AssistantMessage assistant
+                ? assistant.getToolCalls().stream()
+                .map(call -> new ModelRequest.ToolCall(call.id(), call.type(), call.name(), call.arguments()))
+                .toList()
+                : List.of();
+        return List.of(new ModelRequest.ModelMessage(role, message.getText() == null ? "" : message.getText(),
+                null, null, message.getMetadata(), toolCalls));
+    }
+
+    private static ToolDefinition toToolDefinition(ToolCallback callback) {
+        return new ToolDefinition(callback.getToolDefinition().name(),
+                callback.getToolDefinition().description(), Map.of(), ToolDefinition.RiskLevel.READ_ONLY);
+    }
+
+    private static ChatResponse toChatResponse(ModelChunk chunk) {
+        AssistantMessage.Builder<?> builder = AssistantMessage.builder().content(chunk.content());
+        if (!chunk.metadata().isEmpty()) builder.properties(chunk.metadata());
+        if (chunk.toolCallDelta() != null) {
+            ModelChunk.ToolCallDelta call = chunk.toolCallDelta();
+            builder.toolCalls(List.of(new AssistantMessage.ToolCall(call.id(), "function", call.name(),
+                    call.argumentsFragment())));
+        }
+        ChatResponseMetadata metadata = ChatResponseMetadata.builder()
+                .usage(chunk.usage() == null ? null : new DefaultUsage(chunk.usage().promptTokens(),
+                        chunk.usage().completionTokens()))
+                .build();
+        return new ChatResponse(List.of(new Generation(builder.build())), metadata);
     }
 }

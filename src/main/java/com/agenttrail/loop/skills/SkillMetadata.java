@@ -18,5 +18,33 @@ package com.agenttrail.loop.skills;
  * @param description 来自 SKILL.md frontmatter，每次对账从磁盘刷新
  * @param enabled     是否启用。这是 DB 独有的状态，对账时绝不能被磁盘覆盖掉
  */
-public record SkillMetadata(String name, String skillPath, String description, boolean enabled) {
+import java.util.Set;
+
+public record SkillMetadata(String name, String skillPath, String description, boolean enabled,
+                            String version, SkillPermission permission, SkillResourceLimits limits) {
+    public SkillMetadata(String name, String skillPath, String description, boolean enabled) {
+        this(name, skillPath, description, enabled, "0.0.0", SkillPermission.unrestricted(),
+                SkillResourceLimits.defaults());
+    }
+
+    public SkillMetadata {
+        version = version == null || version.isBlank() ? "0.0.0" : version;
+        permission = permission == null ? SkillPermission.unrestricted() : permission;
+        limits = limits == null ? SkillResourceLimits.defaults() : limits;
+    }
+
+    public record SkillPermission(Set<String> allowedTools, Set<String> allowedResources) {
+        public SkillPermission {
+            allowedTools = allowedTools == null ? Set.of() : Set.copyOf(allowedTools);
+            allowedResources = allowedResources == null ? Set.of() : Set.copyOf(allowedResources);
+        }
+        public static SkillPermission unrestricted() { return new SkillPermission(Set.of(), Set.of()); }
+    }
+
+    public record SkillResourceLimits(long maxTokens, long timeoutSeconds) {
+        public SkillResourceLimits {
+            if (maxTokens < 0 || timeoutSeconds < 0) throw new IllegalArgumentException("limits must be non-negative");
+        }
+        public static SkillResourceLimits defaults() { return new SkillResourceLimits(0, 120); }
+    }
 }

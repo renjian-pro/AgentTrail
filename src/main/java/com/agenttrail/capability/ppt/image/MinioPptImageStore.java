@@ -4,7 +4,8 @@ import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
-import io.minio.SetBucketPolicyArgs;
+import io.minio.GetPresignedObjectUrlArgs;
+import io.minio.http.Method;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,19 +29,22 @@ public class MinioPptImageStore implements PptImageStore {
 
     private final MinioClient minioClient;
     private final HttpClient downloadClient;
-    private final String publicBaseUrl;
     private final String bucket;
     private final Duration timeout;
 
     private volatile boolean bucketReady = false;
     private final Object bucketLock = new Object();
 
-    public MinioPptImageStore(String endpoint, String accessKey, String secretKey, String bucket, Duration timeout) {
-        this.minioClient = MinioClient.builder().endpoint(endpoint).credentials(accessKey, secretKey).build();
+    public MinioPptImageStore(MinioClient minioClient, String endpoint, String bucket, Duration timeout) {
+        this.minioClient = minioClient;
         this.downloadClient = HttpClient.newBuilder().connectTimeout(timeout).build();
-        this.publicBaseUrl = endpoint.endsWith("/") ? endpoint.substring(0, endpoint.length() - 1) : endpoint;
         this.bucket = bucket;
         this.timeout = timeout;
+    }
+
+    /** Backward-compatible constructor for non-Spring callers; production wiring uses the shared client bean. */
+    public MinioPptImageStore(String endpoint, String accessKey, String secretKey, String bucket, Duration timeout) {
+        this(MinioClient.builder().endpoint(endpoint).credentials(accessKey, secretKey).build(), endpoint, bucket, timeout);
     }
 
     @Override
@@ -61,9 +65,19 @@ public class MinioPptImageStore implements PptImageStore {
             throw new PptImageException(
                     "上传图片到 MinIO 失败: bucket=" + bucket + " object=" + objectKey, uploadFailed);
         }
-        String publicUrl = publicBaseUrl + "/" + bucket + "/" + objectKey;
+        String publicUrl = objectKey;
         log.info("PPT 配图已转存至 MinIO: {}", publicUrl);
-        return publicUrl;
+        return objectKey;
+    }
+
+    public String presignedUrl(String objectKey, Duration validity) {
+        try {
+            return minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
+                    .method(Method.GET).bucket(bucket).object(objectKey)
+                    .expiry((int) validity.toSeconds(), java.util.concurrent.TimeUnit.SECONDS).build());
+        } catch (Exception failure) {
+            throw new PptImageException("生成 MinIO 签名 URL 失败: " + objectKey, failure);
+        }
     }
 
     private void ensureBucketReady() {
@@ -79,10 +93,6 @@ public class MinioPptImageStore implements PptImageStore {
                 if (!exists) {
                     minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucket).build());
                 }
-                minioClient.setBucketPolicy(SetBucketPolicyArgs.builder()
-                        .bucket(bucket)
-                        .config(publicReadPolicy(bucket))
-                        .build());
                 bucketReady = true;
             } catch (Exception ensureFailed) {
                 throw new PptImageException("初始化 MinIO bucket 失败: " + bucket, ensureFailed);

@@ -4,7 +4,9 @@ import com.agenttrail.capability.ppt.PptContentSlidePayload;
 import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptGenerationException;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
+import com.agenttrail.capability.ppt.ProcessBuilderRenderPort;
 import com.agenttrail.capability.ppt.PptPythonRenderer;
+import com.agenttrail.capability.ppt.RenderPort;
 import com.agenttrail.capability.ppt.PptRenderPayload;
 import com.agenttrail.capability.ppt.PptSchema;
 import com.agenttrail.capability.ppt.PptState;
@@ -18,6 +20,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * RENDER 状态（issue #24）：把 {@link PptSchema}（面向模型的语义化结构）翻译成
@@ -34,12 +38,18 @@ public class RenderStrategy implements PptGenerationStrategy {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final PptPythonRenderer renderer;
+    private final RenderPort renderPort;
     private final Path outputDir;
+    private final Executor renderExecutor;
 
     public RenderStrategy(PptPythonRenderer renderer, String outputDir) {
-        this.renderer = renderer;
+        this(new ProcessBuilderRenderPort(renderer), outputDir, null);
+    }
+
+    public RenderStrategy(RenderPort renderPort, String outputDir, Executor renderExecutor) {
+        this.renderPort = renderPort;
         this.outputDir = Path.of(outputDir);
+        this.renderExecutor = renderExecutor;
     }
 
     @Override
@@ -57,18 +67,33 @@ public class RenderStrategy implements PptGenerationStrategy {
 
         // 每次执行（包括断点恢复重跑这个状态）都用一个新的文件名，不复用上一次失败留下的半成品——
         // 按状态粒度恢复本来就意味着"这个状态整个重新跑一遍"（踩坑点 #44），文件名不需要幂等
-        String fileId = context.conversationId() + "-" + UUID.randomUUID();
-        Path schemaFile = outputDir.resolve(fileId + "-schema.json");
-        Path outputFile = outputDir.resolve(fileId + ".pptx");
+        Path workDir = outputDir.resolve(UUID.randomUUID().toString()).normalize();
+        Path schemaFile = workDir.resolve("schema.json");
+        Path outputFile = workDir.resolve("presentation.pptx");
 
         PptRenderPayload payload = toRenderPayload(context.schema());
         try {
+            Files.createDirectories(workDir);
             Files.writeString(schemaFile, MAPPER.writeValueAsString(payload), StandardCharsets.UTF_8);
         } catch (IOException writeFailed) {
             throw new PptGenerationException("写入渲染用 schema JSON 文件失败: " + schemaFile, writeFailed);
         }
 
-        renderer.render(context.templatePath(), schemaFile, outputFile);
+        try {
+            Runnable render = () -> renderPort.render(Path.of(context.templatePath()).toAbsolutePath().normalize(),
+                    schemaFile, outputFile);
+            if (renderExecutor == null) {
+                render.run();
+            } else {
+                CompletableFuture.runAsync(render, renderExecutor).join();
+            }
+        } finally {
+            try {
+                Files.deleteIfExists(schemaFile);
+            } catch (IOException ignored) {
+                // Keep the work directory for diagnosis when cleanup cannot complete.
+            }
+        }
 
         return context.withOutputPath(outputFile.toAbsolutePath().toString());
     }
