@@ -164,7 +164,7 @@
 > 机制**其实是参考框架自己的 core/17、core/13，已经挪到上面 Phase 0 状态表的 0.14/0.15。
 > 这里两行改成明确"建立在 0.14/0.15 之上"的业务层增强，不是从零开始。
 >
-> **2026-08-06 更新**：9 张实现票（详细设计见 `docs/specs/backend-phase3-governance*.md`）全部
+> **2026-08-06 更新**：9 张实现票（详细设计见 `docs/specs/phase3-governance/backend-phase3-governance*.md`）全部
 > 落地并关闭。落地时顺带把上一轮"下一步"记录的四条技术债（Redis 任务锁未接线、DeepResearch/PPT
 > 无法取消、Analytics 无失败熔断、Golden Task 没跑过真实调用）一并清掉——这些原本是"进 Phase 3
 > 之前要还的债"，实际落地时发现和 Hooks/PauseConfig/TraceStore 生产接线是同一批代码改动，拆开
@@ -187,7 +187,7 @@
 | 评测用例可维护 + badcase 回流 | 反馈"页面只有一个跑按钮，用例改不了、badcase 也加不进去"——`golden_case` 表 + `GoldenCaseController` 增删改查用例（YAML 内建用例仍只读，二者合并后一起跑）；`GoldenCaseCandidateExtractor` 接线为真实 API（此前是孤立代码，没有 Controller 调它），新增 `GoldenCasesView.vue`/`GoldenCandidatesView.vue` 两个管理页；`EvaluationView.vue` 加了通过率趋势图 | ✅ 2026-08-06 |
 | 结构化输出的业务审核层 | **不在这次范围内**——见上方 2026-08-06 更新说明 | ❌ 有意跳过 |
 | 安全纵深（AI 特有） | Prompt Injection 检测（小模型分类）、工具调用速率限制（Redisson `RRateLimiter`，防 ReAct 死循环烧 token）、PII 打码（手机号/身份证号/银行卡号）、Bash 工具凭据隔离审查（发现并修复了真实的环境变量泄露） | ✅ #71 |
-| A/B 测试 | 讨论过设计思路（模型/Prompt 版本分流 + 效果对比），本轮明确**不做**——见 `docs/specs/backend-phase3-governance.md` 的 Out of Scope | ❌ 有意跳过 |
+| A/B 测试 | 讨论过设计思路（模型/Prompt 版本分流 + 效果对比），本轮明确**不做**——见 `docs/specs/phase3-governance/backend-phase3-governance.md` 的 Out of Scope | ❌ 有意跳过 |
 
 ---
 
@@ -290,7 +290,7 @@
 | 健康探针与优雅停机 | `/actuator/health` 分 liveness（只检 JVM）/readiness（检 Redis/MySQL/LLM 连通性）；K8s liveness 失败重启会丢内存会话——所以 Phase 1 的会话持久化是 K8s 部署的前置依赖；优雅停机保证进行中的 ReAct 轮次跑完或触发 PauseState 快照（踩坑点 #32） |
 | 真正部署 | 视"部署好面试用"的具体要求决定——云主机/容器平台直接跑 Docker Compose，还是需要 K8s；镜像用 Buildpacks 分层（依赖层缓存，改代码只重建应用层） |
 | 性能基线 | 单实例并发会话数目标（受 Redis 锁 + 连接池 + LLM 并发限制约束）、单会话平均 token、压缩触发后的延迟增量；Redis 锁续期频率随并发数线性放大，连接池要按并发数预算 |
-| 前端演示页 | Vue3 + TS + Vite 单页应用，覆盖对话/文件问答/DeepResearch/PPT 生成——面试演示的视觉效果远强于 curl；详细设计见 [`docs/specs/frontend-v1.md`](specs/frontend-v1.md)，已拆票 [#38-#43](https://github.com/renjian-pro/AgentTrail/issues/38)；登录 + RBAC + 数据权限前端另见 [`docs/specs/frontend-phase2-auth.md`](specs/frontend-phase2-auth.md)（绑定下面 Phase 2 一起做，尚未拆票） |
+| 前端演示页 | Vue3 + TS + Vite 单页应用，覆盖对话/文件问答/DeepResearch/PPT 生成——面试演示的视觉效果远强于 curl；详细设计见 [`docs/specs/frontend-v1.md`](specs/frontend-v1.md)，已拆票 [#38-#43](https://github.com/renjian-pro/AgentTrail/issues/38)；登录 + RBAC + 数据权限前端另见 [`docs/specs/phase2a-auth/frontend-phase2-auth.md`](specs/phase2a-auth/frontend-phase2-auth.md)（绑定下面 Phase 2 一起做，尚未拆票） |
 | Demo 脚本 | 一套 curl/Postman 集作为前端之外的补充，覆盖每个能力包的典型场景 |
 | 评测落地 | Phase 3c 的评测体系接上真实数据——data-agent 评测体系相关笔记，待补充具体指标口径 |
 

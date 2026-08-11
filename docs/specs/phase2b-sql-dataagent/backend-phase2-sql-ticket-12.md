@@ -2,7 +2,7 @@
 
 > GitHub issue: [#58](https://github.com/renjian-pro/AgentTrail/issues/58)
 
-> 派生自 [`backend-phase2-sql-dataagent.md`](backend-phase2-sql-dataagent.md) 第 5.8／5.9 节 + [ADR-0003](../adr/0003-agentscope-isolated-data-agent-runtime.md)。`Blocked by` Ticket 7/8/9/11（需要全部工具都已存在）。**这一票是 Phase 2B 的收口票**——做完之后 DataAgent 才第一次能被用户真正调用。
+> 派生自 [`backend-phase2-sql-dataagent.md`](backend-phase2-sql-dataagent.md) 第 5.8／5.9 节 + [ADR-0003](../../adr/0003-agentscope-isolated-data-agent-runtime.md)。`Blocked by` Ticket 7/8/9/11（需要全部工具都已存在）。**这一票是 Phase 2B 的收口票**——做完之后 DataAgent 才第一次能被用户真正调用。
 >
 > 前面五张票各自产出了零散的 `ToolCallback`，但**一个都没挂到执行器上**。这一票把它们装配起来、写 SKILL.md、接 HTTP 入口。
 

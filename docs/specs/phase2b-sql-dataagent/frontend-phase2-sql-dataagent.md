@@ -1,7 +1,7 @@
 # AgentTrail 前端 — Phase 2B：数据分析（DataAgent）需求 Spec
 
 > 状态：草案。与 [`backend-phase2-sql-dataagent.md`](backend-phase2-sql-dataagent.md) 是同一能力的前后端两侧。
-> 前提：Phase 2A 前端（[`frontend-phase2-auth.md`](frontend-phase2-auth.md)，Ticket F1-F3）已交付——登录态、`http.ts` 的 token 注入与 401 处理、路由守卫、`admin/` 管理后台都已存在。
+> 前提：Phase 2A 前端（[`frontend-phase2-auth.md`](../phase2a-auth/frontend-phase2-auth.md)，Ticket F1-F3）已交付——登录态、`http.ts` 的 token 注入与 401 处理、路由守卫、`admin/` 管理后台都已存在。
 > 拆票：[F4](frontend-phase2-sql-ticket-f4.md)（对话侧）、[F5](frontend-phase2-sql-ticket-f5.md)（Schema/术语浏览）。
 
 ## Problem Statement
@@ -56,7 +56,7 @@
 
 ### 不引入 UI 组件库、不引入 SQL 高亮库
 
-延续 Phase 2A 的约束（`frontend-phase2-auth.md` 已定）：纯手写组件 + `src/styles.css`。SQL 的可读性靠**格式化换行 + 等宽字体**解决，不引入 highlight.js/prismjs——一个只在这一个场景用到的高亮库不值得进 bundle。
+延续 Phase 2A 的约束（`../phase2a-auth/frontend-phase2-auth.md` 已定）：纯手写组件 + `src/styles.css`。SQL 的可读性靠**格式化换行 + 等宽字体**解决，不引入 highlight.js/prismjs——一个只在这一个场景用到的高亮库不值得进 bundle。
 
 ## Out of Scope
 

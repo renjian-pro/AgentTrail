@@ -2,7 +2,7 @@
 
 > 派生自 [`backend-phase3-governance.md`](backend-phase3-governance.md)。`Blocked by`
 > [Ticket 7](backend-phase3-governance-ticket-07.md)（依赖它的三个后端端点）。这是前端票，
-> 技术栈 Vue3 + TS + Vite，对齐 `docs/specs/frontend-phase2-auth.md` 已经定的前端工程约定。
+> 技术栈 Vue3 + TS + Vite，对齐 `docs/specs/phase2a-auth/frontend-phase2-auth.md` 已经定的前端工程约定。
 
 ## 0. 范围边界
 

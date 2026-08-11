@@ -3,8 +3,8 @@
 > 这是 Phase 2B 全部 10 张票的索引和依赖图。**开工前先读这一页**，再去读要做的那张票。
 >
 > 需求 Spec：[后端](backend-phase2-sql-dataagent.md) ｜ [前端](frontend-phase2-sql-dataagent.md)
-> 架构决策：[ADR-0003](../adr/0003-agentscope-isolated-data-agent-runtime.md)
-> 踩坑清单：[engineering-pitfalls-and-highlights.md](../engineering-pitfalls-and-highlights.md) 第六节（#21-#29）、第八节（#35-#37）
+> 架构决策：[ADR-0003](../../adr/0003-agentscope-isolated-data-agent-runtime.md)
+> 踩坑清单：[engineering-pitfalls-and-highlights.md](../../engineering-pitfalls-and-highlights.md) 第六节（#21-#29）、第八节（#35-#37）
 
 ## 现状
 
@@ -136,7 +136,7 @@ analytics_ro 账号执行                           ← 只能读授权过的业
 
 ## 三个"参考材料里没有、需要从零设计"的点
 
-交叉核对（[dodoagentx-crosscheck](../dodoagentx-crosscheck-2026-08-03.md)）确认，以下三项参考实现自己也没做，Phase 2B 里是新增设计：
+交叉核对（[dodoagentx-crosscheck](../../dodoagentx-crosscheck-2026-08-03.md)）确认，以下三项参考实现自己也没做，Phase 2B 里是新增设计：
 
 | 主题 | 落在哪张票 |
 |---|---|

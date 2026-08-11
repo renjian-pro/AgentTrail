@@ -1,6 +1,6 @@
 # AgentTrail 前端工程 — Phase 2（登录/权限 + SQL 数据分析）需求 Spec
 
-> 状态：草案，按 `to-spec` 模板整理，尚未发布为 GitHub issue（`renjian-pro/AgentTrail`，`ready-for-agent` 标签）——v1 已拆票（[#38-#43](https://github.com/renjian-pro/AgentTrail/issues/38)），这份先搁置，等 Phase 2 后端启动时机更明确了再拆。与 [`frontend-v1.md`](frontend-v1.md)（v1：对话/文件问答/DeepResearch/PPT）是同一个前端应用的后续增量，不是另起一个项目。
+> 状态：草案，按 `to-spec` 模板整理，尚未发布为 GitHub issue（`renjian-pro/AgentTrail`，`ready-for-agent` 标签）——v1 已拆票（[#38-#43](https://github.com/renjian-pro/AgentTrail/issues/38)），这份先搁置，等 Phase 2 后端启动时机更明确了再拆。与 [`frontend-v1.md`](../frontend-v1.md)（v1：对话/文件问答/DeepResearch/PPT）是同一个前端应用的后续增量，不是另起一个项目。
 > 前提：`docs/roadmap.md` Phase 2（SQL 数据分析能力包）目前后端还没有任何代码——没有 `sys_user` 表，没有 SQL 分析工具，没有权限改写逻辑。这份 spec 的组件设计基于 Phase 2 已经写好的规划（`sys_user`/`sys_role`/`sys_dept` + `DataScopeResolver`/`DataScopeRewriter` + 敏感字段脱敏），具体接口字段要等后端那张票细化后回填。
 > 披露规则：同 v1 spec，不点名具体的个人历史参考仓库，方法论表述为"研读了一个真实生产形态框架的权限模型设计后独立实现"。
 

@@ -1,8 +1,8 @@
 # AgentTrail 后端 — Phase 2B：SQL 数据分析能力包（DataAgent） 需求与技术方案
 
 > 状态：草案，按 `to-spec` 模板整理，尚未发布为 GitHub issue（`ready-for-agent` 标签）。
-> 前提：[`backend-phase2-auth.md`](backend-phase2-auth.md)（Phase 2A）已交付 `sys_user`/`sys_role`/`sys_dept`/`sys_user_role`/`sys_user_dept` 五表 RBAC + `DataScopeResolver`（给定 `userId` 返回可见 `deptId` 列表），并把 `userId` 接进了 `RunnableParams.toolParams` 强制注入通道。这份 spec 是 Phase 2A 之后的下一步——SQL 分析工具本身：Schema、消歧、SQL 安全、执行、权限改写（消费 Phase 2A 的产出）、脱敏、计算、图表。
-> 关联文档：[`roadmap.md`](../roadmap.md) Phase 2 表格（机制清单的原始来源）、[`ADR-0003`](../adr/0003-agentscope-isolated-data-agent-runtime.md)（AgentScope 仅作隔离 Runtime Adapter 的边界）、[`dodoagentx-crosscheck-2026-08-03.md`](../dodoagentx-crosscheck-2026-08-03.md)（交叉核对结论）、[`engineering-pitfalls-and-highlights.md`](../engineering-pitfalls-and-highlights.md) 第六/八节（踩坑点 #21-#29、#35-#37，实现时逐条对照）。
+> 前提：[`backend-phase2-auth.md`](../phase2a-auth/backend-phase2-auth.md)（Phase 2A）已交付 `sys_user`/`sys_role`/`sys_dept`/`sys_user_role`/`sys_user_dept` 五表 RBAC + `DataScopeResolver`（给定 `userId` 返回可见 `deptId` 列表），并把 `userId` 接进了 `RunnableParams.toolParams` 强制注入通道。这份 spec 是 Phase 2A 之后的下一步——SQL 分析工具本身：Schema、消歧、SQL 安全、执行、权限改写（消费 Phase 2A 的产出）、脱敏、计算、图表。
+> 关联文档：[`roadmap.md`](../../roadmap.md) Phase 2 表格（机制清单的原始来源）、[`ADR-0003`](../../adr/0003-agentscope-isolated-data-agent-runtime.md)（AgentScope 仅作隔离 Runtime Adapter 的边界）、[`dodoagentx-crosscheck-2026-08-03.md`](../../dodoagentx-crosscheck-2026-08-03.md)（交叉核对结论）、[`engineering-pitfalls-and-highlights.md`](../../engineering-pitfalls-and-highlights.md) 第六/八节（踩坑点 #21-#29、#35-#37，实现时逐条对照）。
 > 披露规则：同其余 spec，方法论表述为"研读了真实生产形态 DataAgent 实现后独立实现"，不点名具体来源仓库；不照搬代码，只借鉴架构决策和踩坑经验（见 ADR-0003）。
 >
 > **已拆票**：本 spec 的实现拆成 10 张票（后端 06-13、前端 F4-F5），依赖图和建议顺序见 [`phase2b-sql-dataagent-tickets.md`](phase2b-sql-dataagent-tickets.md)。每张票都有独立的技术开发文档，本 spec 只定"做什么和为什么"，"怎么做"在票里。

@@ -114,7 +114,7 @@ DeepResearch（[#42](https://github.com/renjian-pro/AgentTrail/issues/42)）与 
 
 ## Out of Scope
 
-- **登录/RBAC/数据权限**：不是因为不需要，而是因为这块和 `docs/roadmap.md` Phase 2（SQL 数据分析）里已经规划好的"完整数据权限模型"（`sys_user`/`sys_role`/`sys_dept` + `DataScopeResolver`/`DataScopeRewriter` + 敏感字段脱敏）是同一件事——登录本身只有门面价值，只有配合权限过滤/脱敏生效才有东西可演示。作为独立一份绑定 Phase 2 的 spec 规划，见 [`frontend-phase2-auth.md`](frontend-phase2-auth.md)。v1 的四个能力（对话/文件问答/DeepResearch/PPT）继续走 `RunnableParams` 里写死的 `"anonymous"` 身份，不受影响
+- **登录/RBAC/数据权限**：不是因为不需要，而是因为这块和 `docs/roadmap.md` Phase 2（SQL 数据分析）里已经规划好的"完整数据权限模型"（`sys_user`/`sys_role`/`sys_dept` + `DataScopeResolver`/`DataScopeRewriter` + 敏感字段脱敏）是同一件事——登录本身只有门面价值，只有配合权限过滤/脱敏生效才有东西可演示。作为独立一份绑定 Phase 2 的 spec 规划，见 [`frontend-phase2-auth.md`](phase2a-auth/frontend-phase2-auth.md)。v1 的四个能力（对话/文件问答/DeepResearch/PPT）继续走 `RunnableParams` 里写死的 `"anonymous"` 身份，不受影响
 - Skills 管理侧栏（启用/停用/上传/删除技能）：`agent_skill` 表已存在但没有对应 controller，属于另一张后端票的范围，等接口落地后单独开一个前端票
 - 移动端像素级适配：保证基本可用（不横向溢出、按钮可点），不做专门的移动端交互重设计
 - 国际化（i18n）：面试演示场景默认中文，不做多语言
@@ -127,4 +127,4 @@ DeepResearch（[#42](https://github.com/renjian-pro/AgentTrail/issues/42)）与 
 - 视觉方向已定稿：不走自造的"控制台/trace rail"风格，改为成熟桌面助理的轻量壳（紧凑侧栏 + 大留白居中工作区 + 宽幅悬浮输入框 + 能力胶囊 + Thought/Tool chip 可展开交互）；空态标题与输入框组成同一个视觉组，进入对话后输入框再固定到底部。浅色/深色两套 token 都要做，研究报告必须保持单列可读宽度，不能被消息行样式挤成多栏。
 - 后端三项前置依赖（SSE、persistenceHook 接线、会话历史查询）已由 [issue #38](https://github.com/renjian-pro/AgentTrail/issues/38) 落地；后续又把同步能力结果接入相同会话存储，避免历史侧栏只恢复普通聊天
 - v1 已拆分为 6 张 GitHub issue（#38-#43，见文件顶部状态行），本文件继续作为完整设计留档维护
-- 登录 + RBAC + 数据权限前端，作为独立一份 spec 绑定 Phase 2（SQL 数据分析）一起规划，见 [`frontend-phase2-auth.md`](frontend-phase2-auth.md)——尚未拆票，Phase 2 后端本身也还没开始
+- 登录 + RBAC + 数据权限前端，作为独立一份 spec 绑定 Phase 2（SQL 数据分析）一起规划，见 [`frontend-phase2-auth.md`](phase2a-auth/frontend-phase2-auth.md)——尚未拆票，Phase 2 后端本身也还没开始

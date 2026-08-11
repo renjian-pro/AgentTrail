@@ -16,7 +16,7 @@
 
 1. **`DeepResearchController.status(taskId)` 现在完全没有归属校验**（`web/DeepResearchController.java`
    第 80-85 行，直接 `taskRegistry.find(taskId)`，不看当前登录用户是谁）——这是一个真实存在、
-   还没修的越权点，`backend-phase2-auth.md` 的越权修复清单当时只覆盖了 PPT，没覆盖 DeepResearch。
+   还没修的越权点，`../phase2a-auth/backend-phase2-auth.md` 的越权修复清单当时只覆盖了 PPT，没覆盖 DeepResearch。
    这一票要顺手把它修掉，不是新发现另开一张票——加取消端点本来就要设计"谁能取消谁的任务"，
    这个校验逻辑和补 `status()` 的校验是同一段代码。
 2. **PPT 这边没有这个问题**——`PptGenerationController` 的 `resume`/`status`/`download` 都已经在走

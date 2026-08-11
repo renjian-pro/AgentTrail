@@ -170,7 +170,7 @@ sequenceDiagram
 **治理层（issue #63-#71）在这条链路上的接入点**（为保持图的可读性没有画进上面的时序图）：
 - `stream()` 一开始、`registerTask` 成功之后：`PromptInjectionGuard`（疑似注入直接拒绝本轮）→ `PiiMasker`（打码后的文本才继续往下走，落库/messages 都看不到原文）→ `fireSessionStart`。
 - 每轮 `finishRound` 里，`requiresApproval` 判到 `HIGH_RISK` 工具时先转 `PauseConfig` 走人工审批（在 `firePreToolUse` 之前拦下，根本不会执行）；剩下的调用先过 `firePreToolUse`（纯观察，不拦截），再由 `ToolRateLimiter` 做真正的放行/拒绝决策（超限的调用不送进 `ToolCallExecutor`，直接合成一条 `Error:` 开头的响应喂回模型），执行完再 `firePostToolUse`。
-- `fireBudget`（每轮）配合 `SessionBudgetTracker.overBudget()`（每轮末尾检查）实现会话级熔断，和 `PreToolUseHook` 是两套独立机制——`Hook` 全系是观察型 void 接口（#63 的既定设计），限速/预算这类需要"拦截并改变行为"的机制刻意没有塞进 Hook 契约，而是各自成一个直接参与决策的组件，理由见 `docs/specs/backend-phase3-governance-ticket-09.md` 第 2 节。
+- `fireBudget`（每轮）配合 `SessionBudgetTracker.overBudget()`（每轮末尾检查）实现会话级熔断，和 `PreToolUseHook` 是两套独立机制——`Hook` 全系是观察型 void 接口（#63 的既定设计），限速/预算这类需要"拦截并改变行为"的机制刻意没有塞进 Hook 契约，而是各自成一个直接参与决策的组件，理由见 `docs/specs/phase3-governance/backend-phase3-governance-ticket-09.md` 第 2 节。
 
 **另一条入口**：`AgentLoopExecutor.call(question, params)`（issue #15）——不是另一套实现，是把 `stream()` 阻塞收集成一次性返回值，复用同一套单飞注册/上下文压缩/工具执行机制。声明了 `OutputType` 时，`call()` 会在返回前对文本做一次 `JsonRepair.fixJson` 兜底（`stream()` 不做，因为文本已经边生成边推给调用方了，没法事后再改）。
 
@@ -306,7 +306,7 @@ com.agenttrail
 │   ├── auth/                                   # 登录、Sa-Token 会话、密码校验
 │   ├── sys/                                    # RBAC：sys_user/sys_role/sys_dept 及 controller/service/store 分层
 │   ├── deepresearch/                           # 2026-08-06：从 loop.deepresearch 搬入——落地
-│   │                                            #   architecture-refactor-blueprint-2026-08-03.md P0-1；
+│   │                                            #   refactor-blueprint.md P0-1；
 │   │                                            #   Plan-Execute-Critique 工作流，仍由 web.DeepResearchController 异步驱动
 │   ├── ppt/                                    # 2026-08-06：从 loop.ppt 搬入（含 image/、strategy/ 子包）；
 │   │                                            #   状态机 + JdbcPptTaskStore 落库 + Python 渲染
@@ -347,7 +347,7 @@ com.agenttrail
     │   │                                        #   拆包时从包私有改成了 public，本来就是给 controller 层调的
     │   └── AgentChatRequest.java / AgentChatResponse.java / ConversationHistoryResponse.java / ... 共 15 个
     └── service/                                 # 不属于任何单一 Controller、也不属于某个 capability 的
-        │                                        #   横切服务——P0-8（architecture-refactor-blueprint-2026-08-03.md）
+        │                                        #   横切服务——P0-8（refactor-blueprint.md）
         │                                        #   指出 CapabilityConversationService 这类东西放在 web 包名不副实，
         │                                        #   这次先归到 web.service，没有搬去 capability/（那需要先拍板
         │                                        #   它到底该属于哪个能力包，或者要不要新开一个 conversation 能力包）
@@ -431,7 +431,7 @@ AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, tools, maxRoun
 | CONTEXT.md 术语 | 代码位置（当前实际） |
 |---|---|
 | Runtime | `loop.core` + `loop.context`/`stage`/`stageoutput`/`trace`/`structured`/`memory`/`persistence`/`pause`/`task`/`tools`/`skills`/`model`（V1，已接线，`/agent/v1/chat`）；`legacy.V0`（V0，`/agent/chat`，不再演进） |
-| Capability Pack | `capability/*`：analytics/auth/sys（Phase 2，2026-08-05 落地）+ deepresearch/ppt/file(含 multimodal 子包)/rag（2026-08-06 从 `loop.*` 搬入）——`architecture-refactor-blueprint-2026-08-03.md` 的 P0-1 已全部落地，`loop/` 下不再有业务能力包，只剩纯 Runtime 机制 |
+| Capability Pack | `capability/*`：analytics/auth/sys（Phase 2，2026-08-05 落地）+ deepresearch/ppt/file(含 multimodal 子包)/rag（2026-08-06 从 `loop.*` 搬入）——`refactor-blueprint.md` 的 P0-1 已全部落地，`loop/` 下不再有业务能力包，只剩纯 Runtime 机制 |
 | Tool | `loop.tools.*`（FileSystem/Bash/Grep/TodoWrite 是 Runtime 内置 Tool），未来 Capability Pack 各自的 tools 子包 |
 | Skill | `loop.skills.*` |
 | Hook | ✅ 已实现（`loop.hook`，issue #63）：`SessionStart`/`PreToolUse`/`PostToolUse`/`Budget`/`OnError`/`SessionEnd` 六个拦截点，纯观察型 void 接口，不做流程控制——真正的决策型机制（HITL 审批、Budget 熔断、限速）是独立于 Hook 之外的专用组件（`PauseConfig`/`SessionBudgetTracker`/`ToolRateLimiter`），见下方"治理层"小节。`StageOutputProvider` 仍然是它自己的东西，语义没变（"产出附加内容"不是"治理拦截"） |
