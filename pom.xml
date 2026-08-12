@@ -336,6 +336,7 @@
 						<!-- These classes have integration dependencies despite their names. -->
 						<exclude>**/AgentTrailApplicationTests.java</exclude>
 						<exclude>**/SkillManagerTest.java</exclude>
+						<exclude>**/ConversationHistoryServiceTest.java</exclude>
 					</excludes>
 				</configuration>
 			</plugin>
