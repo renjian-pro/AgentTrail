@@ -1,12 +1,13 @@
 package com.agenttrail.loop.skills;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
+import javax.sql.DataSource;
 import java.nio.file.Path;
 
 /**
@@ -25,9 +26,15 @@ import java.nio.file.Path;
 @ConditionalOnProperty(prefix = "agenttrail.skills", name = "directory")
 public class SkillsConfiguration {
 
+    /**
+     * {@code agent_skill} 表只在 {@code dataSource}（MySQL，见 db/schema.sql）建过，项目里还有
+     * 第二个 {@link DataSource}（pgvector 用的 Postgres）——不加 {@code @Qualifier} 拿到的
+     * {@code JdbcClient} 由 Spring 自行决定绑哪个数据源，曾经悄悄绑到 Postgres 上，
+     * 一查 {@code agent_skill} 就是"relation does not exist"。
+     */
     @Bean
-    public SkillRepository skillRepository(JdbcClient jdbcClient) {
-        return new SkillRepository(jdbcClient);
+    public SkillRepository skillRepository(@Qualifier("dataSource") DataSource dataSource) {
+        return new SkillRepository(dataSource);
     }
 
     @Bean
