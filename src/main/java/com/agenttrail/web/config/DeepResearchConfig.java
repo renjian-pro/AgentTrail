@@ -4,6 +4,15 @@ import com.agenttrail.web.service.AgentLoopExecutorFactory;
 import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.capability.deepresearch.DeepResearchService;
+import com.agenttrail.capability.deepresearch.DeepResearchTaskWorker;
+import com.agenttrail.capability.deepresearch.DeepResearchWorkflow;
+import com.agenttrail.capability.deepresearch.InMemoryResearchArtifactStore;
+import com.agenttrail.capability.deepresearch.ResearchArtifactStore;
+import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.runtime.repository.CheckpointStore;
+import com.agenttrail.runtime.repository.InMemoryCheckpointStore;
+import com.agenttrail.runtime.repository.InMemoryRunEventStore;
+import com.agenttrail.runtime.repository.RunEventStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -75,5 +84,33 @@ public class DeepResearchConfig {
                 poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(queueCapacity), namedDaemonThreads,
                 new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    @Bean
+    public CheckpointStore deepResearchCheckpointStore() {
+        return new InMemoryCheckpointStore();
+    }
+
+    @Bean
+    public RunEventStore deepResearchRunEventStore() {
+        return new InMemoryRunEventStore();
+    }
+
+    @Bean
+    public ResearchArtifactStore deepResearchArtifactStore() {
+        return new InMemoryResearchArtifactStore();
+    }
+
+    @Bean
+    public DeepResearchWorkflow deepResearchWorkflow(DeepResearchService service,
+            CheckpointStore checkpoints, ResearchArtifactStore artifacts, RunEventStore events) {
+        return new DeepResearchWorkflow(service, checkpoints, artifacts, events);
+    }
+
+    @Bean
+    public DeepResearchTaskWorker deepResearchTaskWorker(DeepResearchWorkflow workflow,
+            AgentTaskManager taskManager, @org.springframework.beans.factory.annotation.Qualifier("deepResearchExecutor")
+            ExecutorService executor, RunEventStore events) {
+        return new DeepResearchTaskWorker(workflow, taskManager, executor, events);
     }
 }

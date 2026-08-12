@@ -10,4 +10,6 @@ public interface ConversationPort {
     boolean belongsTo(String conversationId, ExecutionPrincipal principal);
 
     Long recordCapabilityResult(CapabilityTurnRecord record);
+
+    Long recordCancelled(CapabilityTurnRecord record);
 }

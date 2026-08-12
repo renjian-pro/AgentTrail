@@ -7,9 +7,9 @@ import com.agenttrail.platform.ids.TaskId;
 import com.agenttrail.runtime.repository.CheckpointStore;
 import com.agenttrail.runtime.repository.RunEventStore;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /** Concrete, explicit DeepResearch driver; intentionally not a generic workflow engine. */
 public final class DeepResearchWorkflow {
@@ -27,18 +27,24 @@ public final class DeepResearchWorkflow {
     }
 
     public DeepResearchReport run(TaskId taskId, String question, Consumer<EventEnvelope> sink) {
+        return run(taskId, question, null, null, sink);
+    }
+
+    public DeepResearchReport run(TaskId taskId, String question, String previousQuestion,
+            String previousClarifyingQuestion, Consumer<EventEnvelope> sink) {
         RunId runId = RunId.of(taskId.value());
         ConversationId conversationId = ConversationId.of("deepresearch:" + taskId.value());
         Consumer<String> onStep = step -> {
             DeepResearchStage stage = stageOf(step);
-            checkpoints.save(taskId, stage.name(), new DeepResearchState(question, null, null, 0,
-                    null, List.of(), List.of(), null).toString());
+            checkpoints.save(taskId, stage.name(), question);
             EventEnvelope event = EventEnvelope.create(runId, taskId, conversationId,
                     "ResearchStageStarted", "deepresearch", EventEnvelope.Visibility.CLIENT, stage.name());
             EventEnvelope stored = events.append(event);
             if (sink != null) sink.accept(stored);
         };
-        DeepResearchReport report = service.research(question, onStep);
+        DeepResearchReport report = previousQuestion != null && !previousQuestion.isBlank()
+                ? service.continueAfterClarification(previousQuestion, previousClarifyingQuestion, question, onStep)
+                : service.research(question, onStep);
         artifacts.save(taskId, report);
         EventEnvelope completed = EventEnvelope.create(runId, taskId, conversationId,
                 report.needsClarification() ? "ResearchClarificationRequired" : "ResearchCompleted",

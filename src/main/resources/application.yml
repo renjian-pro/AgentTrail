@@ -83,6 +83,7 @@ agenttrail:
     model: qwen3-vl-plus
   file:
     rag-threshold-chars: 5000
+    async-threshold-bytes: 1048576
   mcp-echarts:
     url: http://localhost:3033/mcp
     timeout-seconds: 15

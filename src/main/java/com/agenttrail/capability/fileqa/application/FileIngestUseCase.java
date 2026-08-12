@@ -11,6 +11,7 @@ import com.agenttrail.capability.fileqa.port.FileStorePort;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.io.ByteArrayInputStream;
 import java.time.Clock;
 
 public final class FileIngestUseCase {
@@ -61,6 +62,43 @@ public final class FileIngestUseCase {
         }
     }
 
+    /** Reserve the durable file id before expensive parsing/indexing starts. */
+    public ReservedUpload reserve(String userId, String conversationId, String fileName,
+                                  String contentType, long sizeBytes) {
+        FileKind kind = com.agenttrail.capability.file.FileKindDetector.detect(contentType, fileName);
+        Attachment attachment = new Attachment(null, userId, conversationId, null, fileName, contentType,
+                sizeBytes, kind, AttachmentStatus.INGESTING, null, null, null, clock.millis());
+        long id = files.save(attachment);
+        return new ReservedUpload(id, fileName, kind, sizeBytes);
+    }
+
+    /** Complete a reservation on a worker thread; only text uploads use this path today. */
+    public IngestedFile completeReserved(ReservedUpload reserved, byte[] content) {
+        try {
+            IngestedFile result = ingestReserved(reserved, new ByteArrayInputStream(content));
+            return result;
+        } catch (RuntimeException failure) {
+            files.markFailed(reserved.fileId(), failure.getMessage() == null
+                    ? failure.getClass().getSimpleName() : failure.getMessage());
+            throw failure;
+        }
+    }
+
+    private IngestedFile ingestReserved(ReservedUpload reserved, InputStream content) {
+        if (reserved.kind() == FileKind.IMAGE) {
+            byte[] raw = readAllBytes(content);
+            files.markReady(reserved.fileId(), null, raw);
+            return new IngestedFile(reserved.fileId(), reserved.fileName(), reserved.kind(),
+                    reserved.sizeBytes(), 0, false);
+        }
+        String parsedText = parser.parse(content, reserved.fileName());
+        boolean routedToRag = parsedText.length() > ragThresholdChars;
+        if (routedToRag) embeddings.embedAndStore(reserved.fileId(), parsedText);
+        files.markReady(reserved.fileId(), parsedText, null);
+        return new IngestedFile(reserved.fileId(), reserved.fileName(), reserved.kind(), reserved.sizeBytes(),
+                parsedText.length(), routedToRag);
+    }
+
     public void delete(long fileId) {
         files.findById(fileId).ifPresent(attachment -> {
             if (attachment.kind() == FileKind.TEXT && attachment.parsedText() != null
@@ -78,4 +116,6 @@ public final class FileIngestUseCase {
             throw new UncheckedIOException(failure);
         }
     }
+
+    public record ReservedUpload(long fileId, String fileName, FileKind kind, long sizeBytes) { }
 }

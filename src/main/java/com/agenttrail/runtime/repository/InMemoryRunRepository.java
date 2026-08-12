@@ -9,11 +9,15 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class InMemoryRunRepository implements RunRepository {
     private final Map<TaskId, TaskRecord> records = new ConcurrentHashMap<>();
+    private final Map<String, TaskId> byIdempotencyKey = new ConcurrentHashMap<>();
 
     @Override
     public void save(TaskRecord record) {
         if (records.putIfAbsent(record.taskId(), record) != null) {
             throw new IllegalStateException("Task already exists: " + record.taskId());
+        }
+        if (record.idempotencyKey() != null) {
+            byIdempotencyKey.putIfAbsent(record.idempotencyKey(), record.taskId());
         }
     }
 
@@ -27,9 +31,7 @@ public final class InMemoryRunRepository implements RunRepository {
         if (idempotencyKey == null) {
             return Optional.empty();
         }
-        return records.values().stream()
-                .filter(record -> idempotencyKey.equals(record.idempotencyKey()))
-                .findFirst();
+        return Optional.ofNullable(byIdempotencyKey.get(idempotencyKey)).flatMap(this::find);
     }
 
     @Override

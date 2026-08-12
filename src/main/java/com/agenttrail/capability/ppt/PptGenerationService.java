@@ -1,5 +1,8 @@
 package com.agenttrail.capability.ppt;
 
+import com.agenttrail.runtime.lifecycle.InMemoryLeaseManager;
+import com.agenttrail.runtime.lifecycle.LeaseManager;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -8,6 +11,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.concurrent.ConcurrentHashMap;
+import java.time.Duration;
 
 /**
  * PPT 生成状态机的编排入口（issue #24）——把 Spring 自动收集的全部 {@link PptGenerationStrategy}
@@ -39,11 +43,19 @@ public class PptGenerationService {
 
     private final PptTaskStore taskStore;
     private final Map<PptState, PptGenerationStrategy> strategiesByState;
+    private final LeaseManager leaseManager;
+    private static final Duration RUN_LEASE_TTL = Duration.ofMinutes(10);
     private final Map<String, Long> idempotencyKeys = new ConcurrentHashMap<>();
     private final java.util.Set<Long> idempotencyReplays = ConcurrentHashMap.newKeySet();
 
     public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies) {
+        this(taskStore, strategies, new InMemoryLeaseManager());
+    }
+
+    public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies,
+            LeaseManager leaseManager) {
         this.taskStore = taskStore;
+        this.leaseManager = leaseManager;
         this.strategiesByState = strategies.stream()
                 .collect(Collectors.toMap(PptGenerationStrategy::handledState, strategy -> strategy));
         for (PptState state : ORDER) {
@@ -173,31 +185,40 @@ public class PptGenerationService {
     public void run(long taskId) {
         PptTask task = taskStore.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("PPT 任务不存在: " + taskId));
+        String leaseKey = "ppt-generation:" + taskId;
+        if (!leaseManager.tryAcquire(leaseKey, RUN_LEASE_TTL)) {
+            log.info("PPT 任务 {} 已由另一个 worker 持有执行租约，跳过重复执行", taskId);
+            return;
+        }
         PptGenerationContext context = PptContextJson.fromJson(task.contextJson());
         PptState current = task.status();
-
-        while (current != PptState.SUCCESS && current != PptState.CANCELLED) {
-            if (taskStore.isCancelRequested(taskId)) {
-                taskStore.markCancelled(taskId, current);
-                return;
+        try {
+            while (current != PptState.SUCCESS && current != PptState.CANCELLED) {
+                if (!leaseManager.renew(leaseKey, RUN_LEASE_TTL)) {
+                    throw new PptGenerationException("PPT 任务执行租约已丢失: " + taskId);
+                }
+                if (taskStore.isCancelRequested(taskId)) {
+                    taskStore.markCancelled(taskId, current);
+                    return;
+                }
+                PptGenerationStrategy strategy = strategiesByState.get(current);
+                if (strategy == null) {
+                    throw new IllegalStateException("没有登记状态 " + current + " 对应的 Strategy 实现");
+                }
+                try {
+                    context = strategy.execute(context);
+                } catch (Exception executionFailed) {
+                    String errorMsg = describeFailure(executionFailed);
+                    log.error("PPT 任务 {} 在状态 {} 失败: {}", taskId, current, errorMsg, executionFailed);
+                    taskStore.markFailed(taskId, current, errorMsg);
+                    throw new PptGenerationException("PPT 生成在状态 " + current + " 失败: " + errorMsg, executionFailed);
+                }
+                PptState next = nextState(current);
+                taskStore.advance(taskId, next, context);
+                current = next;
             }
-            PptGenerationStrategy strategy = strategiesByState.get(current);
-            if (strategy == null) {
-                throw new IllegalStateException("没有登记状态 " + current + " 对应的 Strategy 实现");
-            }
-            try {
-                context = strategy.execute(context);
-            } catch (Exception executionFailed) {
-                String errorMsg = describeFailure(executionFailed);
-                log.error("PPT 任务 {} 在状态 {} 失败: {}", taskId, current, errorMsg, executionFailed);
-                taskStore.markFailed(taskId, current, errorMsg);
-                throw new PptGenerationException("PPT 生成在状态 " + current + " 失败: " + errorMsg, executionFailed);
-            }
-            PptState next = nextState(current);
-            // 状态转移只在 strategy.execute 真正返回（对应状态的副作用已经完成）之后才落库——
-            // 这是避免类文档开头那个 checkpoint 顺序 bug 的关键一行，不能挪到 try 块之前。
-            taskStore.advance(taskId, next, context);
-            current = next;
+        } finally {
+            leaseManager.release(leaseKey);
         }
     }
 

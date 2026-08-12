@@ -4,6 +4,19 @@ import com.agenttrail.capability.file.FileQaService;
 import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.capability.file.FileTextParser;
 import com.agenttrail.capability.file.JdbcFileStore;
+import com.agenttrail.capability.file.FileUploadPolicy;
+import com.agenttrail.capability.fileqa.application.FileContentQueryUseCase;
+import com.agenttrail.capability.fileqa.application.FileContextProviderImpl;
+import com.agenttrail.capability.fileqa.application.FileIngestTaskWorker;
+import com.agenttrail.capability.fileqa.application.FileIngestUseCase;
+import com.agenttrail.capability.fileqa.application.FileRetrievalUseCase;
+import com.agenttrail.capability.fileqa.application.LegacyEmbeddingAdapter;
+import com.agenttrail.capability.fileqa.application.LegacyFileStoreAdapter;
+import com.agenttrail.capability.fileqa.application.LegacyRetrievalAdapter;
+import com.agenttrail.capability.fileqa.port.EmbeddingPort;
+import com.agenttrail.capability.fileqa.port.FileContextProvider;
+import com.agenttrail.capability.fileqa.port.FileStorePort;
+import com.agenttrail.capability.fileqa.port.RetrievalPort;
 import com.agenttrail.capability.file.multimodal.ImageDescriptionService;
 import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.capability.rag.FileVectorizationService;
@@ -15,6 +28,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 文件问答（issue #21）的生产装配。阈值默认 5000 字符，对齐研读过的参考实现里已验证可用的
@@ -28,6 +43,11 @@ public class FileQaConfig {
     @Bean
     public FileStore fileStore(@Qualifier("dataSource") DataSource dataSource) {
         return new JdbcFileStore(dataSource);
+    }
+
+    @Bean
+    public FileStorePort fileStorePort(FileStore fileStore) {
+        return new LegacyFileStoreAdapter(fileStore);
     }
 
     @Bean
@@ -49,6 +69,60 @@ public class FileQaConfig {
             @Value("${agenttrail.file.rag-threshold-chars:5000}") int ragThresholdChars) {
         return new FileQaService(fileStore, fileTextParser, fileVectorizationService, ragRetrievalService,
                 imageDescriptionService, ragThresholdChars);
+    }
+
+    @Bean
+    public EmbeddingPort fileEmbeddingPort(FileVectorizationService vectorizationService) {
+        return new LegacyEmbeddingAdapter(vectorizationService);
+    }
+
+    @Bean
+    public RetrievalPort fileRetrievalPort(RagRetrievalService retrievalService) {
+        return new LegacyRetrievalAdapter(retrievalService);
+    }
+
+    @Bean
+    public FileRetrievalUseCase fileRetrievalUseCase(RetrievalPort retrievalPort,
+            @Value("${agenttrail.file.rag-threshold-chars:5000}") int ragThresholdChars) {
+        return new FileRetrievalUseCase(retrievalPort, ragThresholdChars);
+    }
+
+    @Bean
+    public FileIngestUseCase fileIngestUseCase(FileStorePort fileStorePort, FileTextParser fileTextParser,
+            EmbeddingPort embeddingPort,
+            @Value("${agenttrail.file.rag-threshold-chars:5000}") int ragThresholdChars) {
+        return new FileIngestUseCase(fileStorePort, fileTextParser, embeddingPort, ragThresholdChars);
+    }
+
+    @Bean
+    public FileContentQueryUseCase fileContentQueryUseCase(FileStorePort fileStorePort,
+            FileRetrievalUseCase retrievalUseCase) {
+        return new FileContentQueryUseCase(fileStorePort, retrievalUseCase);
+    }
+
+    @Bean
+    public FileContextProvider fileContextProvider(FileStorePort fileStorePort) {
+        return new FileContextProviderImpl(fileStorePort);
+    }
+
+    @Bean
+    public FileUploadPolicy fileUploadPolicy() {
+        return FileUploadPolicy.defaults();
+    }
+
+    @Bean(name = "fileIngestExecutor", destroyMethod = "shutdown")
+    public ExecutorService fileIngestExecutor() {
+        return Executors.newFixedThreadPool(2, runnable -> {
+            Thread thread = new Thread(runnable, "file-ingest");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    @Bean
+    public FileIngestTaskWorker fileIngestTaskWorker(FileIngestUseCase ingestUseCase,
+            @Qualifier("fileIngestExecutor") ExecutorService executor) {
+        return new FileIngestTaskWorker(ingestUseCase, executor);
     }
 
     /** 模型读取文件内容的唯一入口——纯本地 DB/服务调用，不需要像联网搜索/图表那样懒加载。 */

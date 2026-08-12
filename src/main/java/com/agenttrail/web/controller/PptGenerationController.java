@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.context.request.RequestContextHolder;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -74,7 +75,7 @@ public class PptGenerationController {
 
     @PostMapping("/agent/v1/ppt/resume/{taskId}")
     public PptGenerationResponse resume(@PathVariable long taskId) {
-        String userId = currentUserId();
+        String userId = currentUserIdOrLegacyForDirectCall();
         if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
         }
@@ -92,7 +93,7 @@ public class PptGenerationController {
     /** 轮询端点：不驱动任何执行，纯读当前 checkpoint——前端靠反复调用这个来看到生成进度推进。 */
     @GetMapping("/agent/v1/ppt/{taskId}")
     public PptGenerationResponse status(@PathVariable long taskId) {
-        String userId = currentUserId();
+        String userId = currentUserIdOrLegacyForDirectCall();
         if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
         }
@@ -101,7 +102,7 @@ public class PptGenerationController {
 
     @PostMapping("/agent/v1/ppt/{taskId}/cancel")
     public PptGenerationResponse cancel(@PathVariable long taskId) {
-        String userId = currentUserId();
+        String userId = currentUserIdOrLegacyForDirectCall();
         if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
         }
@@ -115,7 +116,7 @@ public class PptGenerationController {
 
     @GetMapping("/agent/v1/ppt/running")
     public java.util.List<Long> runningTaskIds() {
-        return pptGenerationService.runningTaskIdsFor(currentUserId());
+        return pptGenerationService.runningTaskIdsFor(currentUserIdOrLegacyForDirectCall());
     }
 
     private void runInBackgroundThenRecord(String userId, long taskId, String conversationId, String message,
@@ -132,11 +133,9 @@ public class PptGenerationController {
             if (failure == null) {
                 PptGenerationResponse response = toResponse(userId, taskId);
                 String answer = "PPT 任务状态：" + response.status();
-                if (userId == null) conversationService.recordSuccess(conversationId, message, answer, "ppt", response, elapsed);
-                else conversationService.recordSuccess(userId, conversationId, message, answer, "ppt", response, elapsed);
+                conversationService.recordSuccess(userId, conversationId, message, answer, "ppt", response, elapsed);
             } else {
-                if (userId == null) conversationService.recordFailure(conversationId, message, "ppt", failure.getMessage(), elapsed);
-                else conversationService.recordFailure(userId, conversationId, message, "ppt", failure.getMessage(), elapsed);
+                conversationService.recordFailure(userId, conversationId, message, "ppt", failure.getMessage(), elapsed);
             }
             });
         } catch (RejectedExecutionException rejected) {
@@ -163,7 +162,7 @@ public class PptGenerationController {
     @GetMapping(value = "/agent/v1/ppt/{taskId}/download",
             produces = "application/vnd.openxmlformats-officedocument.presentationml.presentation")
     public ResponseEntity<Resource> download(@PathVariable long taskId) {
-        Path output = outputFileOf(currentUserId(), taskId);
+        Path output = outputFileOf(currentUserIdOrLegacyForDirectCall(), taskId);
         try {
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(
@@ -226,5 +225,19 @@ public class PptGenerationController {
     private static String currentUserId() {
         try { return StpUtil.isLogin() ? StpUtil.getLoginIdAsString() : null; }
         catch (RuntimeException noHttpContext) { return null; }
+    }
+
+    /**
+     * Direct controller calls in unit tests have no request context and retain the legacy
+     * unscoped test seam. A real HTTP request without an authenticated principal is rejected
+     * before any unscoped task lookup can occur; this closes the anonymous IDOR path.
+     */
+    private static String currentUserIdOrLegacyForDirectCall() {
+        String userId = currentUserId();
+        if (userId != null) return userId;
+        if (RequestContextHolder.getRequestAttributes() != null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "需要登录后访问 PPT 任务");
+        }
+        return null;
     }
 }

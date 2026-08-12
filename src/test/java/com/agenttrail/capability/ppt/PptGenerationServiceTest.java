@@ -5,6 +5,12 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -257,5 +263,65 @@ class PptGenerationServiceTest {
         assertThat(log).containsExactly("SCHEMA#2", "IMAGE#1", "RENDER#1");
         assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
         assertThat(taskStore.findById(taskId).orElseThrow().errorMsg()).isNull();
+    }
+
+    @Test
+    void concurrentResumeRunsOnlyOneWorkerForTheSameTask() throws Exception {
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        AtomicInteger initCalls = new AtomicInteger();
+        CountDownLatch initEntered = new CountDownLatch(1);
+        CountDownLatch allowInitToFinish = new CountDownLatch(1);
+        List<PptGenerationStrategy> strategies = new ArrayList<>(allStates(new ArrayList<>()));
+        strategies.removeIf(strategy -> strategy.handledState() == PptState.INIT);
+        strategies.add(new BlockingInitStrategy(initCalls, initEntered, allowInitToFinish));
+
+        PptGenerationService firstWorker = new PptGenerationService(taskStore, strategies);
+        PptGenerationService secondWorker = new PptGenerationService(taskStore, strategies);
+        long taskId = taskStore.create("user-1", "conv-1", PptGenerationContext.initial("conv-1", "make a deck"));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> firstRun = executor.submit(() -> firstWorker.run(taskId));
+            assertThat(initEntered.await(5, TimeUnit.SECONDS)).isTrue();
+
+            secondWorker.run(taskId);
+            assertThat(initCalls).hasValue(1);
+
+            allowInitToFinish.countDown();
+            firstRun.get(5, TimeUnit.SECONDS);
+            assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
+        } finally {
+            allowInitToFinish.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    private static final class BlockingInitStrategy implements PptGenerationStrategy {
+        private final AtomicInteger calls;
+        private final CountDownLatch entered;
+        private final CountDownLatch finish;
+
+        private BlockingInitStrategy(AtomicInteger calls, CountDownLatch entered, CountDownLatch finish) {
+            this.calls = calls;
+            this.entered = entered;
+            this.finish = finish;
+        }
+
+        @Override
+        public PptState handledState() {
+            return PptState.INIT;
+        }
+
+        @Override
+        public PptGenerationContext execute(PptGenerationContext context) {
+            calls.incrementAndGet();
+            entered.countDown();
+            try {
+                finish.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new PptGenerationException("interrupted while holding the test lease");
+            }
+            return context;
+        }
     }
 }

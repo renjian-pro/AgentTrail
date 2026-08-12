@@ -19,8 +19,14 @@ import com.agenttrail.capability.ppt.strategy.RequirementStrategy;
 import com.agenttrail.capability.ppt.strategy.SchemaStrategy;
 import com.agenttrail.capability.ppt.strategy.SearchStrategy;
 import com.agenttrail.capability.ppt.strategy.TemplateStrategy;
+import com.agenttrail.runtime.lifecycle.InMemoryLeaseManager;
+import com.agenttrail.runtime.lifecycle.LeaseManager;
+import com.agenttrail.runtime.lifecycle.RedisLeaseManager;
+import com.agenttrail.loop.task.RedisTaskLock;
 import io.minio.MinioClient;
 import okhttp3.OkHttpClient;
+import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
@@ -35,6 +41,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.UUID;
 
 /**
  * PPT 生成状态机（issue #24）的生产装配。REQUIREMENT/OUTLINE/SCHEMA 三个状态共用同一个不挂
@@ -52,6 +59,17 @@ public class PptGenerationConfig {
     @Bean
     public PptTaskStore pptTaskStore(@Qualifier("dataSource") DataSource dataSource) {
         return new JdbcPptTaskStore(dataSource);
+    }
+
+    @Bean
+    public LeaseManager pptLeaseManager(ObjectProvider<RedissonClient> redissonProvider) {
+        RedissonClient redisson = redissonProvider.getIfAvailable();
+        if (redisson == null) {
+            return new InMemoryLeaseManager();
+        }
+        RedisTaskLock lock = new RedisTaskLock(redisson, "ppt-" + UUID.randomUUID(), Duration.ofMinutes(10));
+        lock.startAutoRenewal();
+        return new RedisLeaseManager(lock);
     }
 
     /**
@@ -210,7 +228,7 @@ public class PptGenerationConfig {
      */
     @Bean
     public PptGenerationService pptGenerationService(PptTaskStore pptTaskStore,
-            List<PptGenerationStrategy> pptGenerationStrategies) {
-        return new PptGenerationService(pptTaskStore, pptGenerationStrategies);
+            List<PptGenerationStrategy> pptGenerationStrategies, LeaseManager pptLeaseManager) {
+        return new PptGenerationService(pptTaskStore, pptGenerationStrategies, pptLeaseManager);
     }
 }

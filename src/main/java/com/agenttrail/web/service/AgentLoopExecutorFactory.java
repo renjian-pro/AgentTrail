@@ -23,6 +23,8 @@ import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchConfig;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
+import com.agenttrail.runtime.RuntimeModule;
+import com.agenttrail.runtime.RuntimeProfile;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -49,8 +51,9 @@ import java.util.stream.Collectors;
  */
 public class AgentLoopExecutorFactory {
 
-    private static final String QWEN_PLUS = "qwen-plus";
-    private static final String TOOL_CALLING_COMPATIBLE_MODEL = "deepseek-chat";
+    private static final String QWEN_PLUS = com.agenttrail.platform.model.ToolCallingCompatibility.QWEN_PLUS;
+    private static final String TOOL_CALLING_COMPATIBLE_MODEL =
+            com.agenttrail.platform.model.ToolCallingCompatibility.FALLBACK_MODEL_ID;
 
     private final Map<String, RegisteredModel> modelsById;
     private final Map<String, AgentLoopExecutor> plainExecutorsByModelId;
@@ -80,7 +83,7 @@ public class AgentLoopExecutorFactory {
      */
     private final FileStore fileStore;
     private final AnalyticsToolProvider analyticsToolProvider;
-    private final AgentHooks sharedHooks = AgentHooks.EMPTY;
+    private final AgentHooks sharedHooks;
     private final PauseConfig pauseConfig;
     private final ToolRiskRegistry toolRiskRegistry;
     private final SessionBudgetTracker sessionBudgetTracker;
@@ -104,130 +107,48 @@ public class AgentLoopExecutorFactory {
      */
     private final MemoryStore memoryStore;
 
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, null);
-    }
 
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, null);
-    }
 
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook, null);
-    }
 
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
-                fileContentTool, null);
-    }
 
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool, FileStore fileStore) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
-                fileContentTool, fileStore, null);
-    }
 
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool, FileStore fileStore,
-            AnalyticsToolProvider analyticsToolProvider) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
-                fileContentTool, fileStore, analyticsToolProvider, null, null, null);
-    }
 
     /**
      * 生产装配用的扩展构造函数：保留上面的兼容重载，让单元测试和内部调用方可以继续使用
      * 没有审批/预算机制的最小装配；生产 Bean 则显式传入治理依赖。
      */
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool, FileStore fileStore,
-            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
-            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
-                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
-                sessionBudgetTracker, null, null);
-    }
 
     /** 生产装配扩展：在治理依赖之后注入持久化审计存储。 */
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool, FileStore fileStore,
-            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
-            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
-            TraceStore traceStore) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
-                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
-                sessionBudgetTracker, traceStore, null);
-    }
 
     /** 生产装配扩展：可选的 Micrometer registry 为空时关闭运行时指标。 */
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool, FileStore fileStore,
-            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
-            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
-            TraceStore traceStore, MeterRegistry meterRegistry) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
-                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
-                sessionBudgetTracker, traceStore, meterRegistry, null, null, null);
-    }
 
     /** 生产装配扩展：安全纵深（ticket 09）——Prompt Injection 检测 / PII 打码 / 工具调用限速。 */
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool, FileStore fileStore,
-            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
-            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
-            TraceStore traceStore, MeterRegistry meterRegistry,
-            PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker, ToolRateLimiter toolRateLimiter) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
-                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
-                sessionBudgetTracker, traceStore, meterRegistry, promptInjectionGuard, piiMasker,
-                toolRateLimiter, null);
-    }
 
     /** 生产装配扩展：接入 Skill 能力（普通对话执行器现取当下启用的技能，见 {@link #buildExecutor}）。 */
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool, FileStore fileStore,
-            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
-            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
-            TraceStore traceStore, MeterRegistry meterRegistry,
-            PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker, ToolRateLimiter toolRateLimiter,
-            SkillManager skillManager) {
-        this(models, defaultModelId, taskManager, webSearchToolProvider, chartToolProvider, persistenceHook,
-                fileContentTool, fileStore, analyticsToolProvider, pauseConfig, toolRiskRegistry,
-                sessionBudgetTracker, traceStore, meterRegistry, promptInjectionGuard, piiMasker,
-                toolRateLimiter, skillManager, null);
-    }
 
     /** 生产装配扩展：接入分层记忆（issue #19，见 {@link #memoryStore} 字段的接入范围说明）。 */
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId,
-            AgentTaskManager taskManager, TavilySearchToolProvider webSearchToolProvider,
-            ChartToolProvider chartToolProvider, TurnPersistenceHook persistenceHook,
-            FileContentTool fileContentTool, FileStore fileStore,
-            AnalyticsToolProvider analyticsToolProvider, PauseConfig pauseConfig,
-            ToolRiskRegistry toolRiskRegistry, SessionBudgetTracker sessionBudgetTracker,
-            TraceStore traceStore, MeterRegistry meterRegistry,
-            PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker, ToolRateLimiter toolRateLimiter,
-            SkillManager skillManager, MemoryStore memoryStore) {
+    /** One constructor seam; optional collaborators are selected by the named factory configuration. */
+    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId, Object... options) {
+        AgentTaskManager taskManager = option(options, 0, AgentTaskManager.class, new AgentTaskManager());
+        TavilySearchToolProvider webSearchToolProvider = option(options, 1, TavilySearchToolProvider.class, null);
+        ChartToolProvider chartToolProvider = option(options, 2, ChartToolProvider.class, null);
+        TurnPersistenceHook persistenceHook = option(options, 3, TurnPersistenceHook.class, null);
+        FileContentTool fileContentTool = option(options, 4, FileContentTool.class, null);
+        FileStore fileStore = option(options, 5, FileStore.class, null);
+        AnalyticsToolProvider analyticsToolProvider = option(options, 6, AnalyticsToolProvider.class, null);
+        PauseConfig pauseConfig = option(options, 7, PauseConfig.class, null);
+        ToolRiskRegistry toolRiskRegistry = option(options, 8, ToolRiskRegistry.class, ToolRiskRegistry.defaults());
+        SessionBudgetTracker sessionBudgetTracker = option(options, 9, SessionBudgetTracker.class, null);
+        TraceStore traceStore = option(options, 10, TraceStore.class, null);
+        MeterRegistry meterRegistry = option(options, 11, MeterRegistry.class, null);
+        PromptInjectionGuard promptInjectionGuard = option(options, 12, PromptInjectionGuard.class, null);
+        PiiMasker piiMasker = option(options, 13, PiiMasker.class, null);
+        ToolRateLimiter toolRateLimiter = option(options, 14, ToolRateLimiter.class, null);
+        SkillManager skillManager = option(options, 15, SkillManager.class, null);
+        MemoryStore memoryStore = option(options, 16, MemoryStore.class, null);
+        this.sharedHooks = new AgentHooks(List.of(),
+                List.of(new com.agenttrail.loop.hook.ToolPolicyPreToolUseHook(toolRiskRegistry)),
+                List.of(), List.of(), List.of(), List.of());
         if (models.stream().noneMatch(model -> model.id().equals(defaultModelId))) {
             throw new IllegalArgumentException("默认模型 " + defaultModelId + " 不在注册的模型列表里");
         }
@@ -268,6 +189,23 @@ public class AgentLoopExecutorFactory {
                 }));
     }
 
+    private static <T> T option(Object[] options, int index, Class<T> type, T fallback) {
+        if (index >= options.length || options[index] == null) {
+            return fallback;
+        }
+        return type.cast(options[index]);
+    }
+
+    private RuntimeProfile runtimeProfile(ContextPolicy contextPolicy, ToolCatalog catalog) {
+        return new RuntimeProfile(
+                RuntimeModule.contextCompaction(contextPolicy == null ? ContextPolicy.defaults() : contextPolicy),
+                RuntimeModule.memory(memoryStore),
+                RuntimeModule.pauseResume(pauseConfig),
+                RuntimeModule.trace(traceStore),
+                RuntimeModule.stageOutput(com.agenttrail.loop.stageoutput.StageOutputManager.EMPTY),
+                RuntimeModule.toolSearch(catalog));
+    }
+
     private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy) {
         return buildExecutor(model, tools, contextPolicy, true);
     }
@@ -295,7 +233,8 @@ public class AgentLoopExecutorFactory {
                 .piiMasker(piiMasker)
                 .toolRateLimiter(toolRateLimiter)
                 .skillManager(skillManager)
-                .memoryStore(memoryStore);
+                .memoryStore(memoryStore)
+                .runtimeProfile(runtimeProfile(contextPolicy, null));
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
         }
@@ -349,6 +288,7 @@ public class AgentLoopExecutorFactory {
                 // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
                 // 不再指望它在 maxRounds=20 撞顶之前自己收敛。
                 .maxConsecutiveToolFailures(3)
+                .runtimeProfile(runtimeProfile(contextPolicy, catalog))
                 .build();
         analyticsExecutorsByModelId.put(resolvedId, executor);
         return executor;
@@ -478,7 +418,7 @@ public class AgentLoopExecutorFactory {
      * 因此统一切到原生客户端已验证兼容的 deepseek-chat；不挂工具的执行器仍使用用户选择的 qwen-plus。
      */
     private String resolveToolCallingModel(String requestedModelId, boolean hasTools) {
-        if (!hasTools || !QWEN_PLUS.equals(requestedModelId)) {
+        if (!com.agenttrail.platform.model.ToolCallingCompatibility.needsFallback(requestedModelId, hasTools)) {
             return requestedModelId;
         }
         if (!modelsById.containsKey(TOOL_CALLING_COMPATIBLE_MODEL)) {

@@ -57,13 +57,20 @@ class LlmInvoker {
     }
 
     Flux<ChatResponse> streamRound(List<Message> messages, List<ToolCallback> tools) {
-        ModelRequest request = new ModelRequest(
+        ModelRequest request = toModelRequest(messages, tools);
+        return Flux.from(streamModelRound(request, tools)).map(LlmInvoker::toChatResponse);
+    }
+
+    reactor.core.publisher.Flux<ModelChunk> streamModelRound(ModelRequest request, List<ToolCallback> tools) {
+        ModelGateway gateway = chatModel == null
+                ? modelGateway : new SpringAiModelGateway(chatModel, tools, ttftTimeout, idleTimeout);
+        return Flux.from(gateway.streamRound(request));
+    }
+
+    static ModelRequest toModelRequest(List<Message> messages, List<ToolCallback> tools) {
+        return new ModelRequest(
                 messages.stream().flatMap(message -> toModelMessages(message).stream()).toList(),
                 tools.stream().map(LlmInvoker::toToolDefinition).toList());
-        ModelGateway gateway = chatModel == null
-                ? modelGateway
-                : new SpringAiModelGateway(chatModel, tools, ttftTimeout, idleTimeout);
-        return Flux.from(gateway.streamRound(request)).map(LlmInvoker::toChatResponse);
     }
 
     private static List<ModelRequest.ModelMessage> toModelMessages(Message message) {
@@ -93,7 +100,7 @@ class LlmInvoker {
                 callback.getToolDefinition().description(), Map.of(), ToolDefinition.RiskLevel.READ_ONLY);
     }
 
-    private static ChatResponse toChatResponse(ModelChunk chunk) {
+    static ChatResponse toChatResponse(ModelChunk chunk) {
         AssistantMessage.Builder<?> builder = AssistantMessage.builder().content(chunk.content());
         if (!chunk.metadata().isEmpty()) builder.properties(chunk.metadata());
         if (chunk.toolCallDelta() != null) {

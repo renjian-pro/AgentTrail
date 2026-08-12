@@ -36,6 +36,15 @@ import com.agenttrail.loop.trace.TraceStore;
 import com.agenttrail.loop.structured.JsonRepair;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchSession;
+import com.agenttrail.runtime.RuntimeProfile;
+import com.agenttrail.runtime.RuntimeProfileValidator;
+import com.agenttrail.runtime.ContextAssembler;
+import com.agenttrail.runtime.RoundDriver;
+import com.agenttrail.runtime.RunCompletionCoordinator;
+import com.agenttrail.runtime.RunLifecycleManager;
+import com.agenttrail.runtime.ToolRoundExecutor;
+import com.agenttrail.runtime.api.CancellationReason;
+import com.agenttrail.platform.ids.RunId;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -124,234 +133,63 @@ public class AgentLoopExecutor {
     private final Duration roundTimeout;
     /**
      * 传 null 表示这套装配完全不提供 Skill 工具，行为与没有这个机制时一致。非 null 时，
-     * {@link #scheduleRound} 每一轮都现取一次 {@link SkillManager#buildSkillsTool()}——
+     * 第一次调度这一轮时通过 {@link SkillManager#buildSkillsTool()} 装配，随后
      * 和 {@link #toolCatalog} 驱动的 {@link com.agenttrail.loop.tools.search.ToolSearchSession}
      * 共用同一个"这次对话请求专属工具"的解析槽位（见 {@link #finishRound}）。两者在当前生产装配下
      * 互斥（{@code toolCatalog} 只在 {@code forAnalytics} 启用，{@code skillManager} 只在普通对话
      * 执行器启用），复用同一个槽位不会撞车。
      */
     private final SkillManager skillManager;
-
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
-        this(chatModel, tools, maxRounds, new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
-    }
-
-    /**
-     * @param taskManager     任务管理器由外部传入并**共享**——停止接口要能找到正在跑的任务，
-     *                        每次请求各自 new 一个的话，停止请求永远找不到目标
-     * @param contextPolicy   上下文压缩策略；传 null 表示不压缩，循环行为与没有该机制时一致
-     * @param thinkingMode    当前所用模型交付思考过程的方式
-     * @param persistenceHook 会话持久化回调；传 null 表示不落库、不预加载历史（如子 Agent）
-     */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook, null, null);
-    }
+    private final RuntimeProfile runtimeProfile;
+    private final ContextAssembler contextAssembler;
+    private final RoundDriver roundDriver;
+    private final RunCompletionCoordinator<RunContext> completionCoordinator;
+    private final RunLifecycleManager lifecycleManager;
+    private final ToolRoundExecutor toolRoundExecutor;
 
     /**
-     * @param toolCatalog ToolSearch 延迟工具池；传 null 表示不启用该机制，行为与没有它时完全一致。
-     *                    池子里的工具**始终**可以被执行层解析到（{@link ToolCallExecutor} 按全量池建表），
-     *                    但只有本次对话已经"搜到"的那部分才会被下一轮的工具清单暴露给模型——
-     *                    可见性限制只在喂给 LLM 那一侧，执行层不做二次过滤
+     * Single construction seam. Optional collaborators are supplied in positional slots by the
+     * builder and older integrations remain source-compatible without a telescoping constructor chain.
      */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                             ToolCatalog toolCatalog) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook, toolCatalog, null);
-    }
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds, Object... options) {
+        AgentTaskManager taskManager = option(options, 0, AgentTaskManager.class, new AgentTaskManager());
+        ContextPolicy contextPolicy = option(options, 1, ContextPolicy.class, null);
+        ThinkingMode thinkingMode = option(options, 2, ThinkingMode.class, ThinkingMode.DISABLED);
+        TurnPersistenceHook persistenceHook = option(options, 3, TurnPersistenceHook.class, null);
+        ToolCatalog toolCatalog = option(options, 4, ToolCatalog.class, null);
+        PauseConfig pauseConfig = option(options, 5, PauseConfig.class, null);
+        StageOutputManager stageOutputManager = option(options, 6, StageOutputManager.class, null);
+        TraceStore traceStore = option(options, 7, TraceStore.class, null);
+        MemoryStore memoryStore = option(options, 8, MemoryStore.class, null);
+        FileStore fileStore = option(options, 9, FileStore.class, null);
+        int maxConsecutiveToolFailures = numberOption(options, 10, 0);
+        AgentHooks hooks = option(options, 11, AgentHooks.class, AgentHooks.EMPTY);
+        SessionBudgetTracker budgetTracker = option(options, 12, SessionBudgetTracker.class, null);
+        MeterRegistry meterRegistry = option(options, 13, MeterRegistry.class, null);
+        String modelName = option(options, 14, String.class, "unknown");
+        PromptInjectionGuard promptInjectionGuard = option(options, 15, PromptInjectionGuard.class, null);
+        PiiMasker piiMasker = option(options, 16, PiiMasker.class, null);
+        ToolRateLimiter toolRateLimiter = option(options, 17, ToolRateLimiter.class, null);
+        Duration roundTimeout = option(options, 18, Duration.class, DEFAULT_ROUND_TIMEOUT);
+        SkillManager skillManager = option(options, 19, SkillManager.class, null);
+        RuntimeProfile runtimeProfile = option(options, 20, RuntimeProfile.class, RuntimeProfile.defaults());
+        RuntimeProfileValidator.validate(runtimeProfile);
 
-    /**
-     * @param pauseConfig 暂停/恢复机制（issue #13）；传 null 表示完全不启用，行为与没有它时一致。
-     *                    命中 {@code pauseConfig} 审批名单的工具调用不会被执行，循环改为落一份
-     *                    {@link PauseState} 快照、发 {@link AgentStreamEvent.Paused} 事件后结束，
-     *                    之后只能通过 {@link #resume} 恢复，而不是靠再调一次 {@link #stream}
-     */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                             ToolCatalog toolCatalog, PauseConfig pauseConfig) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, null);
-    }
-
-    /**
-     * @param stageOutputManager 分阶段输出机制（issue #16）；传 null 等价于 {@link StageOutputManager#EMPTY}，
-     *                           三个生命周期钩子都是空操作，行为和没有这个机制时完全一致
-     */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                             StageOutputManager stageOutputManager) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, null);
-    }
-
-    /**
-     * @param traceStore 追踪审计存储（issue #17）；传 null 表示不启用——不记录任何一轮，
-     *                   也不做消息渲染这类额外开销，行为与没有这个机制时完全一致。这个参数本身
-     *                   就是"显式开关"：要启用就必须主动传一个实现进来
-     */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                             StageOutputManager stageOutputManager, TraceStore traceStore) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, null);
-    }
-
-    /**
-     * @param memoryStore 分层记忆体系的中间层存储（issue #19：画像/偏好/指令/事实）；传 null 表示
-     *                    不启用——既不在 {@link #stream} 里读取注入，也不在收尾时提取，行为与没有
-     *                    这个机制时完全一致。短期历史层由 {@code persistenceHook} 负责；跨会话语义
-     *                    摘要层依赖向量库，留给 Phase 4，不是这个参数管的范围
-     */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                             StageOutputManager stageOutputManager, TraceStore traceStore,
-                             MemoryStore memoryStore) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, null);
-    }
-
-    /**
-     * @param fileStore 文件问答的元数据存储（issue #28）；传 null 表示不启用——既不在
-     *                  {@link #stream} 里注入"会话文件"区块，也不在收尾时回填 turnId，
-     *                  行为与没有这个机制时完全一致。文件的解析/向量化/多模态识别由
-     *                  {@code FileQaService} 编排（issue #21/#26/#27），本类只负责
-     *                  "让模型看见这一轮和历史上传了哪些文件"+"轮次结束后回填归属"
-     */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                             StageOutputManager stageOutputManager, TraceStore traceStore,
-                             MemoryStore memoryStore, FileStore fileStore) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore, 0);
-    }
-
-    /**
-     * @param maxConsecutiveToolFailures 同一个工具名在这次推理里连续失败达到这个次数就提前终止本轮
-     *                                   推理，把已知的失败原因如实告诉用户，而不是继续把预算烧在
-     *                                   "生成→报错→再生成→再报错"的自我修正循环上；{@code <= 0}
-     *                                   表示不启用，行为和没有这个机制时完全一致——{@code maxRounds}
-     *                                   仍然是唯一的硬顶，但那是"整轮最多转几圈"的粗粒度上限，
-     *                                   不区分"这几圈是不是在原地打转"
-     */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                             AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                             ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                             ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                              StageOutputManager stageOutputManager, TraceStore traceStore,
-                              MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
-                maxConsecutiveToolFailures, AgentHooks.EMPTY, null);
-    }
-
-    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                       ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                       StageOutputManager stageOutputManager, TraceStore traceStore,
-                       MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
-                       AgentHooks hooks) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
-                maxConsecutiveToolFailures, hooks, null, null, "unknown");
-    }
-
-    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                      StageOutputManager stageOutputManager, TraceStore traceStore,
-                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
-                      AgentHooks hooks, SessionBudgetTracker budgetTracker) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
-                maxConsecutiveToolFailures, hooks, budgetTracker, null, "unknown");
-    }
-
-    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                      StageOutputManager stageOutputManager, TraceStore traceStore,
-                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
-                      AgentHooks hooks, SessionBudgetTracker budgetTracker,
-                      MeterRegistry meterRegistry, String modelName) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
-                maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
-                null, null, null);
-    }
-
-    /**
-     * @param promptInjectionGuard 提示词注入检测；传 null 表示不启用，行为与没有这个机制时一致
-     * @param piiMasker            用户输入 PII 打码；传 null 表示不启用——原始文本原样进入
-     *                             {@code messages} 和落库记录
-     * @param toolRateLimiter      单会话工具调用限速；传 null 表示不启用，所有工具调用都放行，
-     *                             行为与没有这个机制时一致
-     */
-    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                      StageOutputManager stageOutputManager, TraceStore traceStore,
-                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
-                      AgentHooks hooks, SessionBudgetTracker budgetTracker,
-                      MeterRegistry meterRegistry, String modelName,
-                      PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
-                      ToolRateLimiter toolRateLimiter) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
-                maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
-                promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT, null);
-    }
-
-    /** 测试专用：注入一个短得多的 {@code roundTimeout}，不用真的等 8 分钟才能验证超时降级。 */
-    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                      StageOutputManager stageOutputManager, TraceStore traceStore,
-                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
-                      AgentHooks hooks, SessionBudgetTracker budgetTracker,
-                      MeterRegistry meterRegistry, String modelName,
-                      PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
-                      ToolRateLimiter toolRateLimiter, Duration roundTimeout) {
-        this(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode, persistenceHook,
-                toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore, fileStore,
-                maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
-                promptInjectionGuard, piiMasker, toolRateLimiter, roundTimeout, null);
-    }
-
-    /** 真正的规范构造函数：{@link #skillManager} 是最后加入的可选机制，只通过 {@link Builder} 设置。 */
-    AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds,
-                      AgentTaskManager taskManager, ContextPolicy contextPolicy,
-                      ThinkingMode thinkingMode, TurnPersistenceHook persistenceHook,
-                      ToolCatalog toolCatalog, PauseConfig pauseConfig,
-                      StageOutputManager stageOutputManager, TraceStore traceStore,
-                      MemoryStore memoryStore, FileStore fileStore, int maxConsecutiveToolFailures,
-                      AgentHooks hooks, SessionBudgetTracker budgetTracker,
-                      MeterRegistry meterRegistry, String modelName,
-                      PromptInjectionGuard promptInjectionGuard, PiiMasker piiMasker,
-                      ToolRateLimiter toolRateLimiter, Duration roundTimeout, SkillManager skillManager) {
-        List<ToolCallback> allTools = withDeferredPool(tools, toolCatalog);
+        List<ToolCallback> baseTools = tools == null ? List.of() : tools;
+        List<ToolCallback> allTools = withDeferredPool(baseTools, toolCatalog);
         this.llmInvoker = new LlmInvoker(chatModel, allTools);
+        this.contextAssembler = new ContextAssembler();
+        this.roundDriver = new RoundDriver((request, callbacks) -> llmInvoker.streamModelRound(request,
+                callbacks.stream().map(ToolCallback.class::cast).toList()));
+        this.completionCoordinator = new RunCompletionCoordinator<>(ignored -> { });
+        this.lifecycleManager = new RunLifecycleManager(taskManager);
+        this.toolRoundExecutor = new ToolRoundExecutor();
         this.toolCallExecutor = new ToolCallExecutor(allTools, meterRegistry);
         this.taskManager = taskManager;
         this.contextCompactor = (contextPolicy == null) ? null : new ContextCompactor(contextPolicy, chatModel);
         this.thinkingModeProcessor = new ThinkingModeProcessor(thinkingMode);
         this.persistenceHook = persistenceHook;
-        this.tools = tools;
+        this.tools = baseTools;
         this.toolCatalog = toolCatalog;
         this.pauseConfig = pauseConfig;
         this.stageOutputManager = (stageOutputManager == null) ? StageOutputManager.EMPTY : stageOutputManager;
@@ -370,8 +208,91 @@ public class AgentLoopExecutor {
         this.toolRateLimiter = toolRateLimiter;
         this.roundTimeout = (roundTimeout == null) ? DEFAULT_ROUND_TIMEOUT : roundTimeout;
         this.skillManager = skillManager;
+        this.runtimeProfile = runtimeProfile;
     }
 
+    private static int numberOption(Object[] options, int index, int fallback) {
+        return index < options.length && options[index] instanceof Number number ? number.intValue() : fallback;
+    }
+
+    private static <T> T option(Object[] options, int index, Class<T> type, T fallback) {
+        if (index >= options.length || options[index] == null) {
+            return fallback;
+        }
+        return type.cast(options[index]);
+    }
+
+    /**
+     * @param taskManager     任务管理器由外部传入并**共享**——停止接口要能找到正在跑的任务，
+     *                        每次请求各自 new 一个的话，停止请求永远找不到目标
+     * @param contextPolicy   上下文压缩策略；传 null 表示不压缩，循环行为与没有该机制时一致
+     * @param thinkingMode    当前所用模型交付思考过程的方式
+     * @param persistenceHook 会话持久化回调；传 null 表示不落库、不预加载历史（如子 Agent）
+     */
+
+    /**
+     * @param toolCatalog ToolSearch 延迟工具池；传 null 表示不启用该机制，行为与没有它时完全一致。
+     *                    池子里的工具**始终**可以被执行层解析到（{@link ToolCallExecutor} 按全量池建表），
+     *                    但只有本次对话已经"搜到"的那部分才会被下一轮的工具清单暴露给模型——
+     *                    可见性限制只在喂给 LLM 那一侧，执行层不做二次过滤
+     */
+
+    /**
+     * @param pauseConfig 暂停/恢复机制（issue #13）；传 null 表示完全不启用，行为与没有它时一致。
+     *                    命中 {@code pauseConfig} 审批名单的工具调用不会被执行，循环改为落一份
+     *                    {@link PauseState} 快照、发 {@link AgentStreamEvent.Paused} 事件后结束，
+     *                    之后只能通过 {@link #resume} 恢复，而不是靠再调一次 {@link #stream}
+     */
+
+    /**
+     * @param stageOutputManager 分阶段输出机制（issue #16）；传 null 等价于 {@link StageOutputManager#EMPTY}，
+     *                           三个生命周期钩子都是空操作，行为和没有这个机制时完全一致
+     */
+
+    /**
+     * @param traceStore 追踪审计存储（issue #17）；传 null 表示不启用——不记录任何一轮，
+     *                   也不做消息渲染这类额外开销，行为与没有这个机制时完全一致。这个参数本身
+     *                   就是"显式开关"：要启用就必须主动传一个实现进来
+     */
+
+    /**
+     * @param memoryStore 分层记忆体系的中间层存储（issue #19：画像/偏好/指令/事实）；传 null 表示
+     *                    不启用——既不在 {@link #stream} 里读取注入，也不在收尾时提取，行为与没有
+     *                    这个机制时完全一致。短期历史层由 {@code persistenceHook} 负责；跨会话语义
+     *                    摘要层依赖向量库，留给 Phase 4，不是这个参数管的范围
+     */
+
+    /**
+     * @param fileStore 文件问答的元数据存储（issue #28）；传 null 表示不启用——既不在
+     *                  {@link #stream} 里注入"会话文件"区块，也不在收尾时回填 turnId，
+     *                  行为与没有这个机制时完全一致。文件的解析/向量化/多模态识别由
+     *                  {@code FileQaService} 编排（issue #21/#26/#27），本类只负责
+     *                  "让模型看见这一轮和历史上传了哪些文件"+"轮次结束后回填归属"
+     */
+
+    /**
+     * @param maxConsecutiveToolFailures 同一个工具名在这次推理里连续失败达到这个次数就提前终止本轮
+     *                                   推理，把已知的失败原因如实告诉用户，而不是继续把预算烧在
+     *                                   "生成→报错→再生成→再报错"的自我修正循环上；{@code <= 0}
+     *                                   表示不启用，行为和没有这个机制时完全一致——{@code maxRounds}
+     *                                   仍然是唯一的硬顶，但那是"整轮最多转几圈"的粗粒度上限，
+     *                                   不区分"这几圈是不是在原地打转"
+     */
+
+
+
+
+    /**
+     * @param promptInjectionGuard 提示词注入检测；传 null 表示不启用，行为与没有这个机制时一致
+     * @param piiMasker            用户输入 PII 打码；传 null 表示不启用——原始文本原样进入
+     *                             {@code messages} 和落库记录
+     * @param toolRateLimiter      单会话工具调用限速；传 null 表示不启用，所有工具调用都放行，
+     *                             行为与没有这个机制时一致
+     */
+
+    /** 测试专用：注入一个短得多的 {@code roundTimeout}，不用真的等 8 分钟才能验证超时降级。 */
+
+    /** 真正的规范构造函数：{@link #skillManager} 是最后加入的可选机制，只通过 {@link Builder} 设置。 */
     /**
      * 起一个 builder：{@code chatModel}/{@code tools}/{@code maxRounds} 是唯一必填项，其余可选机制
      * 通过命名方法设置。比起继续在telescoping 构造函数链上叠新重载——每加一个可选机制就多一个
@@ -380,6 +301,14 @@ public class AgentLoopExecutor {
      */
     public static Builder builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
         return new Builder(chatModel, tools, maxRounds);
+    }
+
+    public RuntimeProfile runtimeProfile() {
+        return runtimeProfile;
+    }
+
+    public boolean cancel(String conversationId, CancellationReason reason) {
+        return lifecycleManager.cancel(RunId.of(conversationId), reason);
     }
 
     public static final class Builder {
@@ -406,6 +335,7 @@ public class AgentLoopExecutor {
         private PiiMasker piiMasker;
         private ToolRateLimiter toolRateLimiter;
         private SkillManager skillManager;
+        private RuntimeProfile runtimeProfile = RuntimeProfile.defaults();
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
             this.chatModel = chatModel;
@@ -511,11 +441,17 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        public Builder runtimeProfile(RuntimeProfile runtimeProfile) {
+            this.runtimeProfile = runtimeProfile;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
             return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
                     persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
                     fileStore, maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
-                    promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT, skillManager);
+                    promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT, skillManager,
+                    runtimeProfile);
         }
     }
 
@@ -577,7 +513,8 @@ public class AgentLoopExecutor {
         if (persistenceHook != null) {
             messages.addAll(persistenceHook.loadHistory(params.conversationId(), HISTORY_TOKEN_BUDGET));
         }
-        messages.add(new UserMessage(withFormatInstruction(sanitizedQuestion, params.outputType())));
+        messages = new ArrayList<>(contextAssembler.assemble(null, messages,
+                withFormatInstruction(sanitizedQuestion, params.outputType())));
 
         // 每次对话请求各自开一个全新会话——发现的工具互相隔离，不会泄漏给并发的其他会话
         ToolSearchSession toolSearchSession = (toolCatalog == null) ? null : toolCatalog.newSession();
@@ -650,7 +587,7 @@ public class AgentLoopExecutor {
     private void scheduleRound(RunContext context) {
         // 超出轮次预算后，本轮改成不挂任何工具——模型看不见工具，就没法再发起调用
         boolean toolsExhausted = maxRounds > 0 && context.nextRound() > maxRounds;
-        // 每轮现取一次——技能中途被后台停用/启用，下一轮就是新状态，不用等新会话（见 SkillManager#buildSkillsTool）
+        // 一次对话复用同一份技能快照；SkillManager 在对话开始时装配，避免多轮中途改变工具语义
         ToolCallback skillTool = resolveSkillTool(context);
         List<ToolCallback> roundTools = toolsExhausted
                 ? List.of() : withDiscoveredTools(context.toolSearchSession(), skillTool);
@@ -670,7 +607,9 @@ public class AgentLoopExecutor {
         AtomicBoolean firstChunkSeen = new AtomicBoolean();
         AtomicBoolean mainSubscriptionTerminated = new AtomicBoolean();
         AtomicReference<Disposable> watchdogRef = new AtomicReference<>();
-        Disposable subscription = llmInvoker.streamRound(context.messages(), roundTools)
+        Disposable subscription = Flux.from(roundDriver.drive(
+                        LlmInvoker.toModelRequest(context.messages(), roundTools), roundTools))
+                .map(LlmInvoker::toChatResponse)
                 // 真实的 HTTP ChatModel（Reactor Netty 实现）在自己的 I/O 线程上信号 onComplete——
                 // finishRound 出现工具调用时会走到 ToolCallExecutor.execute() 内部的 .block()，
                 // 直接卡在 I/O 线程上会被 Reactor 的非阻塞线程检查拒绝；统一切换到弹性线程。
@@ -833,6 +772,9 @@ public class AgentLoopExecutor {
         List<AssistantMessage.ToolCall> toolCalls = state.toolCalls();
         // 先把带 tool_calls 的助手消息落进历史，再落工具结果——顺序颠倒模型侧会解析失败
         context.messages().add(buildAssistantMessage(state, toolCalls));
+        toolRoundExecutor.validate(toolCalls.stream()
+                .map(call -> new ToolRoundExecutor.ToolCall(call.name(), call.id(), call.arguments()))
+                .toList());
         // 只记这轮"模型要调什么工具"，不记工具执行结果——结果会随下一轮历史出现在下一条记录的输入里
         recordTrace(context, state, requestSnapshot, MessageRendering.renderToolCalls(toolCalls), true, null);
         fireBudget(context, state);
@@ -1119,6 +1061,7 @@ public class AgentLoopExecutor {
                 new StageContext(context.question(), state.text(), context.params()), context::emit);
 
         fireSessionEnd(context, true);
+        completionCoordinator.complete(context);
         context.emit(new AgentStreamEvent.Complete(context.conversationId(), turnId));
         context.emitComplete();
         // 释放单飞占位，让该会话能发起下一轮对话

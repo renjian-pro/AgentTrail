@@ -27,22 +27,40 @@ public class CapabilityConversationService {
 
     public Long recordSuccess(String conversationId, String question, String answer,
             String capability, Object payload, long totalResponseTimeMillis) {
-        return recordSuccess(currentUserIdOrLegacy(), conversationId, question, answer, capability, payload, totalResponseTimeMillis);
+        return recordSuccess(null, conversationId, question, answer, capability, payload, totalResponseTimeMillis);
     }
 
+    /** {@code userId} may be null (e.g. no HTTP request context on the calling thread); resolves to the current/legacy user. */
     public Long recordSuccess(String userId, String conversationId, String question, String answer,
             String capability, Object payload, long totalResponseTimeMillis) {
-        return record(userId, conversationId, question, answer, capability, payload, null, totalResponseTimeMillis);
+        return record(resolveUserId(userId), conversationId, question, answer, capability, payload, null, totalResponseTimeMillis);
     }
 
     public Long recordFailure(String conversationId, String question, String capability,
             String error, long totalResponseTimeMillis) {
-        return recordFailure(currentUserIdOrLegacy(), conversationId, question, capability, error, totalResponseTimeMillis);
+        return recordFailure(null, conversationId, question, capability, error, totalResponseTimeMillis);
     }
 
+    /** {@code userId} may be null (e.g. no HTTP request context on the calling thread); resolves to the current/legacy user. */
     public Long recordFailure(String userId, String conversationId, String question, String capability,
             String error, long totalResponseTimeMillis) {
-        return record(userId, conversationId, question, null, capability, null, error, totalResponseTimeMillis);
+        return record(resolveUserId(userId), conversationId, question, null, capability, null, error, totalResponseTimeMillis);
+    }
+
+    public Long recordCancelled(String conversationId, String question, String capability,
+            String stage, long totalResponseTimeMillis) {
+        return recordCancelled(null, conversationId, question, capability, stage, totalResponseTimeMillis);
+    }
+
+    /** {@code userId} may be null (e.g. no HTTP request context on the calling thread); resolves to the current/legacy user. */
+    public Long recordCancelled(String userId, String conversationId, String question, String capability,
+            String stage, long totalResponseTimeMillis) {
+        return record(resolveUserId(userId), conversationId, question, null, capability,
+                new CapabilityCancellation(stage), "CANCELLED", totalResponseTimeMillis);
+    }
+
+    private static String resolveUserId(String userId) {
+        return userId != null ? userId : currentUserIdOrLegacy();
     }
 
     private Long record(String userId, String conversationId, String question, String answer, String capability,
@@ -68,5 +86,8 @@ public class CapabilityConversationService {
     }
 
     private record CapabilityData(Object payload, String error) {
+    }
+
+    private record CapabilityCancellation(String stage) {
     }
 }

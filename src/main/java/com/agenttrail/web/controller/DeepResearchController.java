@@ -1,146 +1,178 @@
 package com.agenttrail.web.controller;
-import com.agenttrail.web.dto.DeepResearchTaskResponse;
-import com.agenttrail.web.dto.DeepResearchRequest;
-import com.agenttrail.web.service.CapabilityConversationService;
 
+import cn.dev33.satoken.stp.StpUtil;
 import com.agenttrail.capability.deepresearch.DeepResearchReport;
 import com.agenttrail.capability.deepresearch.DeepResearchService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.agenttrail.capability.deepresearch.DeepResearchTaskWorker;
+import com.agenttrail.capability.deepresearch.InMemoryResearchArtifactStore;
+import com.agenttrail.capability.deepresearch.DeepResearchWorkflow;
+import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.platform.ids.TaskId;
+import com.agenttrail.runtime.repository.InMemoryCheckpointStore;
+import com.agenttrail.runtime.repository.InMemoryRunEventStore;
+import com.agenttrail.web.dto.DeepResearchRequest;
+import com.agenttrail.web.dto.DeepResearchTaskResponse;
+import com.agenttrail.web.service.CapabilityConversationService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.http.HttpStatus;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
-import java.util.concurrent.AbstractExecutorService;
-import java.util.concurrent.ExecutorService;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Future;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * DeepResearch 的 HTTP 入口（issue #25，异步化见后续 bug 修复）。{@code /agent/v1/deepresearch}
- * 只负责登记一个任务号、把真正的检索/综合报告丢到后台执行器上跑，立即返回；前端靠轮询
- * {@code GET /agent/v1/deepresearch/{taskId}} 观察是否跑完，和 PPT 那条轮询路径同一个模式。
- *
- * <p>和 PPT 不同的是这里的进度只有"跑完了没有"这一个粒度（{@link DeepResearchTaskRegistry}
- * 类注释里说明了原因）——不是逐阶段的 checkpoint，轮询只会看到 RUNNING 直接跳到 SUCCESS/
- * FAILED，不会有中间态。
- */
+/** HTTP adapter for the concrete DeepResearch workflow and shared task lifecycle. */
 @RestController
 public class DeepResearchController {
-
-    private static final Logger log = LoggerFactory.getLogger(DeepResearchController.class);
-
-    private final DeepResearchService deepResearchService;
+    private final DeepResearchTaskWorker worker;
     private final CapabilityConversationService conversationService;
-    private final ExecutorService deepResearchExecutor;
-    private final DeepResearchTaskRegistry taskRegistry = new DeepResearchTaskRegistry();
+    private final AtomicLong publicIds = new AtomicLong();
+    private final Map<Long, Handle> handles = new ConcurrentHashMap<>();
 
-    public DeepResearchController(DeepResearchService deepResearchService,
-            CapabilityConversationService conversationService,
-            @Qualifier("deepResearchExecutor") Executor deepResearchExecutor) {
-        this.deepResearchService = deepResearchService;
+    @Autowired
+    public DeepResearchController(DeepResearchTaskWorker worker,
+            CapabilityConversationService conversationService) {
+        this.worker = worker;
         this.conversationService = conversationService;
-        this.deepResearchExecutor = asExecutorService(deepResearchExecutor);
+    }
+
+    /** Compatibility constructor for direct callers while production uses the workflow worker bean. */
+    public DeepResearchController(DeepResearchService service, CapabilityConversationService conversationService,
+            @Qualifier("deepResearchExecutor") Executor executor) {
+        this(new DeepResearchTaskWorker(
+                new DeepResearchWorkflow(service, new InMemoryCheckpointStore(),
+                        new InMemoryResearchArtifactStore(), new InMemoryRunEventStore()),
+                new AgentTaskManager(), executor, new InMemoryRunEventStore()), conversationService);
     }
 
     @PostMapping("/agent/v1/deepresearch")
     public DeepResearchTaskResponse research(@RequestBody DeepResearchRequest request) {
-        long startedAt = System.nanoTime();
+        long publicId = publicIds.incrementAndGet();
+        TaskId taskId = TaskId.of("deepresearch-" + publicId);
         String userId = currentUserId();
-        long taskId = taskRegistry.start(userId);
-        Future<?> future;
+        Handle handle = new Handle(publicId, taskId, userId, request.conversationId(), request.question());
+        handles.put(publicId, handle);
         try {
-            future = deepResearchExecutor.submit(() -> {
-            try {
-                DeepResearchReport report = isClarificationReply(request)
-                        ? deepResearchService.continueAfterClarification(
-                                request.previousQuestion(), request.previousClarifyingQuestion(), request.question(),
-                                step -> taskRegistry.updateStep(taskId, step))
-                        : deepResearchService.research(request.question(),
-                                step -> taskRegistry.updateStep(taskId, step));
-                taskRegistry.complete(taskId, report);
-                String answer = report.needsClarification() ? report.clarifyingQuestion() : report.report();
-                if (userId == null) {
-                    conversationService.recordSuccess(request.conversationId(), request.question(), answer,
-                            "research", report, elapsedMillis(startedAt));
-                } else {
-                    conversationService.recordSuccess(userId, request.conversationId(), request.question(), answer,
-                            "research", report, elapsedMillis(startedAt));
-                }
-            } catch (RuntimeException failure) {
-                log.warn("DeepResearch 任务 {} 后台执行失败（已记入任务注册表，轮询可见）", taskId, failure);
-                taskRegistry.fail(taskId, failure.getMessage());
-                if (userId == null) {
-                    conversationService.recordFailure(request.conversationId(), request.question(), "research",
-                            failure.getMessage(), elapsedMillis(startedAt));
-                } else {
-                    conversationService.recordFailure(userId, request.conversationId(), request.question(),
-                            "research", failure.getMessage(), elapsedMillis(startedAt));
-                }
-            }
-            });
-        } catch (RejectedExecutionException rejected) {
-            String message = "DeepResearch 后台任务队列已满，请稍后重试";
-            taskRegistry.fail(taskId, message);
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, message, rejected);
+            DeepResearchTaskWorker.Submission submission = worker.submit(taskId, request.conversationId(),
+                    request.question(), request.previousQuestion(), request.previousClarifyingQuestion());
+            submission.events().doOnComplete(() -> recordTerminal(handle)).subscribe();
+            return response(handle);
+        } catch (RuntimeException failure) {
+            handles.remove(publicId);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "DeepResearch 后台任务无法提交", failure);
         }
-        taskRegistry.attachFuture(taskId, future);
-        return DeepResearchTaskResponse.running(taskId);
     }
 
-    /** 轮询端点：不驱动任何执行，纯读内存里记的当前状态。 */
     @GetMapping("/agent/v1/deepresearch/{taskId}")
     public DeepResearchTaskResponse status(@PathVariable long taskId) {
-        String userId = currentUserId();
-        if (userId != null && !taskRegistry.belongsTo(taskId, userId)) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
-                    "DeepResearch 任务不存在: " + taskId);
-        }
-        return taskRegistry.find(taskId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
-                        "DeepResearch 任务不存在（可能是应用重启丢失了进行中任务的记录）: " + taskId));
+        Handle handle = requireHandle(taskId);
+        checkOwner(handle);
+        return response(handle);
     }
 
     @PostMapping("/agent/v1/deepresearch/{taskId}/cancel")
     public DeepResearchTaskResponse cancel(@PathVariable long taskId) {
-        String userId = currentUserId();
-        if (userId != null && !taskRegistry.belongsTo(taskId, userId)) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "DeepResearch 任务不存在: " + taskId);
-        }
-        if (!taskRegistry.cancel(taskId)) {
-            DeepResearchTaskResponse current = taskRegistry.find(taskId)
-                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
-                            "DeepResearch 任务不存在: " + taskId));
+        Handle handle = requireHandle(taskId);
+        checkOwner(handle);
+        if (!worker.cancel(handle.internalTaskId)) {
+            DeepResearchTaskResponse current = response(handle);
             if (!DeepResearchTaskResponse.RUNNING.equals(current.status())) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT,
-                        "DeepResearch 任务已结束，无法取消: " + taskId);
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "DeepResearch 任务已结束，无法取消: " + taskId);
             }
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "DeepResearch 任务尚未准备好取消，请稍后重试: " + taskId);
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "DeepResearch 任务尚未准备好取消: " + taskId);
         }
-        return taskRegistry.find(taskId).orElseThrow();
+        return response(handle);
+    }
+
+    @GetMapping(value = "/agent/v1/deepresearch/{taskId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<com.agenttrail.platform.events.EventEnvelope>> events(@PathVariable long taskId,
+            @RequestParam(name = "afterSequence", required = false, defaultValue = "0") long afterSequence,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId) {
+        Handle handle = requireHandle(taskId);
+        checkOwner(handle);
+        long sequence = Math.max(afterSequence, parseSequence(lastEventId));
+        return worker.events(handle.internalTaskId, sequence)
+                .map(event -> ServerSentEvent.<com.agenttrail.platform.events.EventEnvelope>builder(event)
+                        .id(String.valueOf(event.sequence())).event(event.type()).build());
     }
 
     @GetMapping("/agent/v1/deepresearch/running")
     public List<Long> runningTaskIds() {
-        return taskRegistry.runningTaskIdsFor(currentUserId());
+        String userId = currentUserId();
+        return handles.values().stream()
+                .filter(handle -> userId == null || userId.equals(handle.userId))
+                .filter(handle -> DeepResearchTaskResponse.RUNNING.equals(response(handle).status()))
+                .map(Handle::publicId).sorted().toList();
     }
 
-    private static boolean isClarificationReply(DeepResearchRequest request) {
-        return request.previousQuestion() != null && !request.previousQuestion().isBlank();
+    private DeepResearchTaskResponse response(Handle handle) {
+        DeepResearchTaskWorker.TaskSnapshot snapshot = worker.snapshot(handle.internalTaskId);
+        if (snapshot == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "DeepResearch 任务不存在: " + handle.publicId);
+        }
+        return switch (snapshot.status()) {
+            case RUNNING -> DeepResearchTaskResponse.running(handle.publicId, snapshot.currentStep());
+            case SUCCESS -> DeepResearchTaskResponse.success(handle.publicId, snapshot.report(), snapshot.currentStep());
+            case FAILED -> DeepResearchTaskResponse.failed(handle.publicId, snapshot.error(), snapshot.currentStep());
+            case CANCELLED -> DeepResearchTaskResponse.cancelled(handle.publicId, snapshot.currentStep());
+        };
     }
 
-    private static long elapsedMillis(long startedAt) {
-        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+    private void recordTerminal(Handle handle) {
+        if (!handle.recorded.compareAndSet(false, true)) return;
+        DeepResearchTaskWorker.TaskSnapshot snapshot = worker.snapshot(handle.internalTaskId);
+        if (snapshot == null) return;
+        long elapsed = 0L;
+        switch (snapshot.status()) {
+            case SUCCESS -> {
+                DeepResearchReport report = snapshot.report();
+                String answer = report == null ? "" : (report.needsClarification()
+                        ? report.clarifyingQuestion() : report.report());
+                conversationService.recordSuccess(handle.userId, handle.conversationId, handle.question,
+                        answer, "research", report, elapsed);
+            }
+            case FAILED -> conversationService.recordFailure(handle.userId, handle.conversationId, handle.question,
+                    "research", snapshot.error(), elapsed);
+            case CANCELLED -> conversationService.recordCancelled(handle.userId, handle.conversationId, handle.question,
+                    "research", snapshot.currentStep(), elapsed);
+            case RUNNING -> { }
+        }
+    }
+
+    private Handle requireHandle(long publicId) {
+        Handle handle = handles.get(publicId);
+        if (handle == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "DeepResearch 任务不存在: " + publicId);
+        return handle;
+    }
+
+    private void checkOwner(Handle handle) {
+        String userId = currentUserId();
+        if (handle.userId != null && !handle.userId.equals(userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "DeepResearch 任务不存在: " + handle.publicId);
+        }
+    }
+
+    private static long parseSequence(String value) {
+        if (value == null || value.isBlank()) return 0;
+        try { return Long.parseLong(value); } catch (NumberFormatException ignored) { return 0; }
     }
 
     private static String currentUserId() {
@@ -148,52 +180,22 @@ public class DeepResearchController {
         catch (RuntimeException noHttpContext) { return null; }
     }
 
-    private static ExecutorService asExecutorService(Executor executor) {
-        return executor instanceof ExecutorService service ? service : new InlineExecutorService(executor);
-    }
+    private static final class Handle {
+        private final long publicId;
+        private final TaskId internalTaskId;
+        private final String userId;
+        private final String conversationId;
+        private final String question;
+        private final AtomicBoolean recorded = new AtomicBoolean();
 
-    /** 兼容直接执行 Runnable 的单元测试替身；生产环境注入的 bean 本身是 ExecutorService。 */
-    private static final class InlineExecutorService extends AbstractExecutorService {
-
-        private final Executor delegate;
-        private volatile boolean shutdown;
-
-        private InlineExecutorService(Executor delegate) {
-            this.delegate = delegate;
+        private Handle(long publicId, TaskId internalTaskId, String userId, String conversationId, String question) {
+            this.publicId = publicId;
+            this.internalTaskId = internalTaskId;
+            this.userId = userId;
+            this.conversationId = conversationId;
+            this.question = question;
         }
 
-        @Override
-        public void shutdown() {
-            shutdown = true;
-        }
-
-        @Override
-        public java.util.List<Runnable> shutdownNow() {
-            shutdown();
-            return java.util.List.of();
-        }
-
-        @Override
-        public boolean isShutdown() {
-            return shutdown;
-        }
-
-        @Override
-        public boolean isTerminated() {
-            return shutdown;
-        }
-
-        @Override
-        public boolean awaitTermination(long timeout, TimeUnit unit) {
-            return shutdown;
-        }
-
-        @Override
-        public void execute(Runnable command) {
-            if (shutdown) {
-                throw new java.util.concurrent.RejectedExecutionException("executor is shut down");
-            }
-            delegate.execute(command);
-        }
+        private long publicId() { return publicId; }
     }
 }

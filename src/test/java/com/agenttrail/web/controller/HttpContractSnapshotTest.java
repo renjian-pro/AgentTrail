@@ -58,10 +58,10 @@ class HttpContractSnapshotTest {
     }
 
     @Test
-    void fileUploadResponseKeepsItsSixFields() {
+    void fileUploadResponseIncludesAsyncIngestTaskId() {
         IngestedFile file = new IngestedFile(1L, "notes.txt", FileKind.TEXT, 10L, 5, false);
         assertThat(fieldNames(FileUploadResponse.from(file))).containsExactlyInAnyOrder("fileId", "fileName",
-                "kind", "sizeBytes", "parsedTextLength", "routedToRag");
+                "kind", "sizeBytes", "parsedTextLength", "routedToRag", "ingestTaskId");
     }
 
     @Test

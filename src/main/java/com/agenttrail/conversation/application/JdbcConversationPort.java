@@ -41,4 +41,10 @@ public final class JdbcConversationPort implements ConversationPort {
         return capabilityService.recordFailure(record.userId(), record.conversationId(), record.question(),
                 record.capability(), record.error(), record.totalResponseTimeMillis());
     }
+
+    @Override
+    public Long recordCancelled(CapabilityTurnRecord record) {
+        return capabilityService.recordCancelled(record.userId(), record.conversationId(), record.question(),
+                record.capability(), record.error(), record.totalResponseTimeMillis());
+    }
 }

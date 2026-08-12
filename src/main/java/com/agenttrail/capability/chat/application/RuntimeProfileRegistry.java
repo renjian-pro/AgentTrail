@@ -1,5 +1,6 @@
 package com.agenttrail.capability.chat.application;
 
+import com.agenttrail.platform.model.ToolCallingCompatibility;
 import com.agenttrail.runtime.api.AgentRuntimePort;
 
 import java.util.Map;
@@ -18,12 +19,13 @@ public final class RuntimeProfileRegistry {
     }
 
     public RuntimeProfileRegistry(Map<String, AgentRuntimePort> runtimes, String defaultModelId) {
-        this(runtimes, defaultModelId, "deepseek-chat");
+        this(runtimes, defaultModelId, ToolCallingCompatibility.FALLBACK_MODEL_ID);
     }
 
     public AgentRuntimePort resolve(String profileId, String modelId, ToolScope scope) {
         String requested = modelId == null || modelId.isBlank() ? defaultModelId : modelId;
-        if (scope != null && scope.requiresTools() && "qwen-plus".equals(requested)
+        boolean hasTools = scope != null && scope.requiresTools();
+        if (ToolCallingCompatibility.needsFallback(requested, hasTools)
                 && runtimes.containsKey(toolCallingFallbackModelId)) {
             requested = toolCallingFallbackModelId;
         }

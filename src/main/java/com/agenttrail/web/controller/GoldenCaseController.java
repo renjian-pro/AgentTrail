@@ -15,9 +15,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * Golden Case 管理：YAML 内建用例只读展示，{@code golden_case} 表里的用例支持增删改——
- * 鉴权沿用既有的 evaluation 路由策略（登录即可，见 {@link GoldenEvaluationController}），
- * 前端只对 admin 角色开放这个页面入口。
+ * Golden Case 管理：YAML 内建用例只读展示，{@code golden_case} 表里的用例支持增删改。
+ * 读取、创建、更新、删除分别受独立 Golden 权限码保护；不要把这里的权限策略与评测执行接口混为一谈。
  */
 @RestController
 public class GoldenCaseController {
