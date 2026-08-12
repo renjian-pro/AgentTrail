@@ -1,14 +1,30 @@
 package com.agenttrail.evaluation;
 
+import com.agenttrail.capability.analytics.permission.DataScopeRewriter;
+import com.agenttrail.capability.analytics.sql.ColumnMeta;
+import com.agenttrail.capability.analytics.sql.ReadOnlyQueryRunner;
+import com.agenttrail.capability.analytics.sql.SqlResult;
+import com.agenttrail.capability.analytics.sql.SqlSafetyGuard;
+import com.agenttrail.capability.analytics.sql.ValidationResult;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.sys.datascope.DataScopeResolver;
 import com.agenttrail.web.service.AgentLoopExecutorFactory;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
+import javax.sql.DataSource;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,16 +41,31 @@ public class GoldenEvaluationService {
     private final Executor evaluationExecutor;
     private final Executor coordinatorExecutor;
     private final GoldenCaseService caseService;
+    private final DataScopeResolver scopeResolver;
+    private final ObjectProvider<SqlSafetyGuard> safetyGuardProvider;
+    private final ObjectProvider<DataScopeRewriter> scopeRewriterProvider;
+    private final ObjectProvider<ReadOnlyQueryRunner> queryRunnerProvider;
+    private final DataSource appDataSource;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<String, EvaluationTask> tasks = new ConcurrentHashMap<>();
 
     public GoldenEvaluationService(AgentLoopExecutorFactory executorFactory,
             @Qualifier("deepResearchExecutor") Executor evaluationExecutor,
             @Qualifier("goldenEvaluationCoordinatorExecutor") Executor coordinatorExecutor,
-            GoldenCaseService caseService) {
+            GoldenCaseService caseService, DataScopeResolver scopeResolver,
+            ObjectProvider<SqlSafetyGuard> safetyGuardProvider,
+            ObjectProvider<DataScopeRewriter> scopeRewriterProvider,
+            ObjectProvider<ReadOnlyQueryRunner> queryRunnerProvider,
+            @Qualifier("dataSource") DataSource appDataSource) {
         this.executorFactory = executorFactory;
         this.evaluationExecutor = evaluationExecutor;
         this.coordinatorExecutor = coordinatorExecutor;
         this.caseService = caseService;
+        this.scopeResolver = scopeResolver;
+        this.safetyGuardProvider = safetyGuardProvider;
+        this.scopeRewriterProvider = scopeRewriterProvider;
+        this.queryRunnerProvider = queryRunnerProvider;
+        this.appDataSource = appDataSource;
     }
 
     public GoldenEvaluationTaskResponse start() {
@@ -84,10 +115,16 @@ public class GoldenEvaluationService {
         StringBuilder result = new StringBuilder();
         boolean failed = false;
         String failureReason = "";
+        String rawSql = null;
         for (AgentStreamEvent event : events == null ? List.<AgentStreamEvent>of() : events) {
             switch (event) {
                 case AgentStreamEvent.Text text -> result.append(text.content());
-                case AgentStreamEvent.ToolStart start -> toolCalls.add(start.toolName());
+                case AgentStreamEvent.ToolStart start -> {
+                    toolCalls.add(start.toolName());
+                    if ("execute_sql".equals(start.toolName())) {
+                        rawSql = extractSqlArgument(start.arguments());
+                    }
+                }
                 case AgentStreamEvent.ToolEnd end -> result.append(end.result()).append('\n');
                 case AgentStreamEvent.Error error -> {
                     failed = true;
@@ -97,9 +134,104 @@ public class GoldenEvaluationService {
                 default -> { }
             }
         }
+        Map<String, Object> metrics = computeMetrics(rawSql, userId, testCase.referenceSql());
         return new GoldenTaskReport.GoldenObservation(testCase.id(), testCase.dimension(), !failed,
                 failureReason, toolCalls.size() + 1, elapsedMillis(startedAt), "", result.toString(),
-                toolCalls, Map.of(), testCase.question());
+                toolCalls, metrics, testCase.question());
+    }
+
+    /**
+     * 复现 {@code ExecuteSqlTool} 的 validate→rewrite 链路后跑一次只读查询，算出 {@code rowCount}/
+     * {@code scalar.*}/{@code resultMatchesReference}——这几个指标此前只有测试代码里的
+     * {@code GoldenTaskLiveIT.populateMetrics} 真的算过，生产的 {@code /agent/v1/evaluation/run}
+     * 路径一直传的是 {@code Map.of()}（roadmap 记录的踩坑点 #91）。
+     *
+     * <p>{@link SqlSafetyGuard}/{@link DataScopeRewriter}/{@link ReadOnlyQueryRunner} 只在
+     * {@code agenttrail.analytics.datasource.enabled=true} 时才存在——默认关闭，这里用
+     * {@link ObjectProvider} 可选注入，拿不到就跳过这几个指标，不阻塞整个评测服务的启动/执行。
+     */
+    private Map<String, Object> computeMetrics(String rawSql, String username, String referenceSql) {
+        if (rawSql == null || rawSql.isBlank()) {
+            return Map.of();
+        }
+        SqlSafetyGuard safetyGuard = safetyGuardProvider.getIfAvailable();
+        DataScopeRewriter scopeRewriter = scopeRewriterProvider.getIfAvailable();
+        ReadOnlyQueryRunner queryRunner = queryRunnerProvider.getIfAvailable();
+        if (safetyGuard == null || scopeRewriter == null || queryRunner == null) {
+            return Map.of();
+        }
+        Long numericUserId = resolveUserId(username);
+        if (numericUserId == null) {
+            return Map.of();
+        }
+        ValidationResult validated = safetyGuard.validate(rawSql);
+        if (!validated.valid()) {
+            return Map.of();
+        }
+        String actualSql = scopeRewriter.rewrite(validated.safeSql(), scopeResolver.resolve(numericUserId));
+        if (actualSql.isBlank()) {
+            return Map.of();
+        }
+        Map<String, Object> metrics = new HashMap<>();
+        try {
+            SqlResult actual = queryRunner.query(actualSql);
+            metrics.put("rowCount", actual.rows().size());
+            if (actual.rows().size() == 1) {
+                List<Object> row = actual.rows().get(0);
+                for (int i = 0; i < actual.columns().size() && i < row.size(); i++) {
+                    ColumnMeta column = actual.columns().get(i);
+                    metrics.put("scalar." + column.label(), toLong(row.get(i)));
+                }
+            }
+            if (referenceSql != null && !referenceSql.isBlank()) {
+                SqlResult reference = queryRunner.query(referenceSql);
+                metrics.put("resultMatchesReference", sameRows(actual, reference));
+            }
+        } catch (Exception failure) {
+            metrics.put("queryError", failure.getMessage());
+        }
+        return metrics;
+    }
+
+    private Long resolveUserId(String username) {
+        try {
+            return JdbcClient.create(appDataSource)
+                    .sql("SELECT id FROM sys_user WHERE username = :username")
+                    .param("username", username)
+                    .query(Long.class)
+                    .optional()
+                    .orElse(null);
+        } catch (Exception lookupFailure) {
+            return null;
+        }
+    }
+
+    private static boolean sameRows(SqlResult actual, SqlResult reference) {
+        List<List<String>> actualRows = actual.rows().stream()
+                .map(row -> row.stream().map(String::valueOf).toList()).toList();
+        List<List<String>> referenceRows = reference.rows().stream()
+                .map(row -> row.stream().map(String::valueOf).toList()).toList();
+        return actualRows.size() == referenceRows.size()
+                && new HashSet<>(actualRows).equals(new HashSet<>(referenceRows));
+    }
+
+    private static long toLong(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return Long.MIN_VALUE;
+        }
+    }
+
+    private String extractSqlArgument(String argumentsJson) {
+        try {
+            JsonNode node = objectMapper.readTree(argumentsJson);
+            JsonNode sql = node.get("sql");
+            return sql == null ? null : sql.asText();
+        } catch (IOException malformed) {
+            throw new UncheckedIOException(malformed);
+        }
     }
 
     private static long elapsedMillis(long startedAt) {

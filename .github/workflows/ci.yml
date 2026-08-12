@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [dev, release]
+    branches: [dev]
   pull_request:
-    branches: [dev, release]
+    branches: [dev]
   workflow_dispatch:
 
 permissions:
@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
 
     steps:
       - name: Checkout
@@ -66,3 +67,57 @@ jobs:
           path: target/agent-trail-*.jar
           if-no-files-found: error
           retention-days: 7
+
+      # Builds the deployable image on every push so a broken Dockerfile fails CI immediately.
+      # Pushing to a registry is a separate, opt-in step gated on secrets existing — those get
+      # set up in Phase B (real registry + credentials), not something CI can default to.
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: agenttrail:ci
+
+      - name: Log in to registry
+        if: ${{ env.REGISTRY_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # 推镜像和部署都只在手动触发时跑（见 workflow_dispatch），push 到 dev 只做构建校验——
+      # 部署面向的是给面试官看的演示服务器，不希望日常 push 就自动重新部署上去。
+      - name: Push Docker image
+        if: ${{ env.REGISTRY_USERNAME != '' && github.event_name == 'workflow_dispatch' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # REGISTRY_URL 只是仓库域名（登录用），完整镜像路径还要接上命名空间/仓库名——
+          # ACR 个人版这两段都叫 agenttrail，容易漏写一段导致推到不存在的路径。
+          tags: ${{ secrets.REGISTRY_URL }}/agenttrail/agenttrail:${{ github.sha }},${{ secrets.REGISTRY_URL }}/agenttrail/agenttrail:latest
+
+  deploy:
+    name: Deploy to server
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+    steps:
+      - name: Deploy via SSH
+        if: ${{ env.SERVER_HOST != '' }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/agenttrail
+            docker login --username "${{ secrets.REGISTRY_USERNAME }}" --password "${{ secrets.REGISTRY_PASSWORD }}" "${{ secrets.REGISTRY_URL }}"
+            sed -i "s#^IMAGE_TAG=.*#IMAGE_TAG=${{ github.sha }}#" .env
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker image prune -f

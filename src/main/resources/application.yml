@@ -27,6 +27,13 @@ spring:
     init:
       mode: always
       schema-locations: classpath:db/schema.sql
+  flyway:
+    # 生产部署首次接入真实库时打开(env 覆盖为 true)。db/migration/V1__init.sql 是
+    # db/schema.sql 引入 Flyway那一刻的快照；baseline-on-migrate 让"已经跑过多次
+    # spring.sql.init、表已存在"的库把 V1 当作已应用直接跳过，不会因为表已存在报错。
+    enabled: false
+    locations: classpath:db/migration
+    baseline-on-migrate: true
   autoconfigure:
     exclude: org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
   # Boot 默认 max-file-size/max-request-size 只有 1MB/10MB，文件问答（issue #21/#26）需要接收真实文档
@@ -49,6 +56,16 @@ management:
       exposure:
         include: health,info,prometheus
   endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        # liveness 只看 JVM 本身活不活——K8s/docker 的存活探针不该因为下游服务临时抖动就重启进程。
+        liveness:
+          include: ping
+        # readiness 看是否具备接流量的条件：Redis/PgVector/MinIO/DashScope 任一不可达就应该摘掉流量。
+        readiness:
+          include: redis,pgvector,minio,dashscope
     prometheus:
       enabled: true
   tracing:
@@ -77,6 +94,9 @@ tavily:
   max-attempts: 2
 
 agenttrail:
+  cors:
+    # 生产部署必须覆盖成真实前端域名（逗号分隔多个源），默认值只覆盖本机开发。
+    allowed-origins: http://localhost:5173
   pgvector:
     maximum-pool-size: 4
   multimodal:
@@ -135,6 +155,11 @@ agenttrail:
   tool-rate-limit:
     # 没配 Redis 时 ToolRateLimiter 永远放行，这两个值只在 agenttrail.redis.enabled=true 时才生效。
     max-calls: 30
+    window-seconds: 60
+  http-rate-limit:
+    # 按 userId 的 HTTP 请求级限速，同样只在配了 Redis 时生效。默认值是保守起点，生产部署前
+    # 按实际用户规模/并发预期调整。
+    max-calls: 60
     window-seconds: 60
   analytics:
     # Analytics data source is optional and disabled by default.

@@ -1,0 +1,41 @@
+# 复制为 application-local.yml，和 docker-compose.prod.yml 放同一目录（服务器上 /opt/agenttrail/）。
+# 通过 volume 挂进容器的 /app/application-local.yml，spring.config.import 里
+# optional:file:./application-local.yml 会自动加载它。这个文件不进 git。
+#
+# 地址都写 docker-compose 里的服务名（mysql/postgres/redis/minio），因为 app 容器
+# 和这几个容器在同一个 compose 网络里，容器名就是可解析的主机名，不是 127.0.0.1。
+spring:
+  ai:
+    deepseek:
+      api-key: ""
+    openai:
+      api-key: ""
+  datasource:
+    url: "jdbc:mysql://mysql:3306/agenttrail?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8"
+    username: "agenttrail"
+    password: ""   # 与 .env 里的 MYSQL_PASSWORD 保持一致
+  # Sa-Token 的 Redis DAO（sa-token-redis-jackson）走标准 Spring Data Redis 自动装配读这几个属性，
+  # 不配的话它会去连容器内的 localhost:6379，而 Redis 是单独的容器，必须显式指向 redis 服务名。
+  data:
+    redis:
+      host: redis
+      port: 6379
+      password: ""   # 与 .env 里的 REDIS_PASSWORD 保持一致
+
+tavily:
+  api-key: ""
+
+agenttrail:
+  pgvector:
+    url: "jdbc:postgresql://postgres:5432/agenttrail"
+    username: "agenttrail"
+    password: ""   # 与 .env 里的 POSTGRES_PASSWORD 保持一致
+  minio:
+    endpoint: "http://minio:9000"
+    access-key: ""   # 与 .env 里的 MINIO_ROOT_USER 保持一致
+    secret-key: ""   # 与 .env 里的 MINIO_ROOT_PASSWORD 保持一致
+  redis:
+    # 跨实例任务锁（Redisson）单独一套地址配置，和上面 spring.data.redis 是两个不同的客户端，
+    # 都要指向同一个 redis 容器；地址里内嵌密码是 Redisson 的写法（spring.data.redis 密码是独立字段）。
+    enabled: true
+    address: "redis://:REDIS_PASSWORD_HERE@redis:6379"   # 把 REDIS_PASSWORD_HERE 换成 .env 里的 REDIS_PASSWORD

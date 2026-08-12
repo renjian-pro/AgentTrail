@@ -25,6 +25,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.NoSuchElementException;
 
@@ -70,6 +71,7 @@ public class FileUploadController {
                         file.getOriginalFilename(), file.getContentType(), file.getInputStream(), file.getSize()));
             }
             uploadPolicy.validate(file.getOriginalFilename(), file.getContentType(), file.getSize());
+            uploadPolicy.validateSignature(file.getContentType(), readHeader(file));
             if (file.getSize() > asyncThresholdBytes) {
                 byte[] bytes = file.getBytes();
                 FileIngestUseCase.ReservedUpload reserved = ingest.reserve(userId, conversationId,
@@ -121,6 +123,13 @@ public class FileUploadController {
             if (legacyService != null) legacyService.delete(fileId); else ingest.delete(fileId);
         } catch (NoSuchElementException notFound) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, notFound.getMessage(), notFound);
+        }
+    }
+
+    /** 只嗅探开头几个字节做文件签名校验，不影响后续 {@code file.getBytes()}/{@code getInputStream()} 的完整读取。 */
+    private static byte[] readHeader(MultipartFile file) throws IOException {
+        try (InputStream in = file.getInputStream()) {
+            return in.readNBytes(16);
         }
     }
 

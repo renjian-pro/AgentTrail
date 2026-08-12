@@ -1,0 +1,8 @@
+target/
+frontend/node_modules/
+frontend/dist/
+.git/
+.idea/
+.at-worktrees/
+.local-backup/
+*.log

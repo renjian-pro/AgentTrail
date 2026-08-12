@@ -6,6 +6,7 @@ import com.agenttrail.web.dto.AgentChatRequest;
 import com.agenttrail.legacy.V0.AgentRuntime;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -24,7 +25,7 @@ public class AgentController {
     }
 
     @PostMapping("/agent/chat")
-    public AgentChatResponse chat(@RequestBody AgentChatRequest request, HttpServletResponse response) {
+    public AgentChatResponse chat(@Valid @RequestBody AgentChatRequest request, HttpServletResponse response) {
         response.setHeader("X-Runtime-Version", "v0");
         String answer = runtime.respond(request.message());
         return new AgentChatResponse(answer);

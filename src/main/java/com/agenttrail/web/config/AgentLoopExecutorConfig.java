@@ -20,6 +20,7 @@ import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.pause.PauseStateStore;
 import com.agenttrail.loop.persistence.JdbcSessionStore;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
+import com.agenttrail.loop.security.HttpRateLimiter;
 import com.agenttrail.loop.security.PiiMasker;
 import com.agenttrail.loop.security.PromptInjectionGuard;
 import com.agenttrail.loop.security.ToolRateLimiter;
@@ -220,6 +221,20 @@ public class AgentLoopExecutorConfig {
             @Value("${agenttrail.tool-rate-limit.window-seconds:60}") long windowSeconds) {
         return new ToolRateLimiter(redissonProvider.getIfAvailable(), maxCallsPerWindow,
                 Duration.ofSeconds(windowSeconds));
+    }
+
+    /** 同一套可选装配方式，管的是 HTTP 请求级限速而不是工具调用级，见 {@link HttpRateLimiter} 上的说明。 */
+    @Bean
+    public HttpRateLimiter httpRateLimiter(ObjectProvider<RedissonClient> redissonProvider,
+            @Value("${agenttrail.http-rate-limit.max-calls:60}") int maxCallsPerWindow,
+            @Value("${agenttrail.http-rate-limit.window-seconds:60}") long windowSeconds) {
+        return new HttpRateLimiter(redissonProvider.getIfAvailable(), maxCallsPerWindow,
+                Duration.ofSeconds(windowSeconds));
+    }
+
+    @Bean
+    public RateLimitInterceptor rateLimitInterceptor(HttpRateLimiter httpRateLimiter) {
+        return new RateLimitInterceptor(httpRateLimiter);
     }
 
     /** 对话、DeepResearch、PPT 共用 agent_session，不维护互相漂移的多套历史。 */

@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -62,7 +63,7 @@ public class DeepResearchController {
     }
 
     @PostMapping("/agent/v1/deepresearch")
-    public DeepResearchTaskResponse research(@RequestBody DeepResearchRequest request) {
+    public DeepResearchTaskResponse research(@Valid @RequestBody DeepResearchRequest request) {
         long publicId = publicIds.incrementAndGet();
         TaskId taskId = TaskId.of("deepresearch-" + publicId);
         String userId = currentUserId();

@@ -28,4 +28,15 @@ public record FileUploadPolicy(long maxBytes, Set<String> allowedContentTypes) {
             throw new FileUploadRejectedException("不支持的文件类型: " + contentType);
         }
     }
+
+    /**
+     * 客户端声明的 {@code Content-Type} 是可伪造的——只校验白名单挡不住"可执行文件改名成 .pdf"
+     * 这类绕过。{@code header} 是文件开头的若干字节（够覆盖已知最长签名即可，见
+     * {@link FileSignatureValidator}）；调用方需要在 {@link #validate} 之后单独调这个方法。
+     */
+    public void validateSignature(String contentType, byte[] header) {
+        if (!FileSignatureValidator.matches(contentType, header)) {
+            throw new FileUploadRejectedException("文件内容和声明的类型不一致: " + contentType);
+        }
+    }
 }

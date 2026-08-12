@@ -1,0 +1,70 @@
+# 生产部署栈：app + 应用自身依赖的四个存储（MySQL/Postgres+pgvector/Redis/MinIO）。
+# 不含 Prometheus/Grafana/Langfuse——2核4G 轻量服务器的内存预算优先留给应用本体，
+# 观测栈按 ../docker-compose.yml 单独在资源更宽裕时再起。
+#
+# 部署位置约定：服务器上 /opt/agenttrail/ 目录，与本文件同级放 .env（抄 .env.example）
+# 和 application-local.yml（抄 application-local.prod.example.yml），两个文件都不进 git。
+services:
+  app:
+    image: ${REGISTRY_URL}/agenttrail/agenttrail:${IMAGE_TAG:-latest}
+    container_name: agenttrail-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    volumes:
+      - ./application-local.yml:/app/application-local.yml:ro
+    depends_on:
+      - mysql
+      - postgres
+      - redis
+      - minio
+
+  mysql:
+    image: mysql:8.4
+    container_name: agenttrail-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: agenttrail
+      MYSQL_USER: agenttrail
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: agenttrail-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agenttrail
+      POSTGRES_USER: agenttrail
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: agenttrail-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis-data:/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: agenttrail-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+
+volumes:
+  mysql-data:
+  postgres-data:
+  redis-data:
+  minio-data:

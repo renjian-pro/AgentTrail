@@ -1,7 +1,9 @@
--- 本地开发/测试用（spring.sql.init + 15+ 处 Testcontainers 集成测试的 ResourceDatabasePopulator
--- 都直接引用这个文件）。生产部署走 db/migration/V1__init.sql（Flyway，spring.flyway.enabled=true
--- 时生效）——那是这个文件在引入 Flyway 那一刻的快照，以后不会自动跟这里同步，两边各自的用途
--- 不同（本地"每次启动幂等重跑全量"vs 生产"版本化增量迁移"），不是需要合并成一份的重复。
+-- Flyway 基线迁移，内容是 db/schema.sql 在引入 Flyway 那一刻的快照，供生产部署首次建库用
+-- （spring.flyway.enabled=true 时生效）。本地开发/测试继续用 db/schema.sql 走既有的
+-- spring.sql.init 机制和 15+ 处 Testcontainers 集成测试的 ResourceDatabasePopulator，
+-- 这次改造不动它们。这意味着：这个文件是一次性快照，不会跟着 db/schema.sql 以后的改动自动同步；
+-- 生产库首次启用 Flyway 之后，新的表结构变更要开始写 V2__xxx.sql 这类新版本迁移文件，
+-- 不能再回来改这个 V1 文件（Flyway 用校验和防止已应用的迁移被事后修改）。
 --
 -- AgentTrail 会话持久化表结构（MySQL 8）
 --

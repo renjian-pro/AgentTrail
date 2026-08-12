@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.context.request.RequestContextHolder;
@@ -63,7 +64,7 @@ public class PptGenerationController {
     }
 
     @PostMapping("/agent/v1/ppt/create")
-    public PptGenerationResponse create(@RequestBody PptGenerationRequest request) {
+    public PptGenerationResponse create(@Valid @RequestBody PptGenerationRequest request) {
         long startedAt = System.nanoTime();
         String userId = currentUserId();
         long taskId = prepareTask(userId, request);

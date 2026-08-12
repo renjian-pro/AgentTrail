@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -35,7 +36,7 @@ public class AgentLoopController {
     }
 
     @PostMapping(value = "/agent/v1/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<EventEnvelope>> chat(@RequestBody AgentChatRequest request) {
+    public Flux<ServerSentEvent<EventEnvelope>> chat(@Valid @RequestBody AgentChatRequest request) {
         try {
             return asSse(chatService.send(principal(), request.conversationId(), request.modelId(),
                     request.message(), new ToolScope(request.webSearchEnabled(), true, java.util.Set.of())));

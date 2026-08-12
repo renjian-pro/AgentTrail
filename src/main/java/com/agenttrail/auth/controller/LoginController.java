@@ -10,6 +10,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -21,7 +22,7 @@ public class LoginController {
     public LoginController(AuthService authService) { this.authService = authService; }
 
     @PostMapping("/api/auth/login")
-    public LoginResponse login(@RequestBody LoginRequest request) {
+    public LoginResponse login(@Valid @RequestBody LoginRequest request) {
         String token = authService.login(request.username(), request.password());
         SysUser user = authService.currentUser().orElseThrow();
         return new LoginResponse(token, UserInfo.of(user, StpUtil.getRoleList()));

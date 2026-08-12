@@ -3,6 +3,7 @@ package com.agenttrail.auth.config;
 import cn.dev33.satoken.interceptor.SaInterceptor;
 import cn.dev33.satoken.router.SaRouter;
 import cn.dev33.satoken.stp.StpUtil;
+import com.agenttrail.web.config.RateLimitInterceptor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -23,6 +24,15 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @Configuration
 public class SaTokenConfig implements WebMvcConfigurer {
 
+    /** {@link RateLimitInterceptor} 的 bean 定义放在 {@code AgentLoopExecutorConfig}（挨着
+     * {@code ToolRateLimiter}），这里只消费成品 bean——避免同一个 {@code @Configuration} 类里
+     * 一个 {@code @Bean} 方法直接调用另一个带参数 {@code @Bean} 方法这种别扭写法。 */
+    private final RateLimitInterceptor rateLimitInterceptor;
+
+    public SaTokenConfig(RateLimitInterceptor rateLimitInterceptor) {
+        this.rateLimitInterceptor = rateLimitInterceptor;
+    }
+
     @Bean
     public BCryptPasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
 
@@ -42,5 +52,8 @@ public class SaTokenConfig implements WebMvcConfigurer {
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(saInterceptor()).addPathPatterns("/agent/**", "/api/**");
+        // 注册顺序在 saInterceptor 之后——未登录请求已经被上面那个拦截器拒成 401，
+        // 走到这里的都已经是登录用户，可以放心按 userId 限速。
+        registry.addInterceptor(rateLimitInterceptor).addPathPatterns("/agent/**");
     }
 }

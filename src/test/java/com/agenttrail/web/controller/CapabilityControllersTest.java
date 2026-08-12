@@ -26,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -52,7 +53,7 @@ class CapabilityControllersTest {
 
         assertThat(polled.status()).isEqualTo(DeepResearchTaskResponse.SUCCESS);
         assertThat(polled.report()).isEqualTo(report);
-        verify(conversationService).recordSuccess(eq("conversation-1"), eq("研究 Java"), eq("研究结论"),
+        verify(conversationService).recordSuccess(isNull(), eq("conversation-1"), eq("研究 Java"), eq("研究结论"),
                 eq("research"), eq(report), anyLong());
     }
 
@@ -74,7 +75,7 @@ class CapabilityControllersTest {
             assertThat(response.taskId()).isEqualTo(9L);
             assertThat(response.outputPath()).isEqualTo("/agent/v1/ppt/9/download");
             verify(pptService).run(9L);
-            verify(conversationService).recordSuccess(eq("conversation-2"), eq("生成季度汇报"),
+            verify(conversationService).recordSuccess(isNull(), eq("conversation-2"), eq("生成季度汇报"),
                     eq("PPT 任务状态：SUCCESS"), eq("ppt"), eq(response), anyLong());
         } finally {
             Files.deleteIfExists(generatedPpt);
