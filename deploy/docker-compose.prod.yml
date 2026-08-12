@@ -15,6 +15,7 @@ services:
       SPRING_PROFILES_ACTIVE: docker
     volumes:
       - ./application-local.yml:/app/application-local.yml:ro
+      - ./skills:/app/skills
     depends_on:
       - mysql
       - postgres

@@ -26,6 +26,10 @@ tavily:
   api-key: ""
 
 agenttrail:
+  # 不配就等于关闭 Skill 能力（SkillsConfiguration 靠这个属性整块开关），docker-compose.prod.yml
+  # 已经把宿主机的 ./skills 目录挂进容器的 /app/skills，这里指到同一个路径即可。
+  skills:
+    directory: /app/skills
   pgvector:
     url: "jdbc:postgresql://postgres:5432/agenttrail"
     username: "agenttrail"
