@@ -98,6 +98,24 @@ jobs:
           # ACR 个人版这两段都叫 agenttrail，容易漏写一段导致推到不存在的路径。
           tags: ${{ secrets.REGISTRY_URL }}/agenttrail/agenttrail:${{ github.sha }},${{ secrets.REGISTRY_URL }}/agenttrail/agenttrail:latest
 
+      # 服务器在国内，直连 Docker Hub 拉 mysql/postgres/redis/minio 这几个官方镜像会超时
+      # （ACR 的镜像加速器只覆盖"特定范围"的镜像，这几个不在范围内）。GitHub Actions 的
+      # runner 在国外，拉 Docker Hub 没有障碍，这里顺手转推一份到 ACR 底下，服务器只需要
+      # 连 ACR 就能拿到，不用再碰 Docker Hub。这几个基础镜像版本不常变，重复推是幂等的。
+      - name: Mirror base images to ACR
+        if: ${{ env.REGISTRY_USERNAME != '' && github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -e
+          for pair in "mysql:8.4" "pgvector/pgvector:pg16" "redis:7-alpine" "minio/minio:latest"; do
+            src="$pair"
+            name="$(basename "${pair%%:*}")"
+            tag="${pair##*:}"
+            dest="${{ secrets.REGISTRY_URL }}/agenttrail/$name:$tag"
+            docker pull "$src"
+            docker tag "$src" "$dest"
+            docker push "$dest"
+          done
+
   deploy:
     name: Deploy to server
     needs: build
