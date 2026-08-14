@@ -22,10 +22,10 @@ describe('ChatView', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     vi.mocked(streamChat).mockImplementation(async function * () {
-      yield { type: 'AgentStart', conversationId: 'streamed-conversation' }
-      yield { type: 'Thinking', content: '先分析问题' }
-      yield { type: 'Text', content: '这是回答' }
-      yield { type: 'Complete', conversationId: 'streamed-conversation', turnId: 1 }
+      yield { type: 'RunStarted', conversationId: 'streamed-conversation' }
+      yield { type: 'ThinkingDelta', content: '先分析问题' }
+      yield { type: 'ModelDelta', content: '这是回答' }
+      yield { type: 'RunCompleted', conversationId: 'streamed-conversation', turnId: 1 }
     })
   })
 
@@ -44,19 +44,19 @@ describe('ChatView', () => {
 
   /**
    * 回归测试：切换会话时中断上一个会话遗留的 SSE 流，靠的是 watch(navigationSeq, ...)——
-   * 踩过的坑是改成直接 watch(conversationId, ...)：AgentStart 事件会把 conversationId
+   * 踩过的坑是改成直接 watch(conversationId, ...)：RunStarted 事件会把 conversationId
    * 从 undefined 改写成服务端刚分配的真实 id，这也是 conversationId 的一次变化，但那是"这次
    * 请求认领了它自己的会话号"，不是"用户换了会话"。如果两者不分开，第一条消息发出去之后
    * conversationId 一变，watcher 就会把这次请求自己的 aborter.abort() 调用了——请求还没走完
    * 就被自己掐断，是真实复现过的行为，不是假设的边界情况。
    */
-  it('does not abort its own SSE stream when AgentStart assigns the very first conversationId', async () => {
+  it('does not abort its own SSE stream when RunStarted assigns the very first conversationId', async () => {
     let capturedSignal: AbortSignal | undefined
     vi.mocked(streamChat).mockImplementation(async function * (_body, signal) {
       capturedSignal = signal
-      yield { type: 'AgentStart', conversationId: 'brand-new-conversation' }
-      yield { type: 'Text', content: '你好呀' }
-      yield { type: 'Complete', conversationId: 'brand-new-conversation', turnId: 1 }
+      yield { type: 'RunStarted', conversationId: 'brand-new-conversation' }
+      yield { type: 'ModelDelta', content: '你好呀' }
+      yield { type: 'RunCompleted', conversationId: 'brand-new-conversation', turnId: 1 }
     })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
@@ -72,11 +72,11 @@ describe('ChatView', () => {
     let releaseRemainder!: () => void
     const remainder = new Promise<void>(resolve => { releaseRemainder = resolve })
     vi.mocked(streamChat).mockImplementation(async function * () {
-      yield { type: 'AgentStart', conversationId: 'progressive-conversation' }
-      yield { type: 'Text', content: '第一段已经到达' }
+      yield { type: 'RunStarted', conversationId: 'progressive-conversation' }
+      yield { type: 'ModelDelta', content: '第一段已经到达' }
       await remainder
-      yield { type: 'Text', content: '，第二段稍后到达' }
-      yield { type: 'Complete', conversationId: 'progressive-conversation', turnId: 1 }
+      yield { type: 'ModelDelta', content: '，第二段稍后到达' }
+      yield { type: 'RunCompleted', conversationId: 'progressive-conversation', turnId: 1 }
     })
 
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
@@ -112,6 +112,33 @@ describe('ChatView', () => {
     await wrapper.find('form').trigger('submit')
     await flushPromises()
     expect(pptApi.create).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * 数据分析和 research/ppt 不一样，不脱离普通聊天的 SSE 流——选中模式只是给下一条消息的
+   * streamChat 请求体带上 mode:'analytics'，让后端路由到分析执行器（见 ChatToolScopeRuntimeAdapter）。
+   * 这里验证请求体真的带上了这个字段，且发送后模式会复位、联网搜索开关不会被一并带上去。
+   */
+  it('tags the next message with mode:analytics when that capability is selected, then reverts to chat', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await wrapper.findAll('.mode-picker button')[2].trigger('click')
+    await wrapper.find('textarea').setValue('上个月的订单量是多少')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ message: '上个月的订单量是多少', mode: 'analytics', webSearchEnabled: false }),
+      expect.anything())
+    expect(wrapper.find('.mode-hint').exists()).toBe(false)
+
+    await wrapper.find('textarea').setValue('这条应该走普通对话')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(streamChat).toHaveBeenLastCalledWith(
+      expect.objectContaining({ message: '这条应该走普通对话', mode: undefined }),
+      expect.anything())
   })
 
   it('renders the Deep Research clarification card inline instead of dumping raw JSON', async () => {

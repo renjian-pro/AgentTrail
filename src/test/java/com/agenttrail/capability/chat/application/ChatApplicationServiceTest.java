@@ -5,9 +5,11 @@ import com.agenttrail.platform.events.EventEnvelope;
 import com.agenttrail.platform.ids.ConversationId;
 import com.agenttrail.platform.ids.RunId;
 import com.agenttrail.runtime.api.AgentEvent;
+import com.agenttrail.runtime.api.AgentRequest;
 import com.agenttrail.runtime.api.AgentRunHandle;
 import com.agenttrail.runtime.api.AgentRuntimePort;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
@@ -46,6 +48,49 @@ class ChatApplicationServiceTest {
         assertThat(events).extracting(EventEnvelope::sequence).containsExactly(1L, 2L, 3L);
         verify(toolRuntime).start(any());
         verify(defaultRuntime, never()).start(any());
+    }
+
+    /**
+     * 数据分析生产入口的另一半：{@link ChatToolScopeRuntimeAdapter} 靠 toolParams 里的
+     * analyticsEnabled 路由到 {@code forAnalytics}，这个键必须由 send() 按 mode 参数写进
+     * {@link AgentRequest}，前端已经在发的 {@code mode:'analytics'} 字段才不会继续石沉大海。
+     */
+    @Test
+    void sendEncodesAnalyticsModeIntoToolParamsSoTheRuntimeAdapterCanRouteToIt() {
+        AgentRuntimePort runtime = mock(AgentRuntimePort.class);
+        RunId runId = RunId.of("run-1");
+        when(runtime.start(any())).thenReturn(new AgentRunHandle(runId, Flux.empty()));
+
+        ChatApplicationService service = new ChatApplicationService(
+                new RuntimeProfileRegistry(Map.of("qwen-plus", runtime), "qwen-plus"),
+                mock(ConversationPort.class));
+
+        service.send(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1", "qwen-plus",
+                        "上个月的订单量是多少", ToolScope.none(), "analytics")
+                .collectList().block();
+
+        ArgumentCaptor<AgentRequest> captor = ArgumentCaptor.forClass(AgentRequest.class);
+        verify(runtime).start(captor.capture());
+        assertThat(captor.getValue().toolParams()).containsEntry("analyticsEnabled", true);
+    }
+
+    @Test
+    void sendLeavesAnalyticsDisabledWhenNoModeIsRequested() {
+        AgentRuntimePort runtime = mock(AgentRuntimePort.class);
+        RunId runId = RunId.of("run-1");
+        when(runtime.start(any())).thenReturn(new AgentRunHandle(runId, Flux.empty()));
+
+        ChatApplicationService service = new ChatApplicationService(
+                new RuntimeProfileRegistry(Map.of("qwen-plus", runtime), "qwen-plus"),
+                mock(ConversationPort.class));
+
+        service.send(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1", "qwen-plus",
+                        "你好", ToolScope.none())
+                .collectList().block();
+
+        ArgumentCaptor<AgentRequest> captor = ArgumentCaptor.forClass(AgentRequest.class);
+        verify(runtime).start(captor.capture());
+        assertThat(captor.getValue().toolParams()).containsEntry("analyticsEnabled", false);
     }
 
     @Test

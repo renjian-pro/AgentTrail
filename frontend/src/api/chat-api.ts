@@ -7,27 +7,25 @@ export type HistoryTurn = { id: number; question: string; answer: string; think:
 export type HistoryPage = { conversationId: string; page: number; size: number; hasMore: boolean; turns: HistoryTurn[] }
 export type ConversationSummary = { conversationId: string; title: string; lastActiveAtMillis: number }
 export type ConversationPage = { page: number; size: number; hasMore: boolean; sessions: ConversationSummary[] }
-const eventTypes = new Set<StreamEvent['type']>(['AgentStart', 'Thinking', 'Text', 'ToolStart', 'ToolEnd', 'TodoProgress', 'StageOutput', 'Error', 'Complete'])
+const eventTypes = new Set<StreamEvent['type']>(['RunStarted', 'ModelDelta', 'ThinkingDelta', 'ToolStarted', 'ToolCompleted', 'Paused', 'RunFailed', 'RunCompleted'])
 
+/**
+ * 后端每帧 data 是完整的 EventEnvelope（eventId/runId/conversationId/type/payload/...），
+ * 具体事件字段（content/toolName/...）另外 JSON 编码在 envelope.payload 里，需要二次解析。
+ */
 export function decodeStreamEvent(raw: string): StreamEvent | null {
   if (!raw.trim()) return null
-  const payload = JSON.parse(raw) as Record<string, unknown>
-  const type = String(payload.type ?? payload['@type'] ?? '')
-  if (eventTypes.has(type as StreamEvent['type'])) return { ...payload, type } as StreamEvent
-  const keys = Object.keys(payload)
-  return keys.length === 1 && eventTypes.has(keys[0] as StreamEvent['type'])
-    ? { ...(payload[keys[0]] as object), type: keys[0] } as StreamEvent : null
+  const envelope = JSON.parse(raw) as { type?: string; payload?: string }
+  const type = envelope.type
+  if (!type || !eventTypes.has(type as StreamEvent['type'])) return null
+  const fields = envelope.payload ? JSON.parse(envelope.payload) : {}
+  return { ...(fields as object), type } as StreamEvent
 }
 
-/** Spring 用 SSE 的 event 字段携带 sealed-interface 的具体变体，JSON 保持纯载荷。 */
 export function decodeSseFrame(frame: string): StreamEvent | null {
   const lines = frame.split(/\r?\n/)
-  const eventName = lines.find(line => line.startsWith('event:'))?.slice(6).trim()
-  const payload = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('')
-  const decoded = decodeStreamEvent(payload)
-  if (decoded) return decoded
-  if (!eventName || !payload) return null
-  return { ...(JSON.parse(payload) as object), type: eventName } as StreamEvent
+  const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('')
+  return decodeStreamEvent(data)
 }
 
 export async function* streamChat(body: ChatRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {

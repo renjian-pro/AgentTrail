@@ -3,6 +3,7 @@ package com.agenttrail.web.config;
 import java.util.Map;
 import com.agenttrail.web.service.RegisteredModel;
 import com.agenttrail.web.service.AgentLoopExecutorFactory;
+import com.agenttrail.web.service.ChatToolScopeRuntimeAdapter;
 import com.agenttrail.web.service.ConversationHistoryService;
 import com.agenttrail.web.controller.AgentLoopController;
 import com.agenttrail.web.service.CapabilityConversationService;
@@ -244,15 +245,20 @@ public class AgentLoopExecutorConfig {
         return new CapabilityConversationService(turnPersistenceHook, objectMapper);
     }
 
+    /**
+     * {@link ChatToolScopeRuntimeAdapter} 而不是固定装配好的 {@code LegacyAgentLoopExecutorAdapter}——
+     * 后者每个模型只在这里建一次，工具列表从此钉死，联网搜索开关和图表工具都没法按请求生效。
+     * 前者每次 {@code start()} 都按本次请求的 {@code webSearchEnabled} 现查
+     * {@link AgentLoopExecutorFactory#forModelWithCharts}（内部有缓存，不是真的重新建执行器），
+     * 图表工具始终无条件带上，和重构前 {@code AgentLoopController} 的行为对齐。
+     */
     @Bean
     public com.agenttrail.capability.chat.application.RuntimeProfileRegistry runtimeProfileRegistry(
             AgentLoopExecutorFactory executorFactory, AgentTaskManager agentTaskManager) {
         return new com.agenttrail.capability.chat.application.RuntimeProfileRegistry(
                 Map.of(
-                        "qwen-plus", new com.agenttrail.runtime.api.legacy.LegacyAgentLoopExecutorAdapter(
-                                executorFactory.forModel("qwen-plus"), agentTaskManager),
-                        "deepseek-chat", new com.agenttrail.runtime.api.legacy.LegacyAgentLoopExecutorAdapter(
-                                executorFactory.forModel("deepseek-chat"), agentTaskManager)),
+                        "qwen-plus", new ChatToolScopeRuntimeAdapter(executorFactory, "qwen-plus", agentTaskManager),
+                        "deepseek-chat", new ChatToolScopeRuntimeAdapter(executorFactory, "deepseek-chat", agentTaskManager)),
                 "qwen-plus", "deepseek-chat");
     }
 

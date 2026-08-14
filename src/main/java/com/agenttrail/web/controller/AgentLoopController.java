@@ -39,7 +39,8 @@ public class AgentLoopController {
     public Flux<ServerSentEvent<EventEnvelope>> chat(@Valid @RequestBody AgentChatRequest request) {
         try {
             return asSse(chatService.send(principal(), request.conversationId(), request.modelId(),
-                    request.message(), new ToolScope(request.webSearchEnabled(), true, java.util.Set.of())));
+                    request.message(), new ToolScope(request.webSearchEnabled(), true, java.util.Set.of()),
+                    request.mode()));
         } catch (IllegalStateException failure) {
             throw new ResponseStatusException(BAD_REQUEST, failure.getMessage(), failure);
         }

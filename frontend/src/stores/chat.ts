@@ -85,19 +85,19 @@ export const useChatStore = defineStore('chat', () => {
   /** 把聊天 SSE 的语义收敛在 store 里，ChatView 只负责驱动流式迭代和忙碌/错误态 UI。 */
   function applyStreamEvent(event: StreamEvent, assistant: ChatTurn, seedTitle: string): string | undefined {
     switch (event.type) {
-      case 'AgentStart':
+      case 'RunStarted':
         acceptConversation(event.conversationId, seedTitle)
         return undefined
-      case 'Text':
+      case 'ModelDelta':
         assistant.content += event.content
         return undefined
-      case 'Thinking':
+      case 'ThinkingDelta':
         assistant.think = (assistant.think ?? '') + event.content
         return undefined
-      case 'ToolStart':
+      case 'ToolStarted':
         assistant.tools?.push({ name: event.toolName, toolCallId: event.toolCallId, detail: event.arguments, argumentsText: event.arguments })
         return undefined
-      case 'ToolEnd': {
+      case 'ToolCompleted': {
         const tool = assistant.tools?.find(item => item.toolCallId === event.toolCallId)
         if (tool) {
           tool.result = event.result
@@ -105,12 +105,10 @@ export const useChatStore = defineStore('chat', () => {
         }
         return undefined
       }
-      case 'TodoProgress':
-        todos.value = event.items
-        return undefined
-      case 'Error':
+      case 'RunFailed':
         return event.message
-      default:
+      case 'Paused':
+      case 'RunCompleted':
         return undefined
     }
   }

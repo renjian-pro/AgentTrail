@@ -18,7 +18,12 @@ import { renderMarkdown } from '../utils/renderMarkdown'
 import { resolveDroppedFile } from '../utils/fileDrop'
 import { useChatStore, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
-/** 三种能力共用一个入口：默认发送走普通对话，先选中下面的模式再发送才会触发 Deep Research / PPT。 */
+/**
+ * 三种能力共用一个入口：默认发送走普通对话，先选中下面的模式再发送才会触发对应能力。
+ * research/ppt 各自另起一条同步创建任务 + 轮询的链路（见 runResearch/runPpt），提交后立即
+ * 解锁 busy；analytics 不脱离聊天的 SSE 流本身——只是随消息带上 mode:'analytics'，
+ * 让后端把这一轮切到数据分析执行器（见 send() 里的 streamChat 调用）。
+ */
 type Mode = 'research' | 'ppt' | 'analytics' | undefined
 
 const chat = useChatStore()
@@ -70,8 +75,12 @@ const modeLabel = computed(() => pendingMode.value === 'research' ? 'Deep Resear
 function toggleMode(mode: Mode) {
   pendingMode.value = pendingMode.value === mode ? undefined : mode
   // PPT 状态机和 DeepResearch 各自内部都无条件做自己的资料检索，都不接收/不使用这个开关——
-  // 勾着它在这两种模式下纯粹是摆设，还会让人以为真的多做了一次联网搜索。
-  if (pendingMode.value === 'ppt' || pendingMode.value === 'research') webSearch.value = false
+  // 勾着它在这两种模式下纯粹是摆设，还会让人以为真的多做了一次联网搜索。数据分析同理：
+  // forAnalytics 装配的执行器明确不挂联网搜索工具（DataAgent 不复用通用工具），开着这个
+  // 开关同样只是摆设。
+  if (pendingMode.value === 'ppt' || pendingMode.value === 'research' || pendingMode.value === 'analytics') {
+    webSearch.value = false
+  }
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -274,8 +283,8 @@ async function removeFile(fileId: number) {
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'research' }" @click="toggleMode('research')">⌕ 深度研究</button>
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'ppt' }" @click="toggleMode('ppt')">▣ 生成 PPT</button>
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'analytics' }" @click="toggleMode('analytics')">⌁ 数据分析</button>
-          <button type="button" :disabled="busy || pendingMode === 'ppt' || pendingMode === 'research'"
-              :title="pendingMode === 'ppt' || pendingMode === 'research' ? 'PPT 生成和深度研究都会自己做资料检索，这个开关对它们不生效' : ''"
+          <button type="button" :disabled="busy || pendingMode === 'ppt' || pendingMode === 'research' || pendingMode === 'analytics'"
+              :title="pendingMode === 'ppt' || pendingMode === 'research' ? 'PPT 生成和深度研究都会自己做资料检索，这个开关对它们不生效' : pendingMode === 'analytics' ? '数据分析不挂载联网搜索工具，这个开关对它不生效' : ''"
               :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         </div>
         <FileUploadWidget @upload="upload" />
