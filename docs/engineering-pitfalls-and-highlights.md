@@ -584,6 +584,79 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - **怎么解决**：Reactor 没有现成的"整个 Flux 生命周期内的绝对时钟，不随信号重置"的操作符——`Flux.timeout(Duration)` 系列全部是按信号重置的滚动窗口；`Flux.firstWithSignal`/`Mono.first` 只会在**第一个**信号到达时选定胜者并取消另一方，选定之后守卫就没了，对多元素流没用；`Flux.merge` 要等所有源都终止才整体终止，如果不显式取消提前完成的那一侧，反而会让本该成功的流被之后姗姗来迟的守卫错误地判成超时。最后选的做法是不跟 Reactor 操作符较劲，退回最朴素的命令式手段：`AgentLoopExecutor` 在注册 `Disposable subscription` 之后，另起一个不受这条 Flux 内部信号影响的独立定时器（`Mono.delay(roundTimeout).subscribe(...)`），到点只看一件事——`subscription.isDisposed()`。这个标志在订阅**正常完成、出错、或被取消**时都会自动变 true（不需要每条成功路径都记得去手动取消这个定时器），所以对提前完成的正常轮次，定时器到点一看已经结束，直接返回，不产生任何副作用；对真正卡住的轮次，到点还没 disposed，就强制 `dispose()` + 走和其它失败路径完全一样的收尾（`failRun`：落库、Hook、释放单飞锁、给前端一个 `Error` 事件）。这是 `LlmInvoker` 的 TTFT/idle 超时之上第三道独立防线，专门覆盖"有信号但从不真正完成"这类前两道防线设计时没有覆盖到的情况，8 分钟的量级留给 `ToolCallExecutor` 自己 5 分钟工具轮次超时的余量。
 - **验证**：`AgentLoopExecutorRoundTimeoutTest` 用 `Flux.concat(Mono.just(真实文本chunk), Flux.interval(20ms).map(→ 只带 usage 的空 chunk))` 精确复刻这次复现的信号模式——一个真的会让 `LlmInvoker` 的 idle 超时永远不触发的流（因为空 chunk 每 20ms 到一次，远快于 idle 窗口），验证新加的绝对超时确实在配置时长附近触发、且事后 `AgentTaskManager.hasRunningTask()` 变回 `false`（单飞锁被正确释放）；另一个测试验证正常快速完成的轮次不会被这道新防线误伤。
 
+## 十九点七、把 issue #23 图表链路真正部署到国内服务器上时才暴露的一串坑
+
+这一节的四条是同一次排查里连着挖出来的：表面症状是"点数据分析不出图"，往下挖依次是外部依赖拉不动、
+配置项的双重身份、两处缓存把降级状态焊死。共同点是**本地开发和单元测试都不会触发**——本地
+`npx mcp-echarts` 跑在宿主机上、依赖随手就能拉到、进程重启一次就把所有缓存清了。
+
+### 94. 两处"只缓存成功结果"的懒加载，都漏了"成功之后它还会再坏一次"
+
+- **坑**：mcp-echarts 容器重建之后，所有画图请求开始报 `Server does not recognize session ...` /
+  `MCP session with server terminated`，重启应用才好。修完这个，又发现另一半：mcp-echarts 起不来
+  期间点过一次"数据分析"，之后把 mcp-echarts 修好了，新会话里模型 `search_tools` 依然搜不到任何
+  绘图工具，同样要重启应用。
+- **根因**：两个缓存各错了一半，合起来正好把"降级状态"焊死。
+  ① `ChartToolProvider`/`TavilySearchToolProvider` 的 `toolCallbacks()` 是"懒建连 + 只缓存成功结果"
+  ——设计时想到的失败只有"初始化时连不上"（失败不缓存，下次重试），没想到"连上了、缓存了、
+  然后远端把这个会话丢了"，缓存里躺着的是一个绑定在已死会话上的客户端，永远不会再重建。
+  ② `AgentLoopExecutorFactory.forAnalytics()` 把 `toolCallbacks()` 的结果**烤进**它自己缓存的
+  执行器对象里，而且**无条件缓存**——紧挨着的 `forModel(webSearchEnabled)` 明确写了相反的做法
+  （"只缓存搜索工具真的挂上了的结果……让下一次请求有机会在 Tavily 恢复后重新拿到一个真正带搜索的
+  执行器"），`forAnalytics` 漏掉了这条规则。于是"mcp-echarts 当时没起来"这个瞬时状态被永久固化成
+  "这个模型的分析执行器没有图表工具"。
+- **两者是互补的，只修一个都不够**：只修 ① 没用——provider 重建出来的是**一批新的 callback 对象**，
+  早就被缓存住的执行器永远看不到；只修 ② 也没用——会话死掉时 provider 交出来的还是那个死客户端。
+- **怎么解决**：① 抽出 `loop/tools/mcp/McpToolSession` 给两个 provider 共用（顺带消掉两份几乎逐行
+  重复的代码），它对外交出的是**长期有效的代理** `ToolCallback`：工具定义（名字/描述）建连时抓一次，
+  实际调用时才去解析"当前活着的委托对象"，会话换了不用换代理对象——这样执行器缓存多久都无所谓，
+  正好绕开 ① 和 ② 互相掣肘的死结。会话失效（按异常链里的 `session with server terminated` /
+  `does not recognize session` 识别）时丢弃会话、重建、**只重试一次**，其它异常（参数非法、工具自己
+  报错）原样抛出——重连解决不了，吞掉只会掩盖真实错误。② `forAnalytics` 补上和 `forModel` 一样的
+  "降级结果不进缓存"。
+- **验证**：`McpToolSessionTest` 用一个"第一次调用抛会话已死、重建后正常"的假连接器，断言调用方拿到
+  正常结果且**恰好**重建了一次；另有用例覆盖普通失败不触发重连、重建后还是死则不再无限重试、
+  首次连不上返回空列表且不缓存该失败。
+
+### 95. `MINIO_ENDPOINT` 有双重身份：它既是上传地址，也是**返回给浏览器**的图片地址
+
+- **坑**：图表明明生成成功了（工具调用有返回值、MinIO 里也真存进去了），前端就是显示不出来，
+  Network 面板里图片请求全是 `(blocked:csp)`。
+- **根因**：mcp-echarts 用同一组 `MINIO_*` 环境变量既连 MinIO 上传、又拼接工具返回值里的图片 URL
+  （这个项目没有单独的"公网 URL"配置项）。按 compose 网络的常规写法填了服务名 `minio:9000`，
+  上传完全正常——但这个地址被原样写进返回给前端的 URL 里，浏览器既解析不了 `minio` 这个主机名，
+  它也和页面不同源，先被应用自己的 CSP（`img-src 'self'`）拦下。**"容器之间怎么互相访问"和
+  "浏览器怎么访问"是两个不同的问题，一个配置项同时承担这两个角色时，必须按后者填。**
+- **怎么解决**：Caddy 上加一条 `/agenttrail-charts/*` → `minio:9000` 的反代（MinIO 自身仍只绑
+  `127.0.0.1`，不对公网开端口），bucket 用 `mc anonymous set download` 设成匿名只读（写操作仍要
+  签名，安全边界在 MinIO 的鉴权而不是这条路由），`MINIO_ENDPOINT` 改成走这条公网路径的域名/IP。
+  图片地址因此和前端同源，`img-src 'self'` 顺带也不再拦。
+- **排查时踩的次生坑**：验证路由时用 `curl -o /dev/null -w "%{http_code}"` 看到 200 就以为通了——
+  其实拿到的是前端 SPA 的 `index.html`（catch-all 路由兜底也返回 200）。**验证反向代理必须看
+  `Content-Type` 而不是状态码**（`curl -I` 看到 `content-type: image/png` 才算数）。同一次排查里
+  还有：改完 `Caddyfile` 忘了重启 Caddy——文件是挂载进去的，`cat` 出来是新的，但 Caddy 只在启动时
+  读一次，内存里跑的还是旧配置（日志里最后一次 `serving initial configuration` 的时间戳能戳穿这点）；
+  以及 `docker compose restart` 只重启进程、**不会应用 compose 文件里改过的环境变量**，必须
+  `up -d --force-recreate`（`docker exec <容器> env` 是唯一可靠的确认方式）。
+
+### 96. 国内服务器的外部依赖：ACR 镜像加速器"只覆盖特定范围"，npm 源也一样要换
+
+- **坑**：给 compose 加了个 `image: node:20-alpine` 的 mcp-echarts 服务，服务器上 `docker compose up`
+  直接 `context deadline exceeded` / `connection refused`。配好阿里云镜像加速器之后**仍然**拉不动。
+- **根因**：项目里 mysql/postgres/redis/minio 早就因为同样的原因走了"GitHub Actions 转推到 ACR"的路子
+  （CI 里的 `Mirror base images to ACR` 步骤），注释里写得很清楚"ACR 的镜像加速器只覆盖特定范围的镜像"。
+  加新服务时顺手写了 Docker Hub 原始镜像名，等于把这条已经踩过并解决过的坑又踩了一遍。
+- **第二层**：镜像拉下来之后容器还是起不来——`npx -y mcp-echarts` 每次冷启动都要连
+  `registry.npmjs.org` 下载包，`ECONNRESET`/`ETIMEDOUT`。**"把服务容器化"只解决了镜像分发，
+  没解决容器启动时自己去外网拉东西**，同一个网络问题换个协议又来一次。
+- **怎么解决**：镜像走 CI 转推 ACR（`node:20-alpine` 加进 `Mirror base images to ACR` 的列表）；
+  npm 走 `npm_config_registry: https://registry.npmmirror.com`。更彻底的做法是把 mcp-echarts 直接
+  构建成预装好依赖的镜像推到 ACR，连启动时装包这一步都省掉——目前先用镜像源顶着。
+- **另一个附带教训**：ACR 的登录凭据有有效期，服务器上手动 `docker compose pull` 报
+  `pull access denied ... repository does not exist or may require 'docker login'` 时，先怀疑登录过期
+  （CI 部署脚本每次都会重新 `docker login`，所以自动部署正常、手动操作报错），不要一上来就怀疑
+  仓库路径写错或者镜像没推上去。
+
 ## 二十、Java 八股文关联索引（反向查表：面试考点 → 项目里的具体场景）
 
 按标准 Java 面试八股分类整理，每个考点后面跟着能支撑它的踩坑点编号 + 一句"这道题在项目里对应哪个场景"的桥接语。面试被问到某个八股知识点时，直接从这张表找对应编号展开，而不是从头背定义——这张表是"从场景讲起"这套叙事方法论的索引层，和 `interview-narrative.md` 的三条主线互补（那边是按故事线组织，这里是按考点组织，两种导航方式）。
@@ -646,7 +719,8 @@ return List.of(new ChatCompletionMessage(text, Role.ASSISTANT, null, null,
 - （补充）**日志脱敏方案选型**：误报率（全文扫描误伤正常内容）vs 漏报率的权衡
 - （补充）**子进程环境变量隔离**：#89——`ProcessBuilder` 默认继承 JVM 进程的全部环境变量，对外暴露"能执行任意命令"的工具（Bash）如果不显式收紧，`env`/`set` 就是一条不需要额外权限的凭据泄露路径，"默认拒绝、显式放行"原则的具体案例
 
-### 缓存（本项目主线暂未涉及，全部为补充素材）
+### 缓存
+- **缓存失效策略：只想到"什么时候填"，没想到"什么时候作废"**：#94——两处"只缓存成功结果"的懒加载，一处缓存了绑定在已死远端会话上的客户端，一处把"依赖当时不可用"这个瞬时状态固化成永久降级；配合"缓存对象被上层再次缓存"（执行器把工具列表烤进自己），只修一层根本不够。能扣回"缓存一致性"和"降级状态不能被缓存"两个更大的话题
 - （补充）**缓存三大问题的准确定义**：#67——源码注释把"缓存空值防穿透"写成"防击穿"，空值缓存不设 TTL 会永久挡住后续真实写入
 
 ---

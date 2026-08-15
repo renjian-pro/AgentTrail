@@ -17,5 +17,12 @@
 	@actuator path /actuator /actuator/*
 	respond @actuator 404
 
+	# mcp-echarts/PPT 配图返回的图片 URL 要浏览器能直接打开，但 MinIO 只绑了
+	# 127.0.0.1:9000（见 docker-compose.prod.yml），不对公网暴露。这里代理一条公网路径到
+	# 内部 MinIO——bucket 本身要单独设成匿名只读（部署时手动跑一次 mc anonymous set download），
+	# 写操作仍然要 access key 签名，匿名请求写不进去，安全边界在 MinIO 自己的鉴权，不在这条路由。
+	@charts path /agenttrail-charts/*
+	reverse_proxy @charts minio:9000
+
 	reverse_proxy app:8080
 }

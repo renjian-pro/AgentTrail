@@ -290,7 +290,15 @@ public class AgentLoopExecutorFactory {
                 .maxConsecutiveToolFailures(3)
                 .runtimeProfile(runtimeProfile(contextPolicy, catalog))
                 .build();
-        analyticsExecutorsByModelId.put(resolvedId, executor);
+        // 只缓存"图表工具真的挂上了"的结果，和下面 forModel(webSearchEnabled) 是同一条规则：
+        // mcp-echarts 本次连不上时构造出来的是个没有图表工具的降级执行器，把它缓存下来会让
+        // mcp-echarts 恢复之后的所有分析会话继续用这个残缺执行器，直到应用重启为止——
+        // 真实踩过：mcp-echarts 起不来期间点了一次"数据分析"，之后修好了服务，新会话里
+        // search_tools 依然搜不到任何绘图工具。chartToolProvider 为 null 是"压根没配图表能力"，
+        // 那是稳定状态，正常缓存，否则会变成每次请求都重建执行器。
+        if (chartToolProvider == null || !residentTools.isEmpty()) {
+            analyticsExecutorsByModelId.put(resolvedId, executor);
+        }
         return executor;
     }
 

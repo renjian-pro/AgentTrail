@@ -1,5 +1,6 @@
 package com.agenttrail.loop.tools.websearch;
 
+import com.agenttrail.loop.tools.mcp.McpToolSession;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
@@ -21,64 +22,36 @@ import java.util.List;
  * 挂不挂这个工具"，工具列表里压根不会出现它，不是靠 prompt 让模型"知道搜索用不了"。
  * 只有初始化*成功*的结果会被缓存复用；失败不缓存，下一次调用会重新尝试
  * （给瞬时网络问题恢复的机会，不会因为启动时抖动一次就整个进程生命周期都不可用）。
+ * 这套机制连同"会话被服务端丢弃后自动重建"统一放在 {@link McpToolSession} 里，
+ * 和图表工具 {@code chart.ChartToolProvider} 共用同一份实现。
  */
 public class TavilySearchToolProvider {
 
     private static final Logger log = LoggerFactory.getLogger(TavilySearchToolProvider.class);
 
-    private final String mcpUrl;
     private final String apiKey;
-    private final Duration timeout;
-    private final int maxAttempts;
     private final WebSearchResultParser resultParser;
-
-    private final Object initLock = new Object();
-    private volatile List<ToolCallback> cachedToolCallbacks;
+    private final McpToolSession session;
 
     public TavilySearchToolProvider(String mcpUrl, String apiKey, Duration timeout, int maxAttempts,
             WebSearchResultParser resultParser) {
-        this.mcpUrl = mcpUrl;
         this.apiKey = apiKey;
-        this.timeout = timeout;
-        this.maxAttempts = maxAttempts;
         this.resultParser = resultParser;
+        this.session = new McpToolSession("Tavily", () -> connect(mcpUrl, apiKey, timeout), maxAttempts);
     }
 
     /** 懒加载 + 只缓存成功结果；key 未配置或初始化失败时返回空列表。 */
     public List<ToolCallback> toolCallbacks() {
-        List<ToolCallback> cached = cachedToolCallbacks;
-        if (cached != null) {
-            return cached;
-        }
-        synchronized (initLock) {
-            if (cachedToolCallbacks != null) {
-                return cachedToolCallbacks;
-            }
-            List<ToolCallback> initialized = initializeWithRetry();
-            if (!initialized.isEmpty()) {
-                cachedToolCallbacks = initialized;
-            }
-            return initialized;
-        }
-    }
-
-    private List<ToolCallback> initializeWithRetry() {
         if (apiKey == null || apiKey.isBlank()) {
             log.warn("TAVILY_API_KEY 未配置，联网搜索工具本次对话不可用");
             return List.of();
         }
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                return buildToolCallbacks();
-            } catch (Exception failure) {
-                log.warn("Tavily MCP 客户端初始化失败（第 {}/{} 次）：{}", attempt, maxAttempts, failure.getMessage());
-            }
-        }
-        log.warn("Tavily MCP 客户端连续 {} 次初始化失败，联网搜索工具本次对话不可用", maxAttempts);
-        return List.of();
+        return session.toolCallbacks().stream()
+                .map(tool -> (ToolCallback) new WebSearchToolCallback(tool, resultParser))
+                .toList();
     }
 
-    private List<ToolCallback> buildToolCallbacks() {
+    private static List<ToolCallback> connect(String mcpUrl, String apiKey, Duration timeout) {
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .header("Authorization", "Bearer " + apiKey);
         HttpClientStreamableHttpTransport transport = HttpClientStreamableHttpTransport.builder(mcpUrl)
@@ -95,8 +68,6 @@ public class TavilySearchToolProvider {
         SyncMcpToolCallbackProvider provider = SyncMcpToolCallbackProvider.builder()
                 .mcpClients(List.of(client))
                 .build();
-        return List.of(provider.getToolCallbacks()).stream()
-                .map(callback -> (ToolCallback) new WebSearchToolCallback(callback, resultParser))
-                .toList();
+        return List.of(provider.getToolCallbacks());
     }
 }

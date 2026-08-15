@@ -508,6 +508,13 @@ button { cursor: pointer; }
 .sql-result-table th, .sql-result-table td { max-width: 220px; padding: 6px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sql-result-table th { color: var(--text); }
 .sql-result-table td.is-masked { color: var(--faint); background: rgba(128, 128, 128, .08); }
+.chart-tool-card { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--surface-soft); font-size: 11px; }
+.chart-tool-card summary { display: flex; align-items: center; gap: 7px; padding: 8px 10px; cursor: pointer; list-style: none; }
+.chart-tool-card summary small { margin-left: auto; color: var(--faint); }
+.chart-tool-body { padding: 0 10px 10px; }
+.chart-image { display: block; width: 100%; max-width: 560px; height: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); }
+.chart-open { display: inline-block; margin-top: 7px; color: var(--muted); }
+.chart-fallback, .chart-pending { margin: 0; color: var(--muted); line-height: 1.5; word-break: break-all; }
 
 @media (max-width: 760px) {
   .analytics-page { width: min(100% - 24px, 920px); padding-top: 28px; }

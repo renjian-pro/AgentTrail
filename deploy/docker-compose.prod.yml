@@ -113,9 +113,18 @@ services:
     restart: unless-stopped
     command: ["npx", "-y", "mcp-echarts", "-t", "streamable"]
     environment:
-      MINIO_ENDPOINT: minio
-      MINIO_PORT: "9000"
-      MINIO_USE_SSL: "false"
+      # npx 每次冷启动都要连 registry.npmjs.org 下载这个包，国内服务器直连不通
+      # （ECONNRESET/ETIMEDOUT，跟 Docker Hub 是同一类问题）。换成国内镜像源。
+      npm_config_registry: "https://registry.npmmirror.com"
+      # 这里同时是 mcp-echarts 自己上传图表用的连接地址，也是它写进工具返回值里给浏览器用的
+      # 图片 URL 来源（这个项目没有单独的"公网 URL"配置项，两者共用同一个值）——不能填内部
+      # 服务名 minio，浏览器解析不了；改成走 Caddy 代理的公网地址+证书（见 Caddyfile 里
+      # /agenttrail-charts/* 那条路由）。自签证书，mcp-echarts 默认不信任，用
+      # NODE_TLS_REJECT_UNAUTHORIZED=0 关掉校验（裸 IP + 自签证书部署下的已知取舍）。
+      MINIO_ENDPOINT: "47.94.147.31"
+      MINIO_PORT: "443"
+      MINIO_USE_SSL: "true"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET_NAME: agenttrail-charts

@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import AttachedFileList from '../components/AttachedFileList.vue'
+import ChartToolCard from '../components/ChartToolCard.vue'
 import CollapsibleChip from '../components/CollapsibleChip.vue'
 import SqlToolCard from '../components/SqlToolCard.vue'
 import FileUploadWidget from '../components/FileUploadWidget.vue'
@@ -15,6 +16,7 @@ import { toErrorMessage } from '../api/http'
 import { pptApi, type PptTask } from '../api/ppt-api'
 import { researchApi, type ResearchTask } from '../api/research-api'
 import { renderMarkdown } from '../utils/renderMarkdown'
+import { chartImageUrl } from '../utils/chartResult'
 import { resolveDroppedFile } from '../utils/fileDrop'
 import { useChatStore, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
@@ -266,6 +268,8 @@ async function removeFile(fileId: number) {
             <CollapsibleChip v-if="message.think" label="Thought" :content="message.think" />
             <template v-for="tool in message.tools" :key="tool.toolCallId">
               <SqlToolCard v-if="tool.name === 'execute_sql' || tool.name === 'validate_sql'" :name="tool.name" :arguments-text="tool.argumentsText" :result="tool.result" />
+              <!-- 图表工具按结果形状认，不按工具名：mcp-echarts 动态挂着十几个工具名（见 chartResult.ts）。 -->
+              <ChartToolCard v-else-if="chartImageUrl(tool.result)" :name="tool.name" :arguments-text="tool.argumentsText" :result="tool.result" />
               <CollapsibleChip v-else :label="toolLabel(tool.name)" :content="tool.detail" />
             </template>
           </div>
