@@ -9,18 +9,41 @@ services:
     image: ${REGISTRY_URL}/agenttrail/agenttrail:${IMAGE_TAG:-latest}
     container_name: agenttrail-app
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # 不再发布 8080 到宿主机——8080 之前直接裸露公网，扫描器能打到明文 HTTP 端口，
+    # /actuator/prometheus 也因此对外无鉴权可读。现在只能通过下面的 caddy 服务转发，
+    # 外部一律走 443 + TLS；同一 compose 网络内的 mysql/postgres/redis/minio 仍按容器名互通。
     environment:
       SPRING_PROFILES_ACTIVE: docker
     volumes:
       - ./application-local.yml:/app/application-local.yml:ro
       - ./skills:/app/skills
+    networks:
+      - default
+      # 额外挂到这个具名网络上，是为了让 ../docker-compose.yml 里独立跑的 Prometheus
+      # 容器能跨 compose 项目用容器名 app:8080 直接抓 /actuator/prometheus（见该文件里
+      # prometheus 服务的注释），不用再依赖已经去掉的宿主机端口映射。
+      - agenttrail-net
     depends_on:
       - mysql
       - postgres
       - redis
       - minio
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: agenttrail-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
 
   mysql:
     # 国内服务器直连 Docker Hub 拉官方镜像经常超时，这几个基础镜像走 CI 转推到 ACR 的那份，
@@ -77,8 +100,40 @@ services:
     volumes:
       - minio-data:/data
 
+  # 独立的图表生成 MCP 服务（npm 包 mcp-echarts，不是这个仓库的代码，也不是 app 进程的子进程——
+  # 见 ChartToolProvider.java 顶部注释）。app 容器里配置的 agenttrail.mcp-echarts.url 必须用这里的
+  # 服务名 mcp-echarts，不能用 localhost：localhost 在 app 容器里指向 app 自己，不是这个服务。
+  # npx -y 每次冷启动都要从 npm 源下载包，国内网络可能慢/不稳；如果启动经常超时，
+  # 参考 mysql/postgres 等镜像的做法，把这个服务也做成预构建镜像走 ACR，而不是每次现拉。
+  mcp-echarts:
+    # 和 mysql/postgres/redis/minio 一样，走 ACR 转推的那份，不直连 Docker Hub
+    # （见 ci.yml "Mirror base images to ACR" 步骤——ACR 镜像加速器不覆盖这个镜像）。
+    image: ${REGISTRY_URL}/agenttrail/node:20-alpine
+    container_name: agenttrail-mcp-echarts
+    restart: unless-stopped
+    command: ["npx", "-y", "mcp-echarts", "-t", "streamable"]
+    environment:
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_NAME: agenttrail-charts
+    depends_on:
+      - minio
+
 volumes:
   mysql-data:
   postgres-data:
   redis-data:
   minio-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  default:
+  agenttrail-net:
+    # 起个固定名字，让 ../docker-compose.yml 能以 external:true 引用到这同一张网络。
+    # 这个栈（app 所在的栈）负责创建它，所以本机首次部署要先起这个 compose 项目，
+    # 观测栈（../docker-compose.yml）要晚于它启动，否则 external 网络还不存在会报错。
+    name: agenttrail-net

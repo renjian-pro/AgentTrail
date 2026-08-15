@@ -38,6 +38,11 @@ agenttrail:
     endpoint: "http://minio:9000"
     access-key: ""   # 与 .env 里的 MINIO_ROOT_USER 保持一致
     secret-key: ""   # 与 .env 里的 MINIO_ROOT_PASSWORD 保持一致
+  mcp-echarts:
+    # 代码里的默认值是 http://localhost:3033/mcp，是给本机开发用的（npx mcp-echarts -t streamable
+    # 直接跑在宿主机上）。生产环境 mcp-echarts 是 docker-compose.prod.yml 里独立的容器，
+    # app 容器要用服务名 mcp-echarts 才能连到，localhost 在 app 容器里指向 app 自己。
+    url: "http://mcp-echarts:3033/mcp"
   redis:
     # 跨实例任务锁（Redisson）单独一套地址配置，和上面 spring.data.redis 是两个不同的客户端，
     # 都要指向同一个 redis 容器；地址里内嵌密码是 Redisson 的写法（spring.data.redis 密码是独立字段）。

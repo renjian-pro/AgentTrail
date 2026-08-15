@@ -1,0 +1,21 @@
+# 国内云主机（这台在 cn-beijing）对 80/443 端口的域名访问会做 ICP 备案拦截——试过
+# sslip.io 域名走 Let's Encrypt HTTP-01，ACME 挑战请求直接被网络边缘 403 拦下，Caddy
+# 根本收不到（见根因排查记录）。备案流程要等 20 天，等不了，改成裸 IP + 自签证书：
+# 裸 IP 不算"域名"，不触发备案检查。SITE_DOMAIN 留在 .env 里没关系，这里不用它了。
+#
+# 裸 IP 访问不带 SNI（SNI 是给域名用的），Caddy 靠 SNI 选证书，没有 SNI 就没法决定发哪张，
+# 直接 TLS alert 断连——用 default_sni 显式告诉它没 SNI 时按这台服务器的证书处理。
+{
+	default_sni 47.94.147.31
+}
+
+47.94.147.31 {
+	tls internal
+
+	# /actuator/** 不转发出去：管理端点（health/info/prometheus）只留给同一 compose
+	# 网络内部的 Prometheus 用容器名 app:8080 直接抓取，外网访问一律 404，见根因排查记录。
+	@actuator path /actuator /actuator/*
+	respond @actuator 404
+
+	reverse_proxy app:8080
+}

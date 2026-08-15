@@ -6,8 +6,14 @@ services:
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # app 的 8080 不再发布到宿主机（见 deploy/docker-compose.prod.yml 的改动），原来靠
+    # host.docker.internal 抓取的路子走不通了。改成加入 app 那个栈创建的 agenttrail-net，
+    # 用容器名 app:8080 直接抓——同时保留 default，好让 grafana 仍能按服务名连到这里。
+    # 要求 deploy/docker-compose.prod.yml 先起过一次（agenttrail-net 由它创建），这个
+    # 观测栈才能启动，否则 external network 找不到会报错。
+    networks:
+      - default
+      - agenttrail-net
 
   grafana:
     image: grafana/grafana:12.1.0
@@ -87,3 +93,8 @@ volumes:
   langfuse-db-data:
   langfuse-clickhouse-data:
   langfuse-minio-data:
+
+networks:
+  default:
+  agenttrail-net:
+    external: true

@@ -9,4 +9,6 @@ scrape_configs:
   - job_name: agenttrail
     metrics_path: /actuator/prometheus
     static_configs:
-      - targets: ["host.docker.internal:8080"]
+      # app 的 8080 不再发布到宿主机，改用跨 compose 项目共享的 agenttrail-net，
+      # 直接按容器名抓取（见本仓库根目录 docker-compose.yml 里 prometheus 服务的注释）。
+      - targets: ["app:8080"]

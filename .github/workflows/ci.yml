@@ -111,7 +111,7 @@ jobs:
         if: ${{ env.REGISTRY_USERNAME != '' && github.event_name == 'workflow_dispatch' }}
         run: |
           set -e
-          for pair in "mysql:8.4" "pgvector/pgvector:pg16" "redis:7-alpine" "minio/minio:latest"; do
+          for pair in "mysql:8.4" "pgvector/pgvector:pg16" "redis:7-alpine" "minio/minio:latest" "node:20-alpine"; do
             src="$pair"
             name="$(basename "${pair%%:*}")"
             tag="${pair##*:}"
