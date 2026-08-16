@@ -50,6 +50,8 @@ const uploadBusy = ref(false)
 const uploadError = ref('')
 const composerDragging = ref(false)
 const initialMessage = ref('')
+/** 点了任务按钮但输入框是空的时候，告诉用户缺的是什么；发出任何一条消息就清掉。 */
+const taskHint = ref('')
 /** 任务按钮要取走输入框里的当前内容，见 runTask —— 输入状态仍归 MessageInput 自己持有。 */
 const composer = ref<InstanceType<typeof MessageInput>>()
 let aborter: AbortController | undefined
@@ -90,14 +92,23 @@ const webSearchHint = computed(() =>
 
 /**
  * 任务层：点一下就带着当前输入发起，不进入任何"选中"状态，也不影响会话的 Agent 和工具集。
- * 输入为空或正忙时 take() 返回 undefined，什么都不做——不弹错误，按钮本身就是不可用的语义。
+ *
+ * <p>输入为空时**不能静默返回**——按钮亮着、可点、点了没反应，用户唯一能得出的结论是
+ * "这按钮坏了"，不会想到"哦原来要先打字"。这里把光标送回输入框并说清楚缺什么。
  *
  * <p>PPT 状态机和 DeepResearch 各自内部都无条件做自己的资料检索，不接收联网搜索开关，
  * 所以这里也不需要像以前那样把它关掉——开关只作用于普通对话，两者已经不在同一个语义层上了。
  */
 function runTask(kind: 'research' | 'ppt') {
   const message = composer.value?.take()
-  if (!message) return
+  if (!message) {
+    taskHint.value = kind === 'research'
+      ? '先写下要研究的问题，再点「深度研究」'
+      : '先写下要做成 PPT 的主题，再点「生成 PPT」'
+    composer.value?.focus()
+    return
+  }
+  taskHint.value = ''
   if (kind === 'research') void runResearch(message)
   else void runPpt(message)
 }
@@ -132,6 +143,7 @@ async function send(message: string) {
   // 导致用户追问时静默掉回普通对话（issue #92）。
   const mode = agentKind.value === 'analytics' ? 'analytics' : undefined
   error.value = ''
+  taskHint.value = ''
   busy.value = true
   messages.value.push({ kind: 'chat', role: 'user', content: message })
   // 卡片插在提问之后、回答之前：这条会话本来就没有数据库工具，等模型答完再提示就晚了——
@@ -318,17 +330,33 @@ async function removeFile(fileId: number) {
     <div class="chat-bottom" :class="{ dragging: composerDragging }"
         @dragover.prevent="composerDragging = true" @dragleave="composerDragging = false" @drop.prevent="onComposerDrop">
       <AttachedFileList :files="files" :busy="uploadBusy" :error="uploadError" @remove="removeFile" />
+      <!--
+        四颗按钮同一排、同样的分量：它们都是"这条消息怎么处理"。此前任务按钮（深度研究/生成 PPT）
+        被 `margin-right: auto` 顶到最左，和右边的联网搜索/添加文件分成遥遥相望的两堆，而顶部
+        还有一排长得一模一样的能力按钮——屏幕上于是有两组外观相同、作用域完全不同的按钮
+        （一组定会话身份、一组发起一次性任务），没有任何视觉线索能区分。现在身份只在头部、
+        动作只在输入框上方，位置本身就是那条线索。
+      -->
       <div class="capability-bar">
-        <div class="task-actions">
-          <button type="button" :disabled="busy" @click="runTask('research')">⌕ 深度研究</button>
-          <button type="button" :disabled="busy" @click="runTask('ppt')">▣ 生成 PPT</button>
-        </div>
+        <FileUploadWidget @upload="upload" />
         <div class="toggles">
           <button type="button" :disabled="webSearchDisabled" :title="webSearchHint"
               :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         </div>
-        <FileUploadWidget @upload="upload" />
+        <div class="composer-tasks">
+          <button type="button" :disabled="busy" @click="runTask('research')">⌕ 深度研究</button>
+          <button type="button" :disabled="busy" @click="runTask('ppt')">▣ 生成 PPT</button>
+        </div>
+        <!-- 灰字说明统一放到这一排的末尾，不夹在按钮中间——那一排的意思就是"这些是同一类东西"，
+             中间插一句说明会把它从视觉上切成两段。 -->
+        <span class="bar-notes">
+          <!-- 禁用理由必须看得见：原来只写在 title 里，触屏设备根本没有 hover，
+               用户只看到一颗点不动的按钮，不知道是坏了还是不该用。 -->
+          <span v-if="webSearchDisabled">{{ webSearchHint }}</span>
+          <span v-else>也可拖放文件</span>
+        </span>
       </div>
+      <p v-if="taskHint" class="task-hint">{{ taskHint }}</p>
       <MessageInput ref="composer" :busy="busy" :initial-value="initialMessage" @send="send" />
       <div class="controls">
         <span>当前模型</span>

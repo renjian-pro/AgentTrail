@@ -29,12 +29,19 @@ function take(): string | undefined {
   return value
 }
 
-defineExpose({ take })
+/** 让调用方能在"点了任务按钮但还没写内容"时把光标送回输入框，而不是只弹一句提示。 */
+function focus() {
+  textarea.value?.focus()
+}
+
+const textarea = ref<HTMLTextAreaElement>()
+
+defineExpose({ take, focus })
 </script>
 
 <template>
   <form class="composer" @submit.prevent="submit">
-    <textarea v-model="message" rows="2" placeholder="今天想完成什么？输入你的问题或任务…" aria-label="消息" @keydown.enter.exact.prevent="submit" />
+    <textarea ref="textarea" v-model="message" rows="2" placeholder="今天想完成什么？输入你的问题或任务…" aria-label="消息" @keydown.enter.exact.prevent="submit" />
     <button :disabled="busy" :aria-label="busy ? '正在生成' : '发送消息'">{{ busy ? '…' : '↑' }}</button>
   </form>
 </template>

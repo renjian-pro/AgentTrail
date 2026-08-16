@@ -100,13 +100,13 @@ describe('ChatView', () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
     await wrapper.find('textarea').setValue('生成战略汇报')
-    await wrapper.findAll('.task-actions button')[1].trigger('click')
+    await wrapper.findAll('.composer-tasks button')[1].trigger('click')
     await flushPromises()
 
     expect(pptApi.create).toHaveBeenCalledWith(expect.any(String), '生成战略汇报')
     expect(wrapper.text()).toContain('正在渲染')
     // 任务是动作不是模式：按钮没有选中态，点完也不该在界面上留下"下一条消息将使用 XX"这类残留
-    expect(wrapper.findAll('.task-actions button.active')).toHaveLength(0)
+    expect(wrapper.findAll('.composer-tasks button.active')).toHaveLength(0)
     expect(wrapper.find('.mode-hint').exists()).toBe(false)
 
     await wrapper.find('textarea').setValue('这条应该走普通对话')
@@ -157,7 +157,7 @@ describe('ChatView', () => {
 
     await wrapper.findAll('.agent-option')[1].trigger('click')
     await wrapper.find('textarea').setValue('把刚才的结论做成 PPT')
-    await wrapper.findAll('.task-actions button')[1].trigger('click')
+    await wrapper.findAll('.composer-tasks button')[1].trigger('click')
     await flushPromises()
 
     expect(pptApi.create).toHaveBeenCalled()
@@ -207,17 +207,47 @@ describe('ChatView', () => {
     expect(wrapper.find('.switch-hint').exists()).toBe(false)
   })
 
-  /** 输入为空时点任务按钮什么都不发生——按钮本身就是"带着当前输入去做一件事"的语义。 */
-  it('ignores a task button pressed with an empty composer', async () => {
+  /**
+   * 输入为空时点任务按钮不发起任务，但**必须说清楚为什么**。
+   *
+   * <p>回归测试：这里原来是静默 return——按钮亮着、可点、点了毫无反应，用户唯一能得出的结论
+   * 是"这按钮坏了"，不会想到"原来要先打字"。
+   */
+  it('explains what is missing when a task button is pressed with an empty composer', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.task-actions button')[0].trigger('click')
+    await wrapper.findAll('.composer-tasks button')[0].trigger('click')
     await flushPromises()
 
     expect(researchApi.run).not.toHaveBeenCalled()
+    expect(wrapper.get('.task-hint').text()).toContain('深度研究')
+
+    // 真正写了内容再点，提示要让位给任务本身
+    vi.mocked(researchApi.run).mockResolvedValue({
+      taskId: 7,
+      status: 'SUCCESS',
+      report: {
+        needsClarification: false,
+        clarifyingQuestion: null,
+        researchTopic: '行业现状',
+        taskResults: [],
+        report: '结论'
+      },
+      errorMsg: null
+    })
+    await wrapper.find('textarea').setValue('查一下行业现状')
+    await wrapper.findAll('.composer-tasks button')[0].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.task-hint').exists()).toBe(false)
   })
 
-  /** 首条消息发出即锁定：选择器消失、原地换成只读标识 + 「基于此会话新建」出口。 */
+  /**
+   * 首条消息发出即锁定：选择器消失、原地换成只读标识 + 一个「换一个」出口。
+   *
+   * <p>锁定的**理由**是按需展开的，不是常驻文案——此前顶部常年挂着一句「发出第一条消息后即锁定」，
+   * 赶在用户什么都还没做的时候讲我们的实现约束，第一眼读到的就是一句看不懂的警告。
+   */
   it('locks the agent once the first message is sent', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
@@ -231,6 +261,11 @@ describe('ChatView', () => {
     expect(wrapper.findAll('.agent-option')).toHaveLength(0)
     expect(wrapper.find('.agent-current').text()).toContain('数据分析')
     expect(wrapper.find('.agent-fork').exists()).toBe(true)
+    // 理由默认不占版面，点了「换一个」才出现，并且给出一个带着当前对话走的出口
+    expect(wrapper.find('.agent-explain').exists()).toBe(false)
+    await wrapper.find('.agent-fork').trigger('click')
+    expect(wrapper.get('.agent-explain').text()).toContain('新开一个会话')
+    expect(wrapper.find('.agent-explain button').exists()).toBe(true)
   })
 
   it('renders the Deep Research clarification card inline instead of dumping raw JSON', async () => {
@@ -251,7 +286,7 @@ describe('ChatView', () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
     await wrapper.find('textarea').setValue('帮我研究 AI')
-    await wrapper.findAll('.task-actions button')[0].trigger('click')
+    await wrapper.findAll('.composer-tasks button')[0].trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('你希望研究哪个行业？')
@@ -270,13 +305,13 @@ describe('ChatView', () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
     await wrapper.find('textarea').setValue('研究 Java 工程师就业趋势')
-    await wrapper.findAll('.task-actions button')[0].trigger('click')
+    await wrapper.findAll('.composer-tasks button')[0].trigger('click')
     await flushPromises()
 
     expect(wrapper.get('.research-question').text()).toContain('研究 Java 工程师就业趋势')
     expect(wrapper.get('.research-loading').text()).toContain('深度研究进行中')
     // 提交已经完成（拿到了 taskId），不该继续锁住工具栏——报告还在后台轮询，界面不该跟着卡死。
-    expect(wrapper.findAll('.task-actions button').every(button => button.attributes('disabled') === undefined)).toBe(true)
+    expect(wrapper.findAll('.composer-tasks button').every(button => button.attributes('disabled') === undefined)).toBe(true)
     expect(wrapper.find('.stop').exists()).toBe(false)
     expect(researchApi.run).toHaveBeenCalledWith(expect.any(String), '研究 Java 工程师就业趋势')
     expect(researchApi.status).toHaveBeenCalledWith(7)
