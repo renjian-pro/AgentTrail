@@ -3,6 +3,7 @@ package com.agenttrail.web.controller;
 import cn.dev33.satoken.stp.StpUtil;
 import com.agenttrail.capability.deepresearch.DeepResearchReport;
 import com.agenttrail.capability.deepresearch.DeepResearchService;
+import com.agenttrail.conversation.digest.ConversationDigestService;
 import com.agenttrail.capability.deepresearch.DeepResearchTaskWorker;
 import com.agenttrail.capability.deepresearch.InMemoryResearchArtifactStore;
 import com.agenttrail.capability.deepresearch.DeepResearchWorkflow;
@@ -43,14 +44,29 @@ import java.util.concurrent.atomic.AtomicLong;
 public class DeepResearchController {
     private final DeepResearchTaskWorker worker;
     private final CapabilityConversationService conversationService;
+    private final ConversationDigestService digestService;
     private final AtomicLong publicIds = new AtomicLong();
     private final Map<Long, Handle> handles = new ConcurrentHashMap<>();
 
     @Autowired
     public DeepResearchController(DeepResearchTaskWorker worker,
-            CapabilityConversationService conversationService) {
+            CapabilityConversationService conversationService,
+            ConversationDigestService digestService) {
         this.worker = worker;
         this.conversationService = conversationService;
+        this.digestService = digestService;
+    }
+
+    /** 兼容旧签名：不带摘要服务时退化成"不带上下文"，行为与 issue #103 之前一致。 */
+    public DeepResearchController(DeepResearchTaskWorker worker,
+            CapabilityConversationService conversationService) {
+        this(worker, conversationService,
+                new ConversationDigestService(null) {
+                    @Override
+                    public String withContext(String conversationId, String userMessage, String consumer) {
+                        return userMessage;
+                    }
+                });
     }
 
     /** Compatibility constructor for direct callers while production uses the workflow worker bean. */
@@ -70,8 +86,10 @@ public class DeepResearchController {
         Handle handle = new Handle(publicId, taskId, userId, request.conversationId(), request.question());
         handles.put(publicId, handle);
         try {
+            // 已有会话里发起研究时带上上下文摘要（issue #103）；新会话原样发起
             DeepResearchTaskWorker.Submission submission = worker.submit(taskId, request.conversationId(),
-                    request.question(), request.previousQuestion(), request.previousClarifyingQuestion());
+                    digestService.withContext(request.conversationId(), request.question(), "deepresearch"),
+                    request.previousQuestion(), request.previousClarifyingQuestion());
             submission.events().doOnComplete(() -> recordTerminal(handle)).subscribe();
             return response(handle);
         } catch (RuntimeException failure) {

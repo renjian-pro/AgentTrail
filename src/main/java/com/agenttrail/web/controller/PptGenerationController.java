@@ -4,6 +4,7 @@ import com.agenttrail.web.dto.PptGenerationRequest;
 import com.agenttrail.web.service.CapabilityConversationService;
 
 import com.agenttrail.capability.ppt.PptGenerationService;
+import com.agenttrail.conversation.digest.ConversationDigestService;
 import com.agenttrail.capability.ppt.PptTask;
 import cn.dev33.satoken.stp.StpUtil;
 import org.slf4j.Logger;
@@ -54,13 +55,38 @@ public class PptGenerationController {
     private final PptGenerationService pptGenerationService;
     private final CapabilityConversationService conversationService;
     private final Executor pptGenerationExecutor;
+    /**
+     * 已有会话里发起 PPT 时带上上下文摘要（issue #103）。此前只传当次那一句话，用户说
+     * "根据前面的会话做个 PPT" 会得到一份题为"前面的会话"的幻灯片，而且不报错。
+     */
+    private final ConversationDigestService digestService;
 
     public PptGenerationController(PptGenerationService pptGenerationService,
             CapabilityConversationService conversationService,
-            @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor) {
+            @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor,
+            ConversationDigestService digestService) {
         this.pptGenerationService = pptGenerationService;
         this.conversationService = conversationService;
         this.pptGenerationExecutor = pptGenerationExecutor;
+        this.digestService = digestService;
+    }
+
+    /** 兼容旧签名：不带摘要服务时退化成"不带上下文"，行为与 issue #103 之前一致。 */
+    public PptGenerationController(PptGenerationService pptGenerationService,
+            CapabilityConversationService conversationService,
+            @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor) {
+        this(pptGenerationService, conversationService, pptGenerationExecutor,
+                new ConversationDigestService(null) {
+                    @Override
+                    public String withContext(String conversationId, String userMessage, String consumer) {
+                        return userMessage;
+                    }
+                });
+    }
+
+    /** 触发条件是会话状态（已有历史就带），不解析用户有没有说"根据前面的"——踩坑点 #52 的既有结论。 */
+    private String withConversationContext(String conversationId, String message) {
+        return digestService.withContext(conversationId, message, "ppt");
     }
 
     @PostMapping("/agent/v1/ppt/create")
@@ -191,9 +217,11 @@ public class PptGenerationController {
     private long prepareTask(String userId, PptGenerationRequest request) {
         String scopedUserId = userId == null ? "legacy" : userId;
         if (request.idempotencyKey() == null || request.idempotencyKey().isBlank()) {
-            return pptGenerationService.prepare(scopedUserId, request.conversationId(), request.message());
+            return pptGenerationService.prepare(scopedUserId, request.conversationId(),
+                    withConversationContext(request.conversationId(), request.message()));
         }
-        return pptGenerationService.prepare(scopedUserId, request.conversationId(), request.message(),
+        return pptGenerationService.prepare(scopedUserId, request.conversationId(),
+                withConversationContext(request.conversationId(), request.message()),
                 request.idempotencyKey());
     }
 
