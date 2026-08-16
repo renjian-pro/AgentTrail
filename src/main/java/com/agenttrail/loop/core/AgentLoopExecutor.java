@@ -87,6 +87,15 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class AgentLoopExecutor {
 
+    /**
+     * 这个类此前**一行日志都没有**。循环里每一步的结果都只以"事件流上出现了什么"间接可见，
+     * 一旦流卡住（既不出事件也不结束），从外面完全看不出停在哪一步——2026-08-16 定位跑批挂起
+     * 时，只能靠 jstack 反推，而卡住的那一刻恰恰没有任何线程在跑，堆栈里什么都没有。
+     * 下面这些点位按 DEBUG 记：正常跑不占日志量，出问题时 `logging.level.com.agenttrail.loop.core=DEBUG`
+     * 就能看到"订阅了没有 / 收没收到 chunk / 这一轮以什么信号收尾"。
+     */
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AgentLoopExecutor.class);
+
     /** 新一轮开始前预加载的历史上限——和单轮上下文压缩阈值是两码事，故意不复用同一个常量。 */
     private static final int HISTORY_TOKEN_BUDGET = 8_000;
 
@@ -622,8 +631,12 @@ public class AgentLoopExecutor {
         AtomicBoolean firstChunkSeen = new AtomicBoolean();
         AtomicBoolean mainSubscriptionTerminated = new AtomicBoolean();
         AtomicReference<Disposable> watchdogRef = new AtomicReference<>();
+        log.debug("[{}] 第 {} 轮开始：{} 条历史，{} 个工具", context.conversationId(),
+                context.roundCounter().get(), context.messages().size(), roundTools.size());
         Disposable subscription = Flux.from(roundDriver.drive(
                         LlmInvoker.toModelRequest(context.messages(), roundTools), roundTools))
+                .doOnSubscribe(ignored -> log.debug("[{}] 第 {} 轮已订阅模型流",
+                        context.conversationId(), context.roundCounter().get()))
                 .map(LlmInvoker::toChatResponse)
                 // 真实的 HTTP ChatModel（Reactor Netty 实现）在自己的 I/O 线程上信号 onComplete——
                 // finishRound 出现工具调用时会走到 ToolCallExecutor.execute() 内部的 .block()，
@@ -647,6 +660,8 @@ public class AgentLoopExecutor {
                 // subscribe 只会制造 onErrorDropped 噪声，且前端不会得到任何额外信息。
                 .onErrorComplete()
                 .doFinally(signalType -> {
+                    log.debug("[{}] 第 {} 轮模型流收尾：{}，mode={}", context.conversationId(),
+                            context.roundCounter().get(), signalType, state.mode());
                     mainSubscriptionTerminated.set(true);
                     Disposable watchdog = watchdogRef.getAndSet(null);
                     if (watchdog != null) {
@@ -773,6 +788,8 @@ public class AgentLoopExecutor {
      *                  保证"模型看到的"和"执行层能解析到的"是同一份技能清单，不会重新查一次库
      */
     private void finishRound(RoundState state, RunContext context, String requestSnapshot, ToolCallback skillTool) {
+        log.debug("[{}] 第 {} 轮收尾：mode={}，工具调用 {} 个", context.conversationId(),
+                context.roundCounter().get(), state.mode(), state.toolCalls().size());
         // 先让标签解析器把攒住的尾巴吐出来，否则最后几个字会丢
         thinkingModeProcessor.finishRound(state, context.sink());
 
@@ -1054,6 +1071,7 @@ public class AgentLoopExecutor {
      * 可能根本跑不到，这一轮就白问了（踩坑点 #63）。
      */
     private void completeRun(RoundState state, RunContext context) {
+        log.debug("[{}] 收尾落库中", context.conversationId());
         forgetBudget(context);
         String think = state.reasoning().isEmpty() ? null : state.reasoning();
         Long turnId = persistenceHook == null ? null : persistenceHook.onTurnComplete(new TurnRecord(
@@ -1084,14 +1102,32 @@ public class AgentLoopExecutor {
         taskManager.removeTask(context.conversationId());
     }
 
+    /**
+     * 失败收尾。**这是整个循环唯一的兜底出口，因此它自己不允许抛异常**——落审计、跑 Hook
+     * 这些收尾动作再重要，也重要不过"让这一轮有个结束"。
+     *
+     * <p>2026-08-16 的跑批全线挂死就是这里漏掉了这层保护：{@code agent_trace} 少了一列
+     * {@code prompt_stamps}（见 {@code db/schema.sql} 末尾那段补列脚本），于是成功路径上的
+     * {@link #recordTrace} 抛 {@code BadSqlGrammarException} → 转到本方法 → 本方法**又**调
+     * {@link #recordTrace} 抛同一个异常 → 后面三行永远执行不到。表现是：事件流既不出
+     * {@code Error} 也不 {@code Complete}，前端和跑批都挂着等一个不会来的结束信号，单飞锁
+     * 一直被占着，那个会话从此再也发不出下一轮——一个审计表的建表遗漏，放大成了整条链路不可用。
+     */
     private void failRun(Throwable error, RunContext context, RoundState state, String requestSnapshot) {
-        forgetBudget(context);
-        recordTrace(context, state, requestSnapshot, null, false, error.getMessage());
-        fireOnError(context, error);
-        fireSessionEnd(context, false);
-        context.emit(new AgentStreamEvent.Error("LLM_CALL_FAILED", error.getMessage()));
-        context.emitComplete();
-        taskManager.removeTask(context.conversationId());
+        log.warn("[{}] 本轮失败收尾", context.conversationId(), error);
+        try {
+            forgetBudget(context);
+            recordTrace(context, state, requestSnapshot, null, false, error.getMessage());
+            fireOnError(context, error);
+            fireSessionEnd(context, false);
+        } catch (RuntimeException collateral) {
+            // 收尾途中的二次失败只记日志：它顶多让这一轮少一条审计记录，而让它冒出去会让这一轮永远不结束
+            log.error("[{}] 失败收尾过程中再次出错，本轮仍会正常结束", context.conversationId(), collateral);
+        } finally {
+            context.emit(new AgentStreamEvent.Error("LLM_CALL_FAILED", error.getMessage()));
+            context.emitComplete();
+            taskManager.removeTask(context.conversationId());
+        }
     }
 
     /** 未配置 {@link #traceStore} 时是纯粹的空操作——调用方在此之前已经决定好是否要渲染快照。 */

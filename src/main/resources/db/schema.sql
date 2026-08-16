@@ -105,10 +105,41 @@ CREATE TABLE IF NOT EXISTS agent_trace
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT 'TraceAudit：每次模型调用的审计记录';
 
--- 已有数据库需要手动执行下面两条一次性迁移；历史记录保持 NULL，不回填伪造哈希链。
--- ALTER TABLE agent_trace ADD COLUMN prev_hash VARCHAR(64) NULL COMMENT '上一条记录的 hash，本会话第一条为 NULL';
--- ALTER TABLE agent_trace ADD COLUMN hash VARCHAR(64) NULL COMMENT 'SHA-256(关键字段拼接 + prev_hash)，写入后不可再改';
--- ALTER TABLE agent_trace ADD COLUMN prompt_stamps VARCHAR(512) NULL COMMENT '本轮用到的外置提示词标识；存量行为 NULL，按旧 payload 计算 hash，已有审计链不受影响';
+-- 给 agent_trace 补列。**必须是可执行的脚本，不能是注释掉的"请手动执行"**——
+-- 上面的建表是 CREATE TABLE IF NOT EXISTS，表一旦存在就整段跳过，新加的列永远不会出现在
+-- 已经建过表的库上。prompt_stamps 就是这么漏的：写进了建表语句，也留了下面这行注释，
+-- 但没有任何一条路径会真的执行它，于是每一次 trace 落库都 BadSqlGrammarException
+-- （Unknown column 'prompt_stamps'），再经由 failRun 里的二次抛出把整条链路挂死。
+-- 历史记录保持 NULL，不回填伪造哈希链（JdbcTraceStore.computeHash 对 NULL 按旧 payload 计算）。
+--
+-- MySQL 没有 ADD COLUMN IF NOT EXISTS，用 information_schema 查一次再决定要不要执行；
+-- 每次启动都跑，已经有这一列时是一条 DO 0 空转，可以反复执行。
+SET @ddl := IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_trace' AND COLUMN_NAME = 'prev_hash') = 0,
+    'ALTER TABLE agent_trace ADD COLUMN prev_hash VARCHAR(64) NULL COMMENT ''上一条记录的 hash，本会话第一条为 NULL''',
+    'DO 0');
+PREPARE add_prev_hash FROM @ddl;
+EXECUTE add_prev_hash;
+DEALLOCATE PREPARE add_prev_hash;
+
+SET @ddl := IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_trace' AND COLUMN_NAME = 'hash') = 0,
+    'ALTER TABLE agent_trace ADD COLUMN hash VARCHAR(64) NULL COMMENT ''SHA-256(关键字段拼接 + prev_hash)，写入后不可再改''',
+    'DO 0');
+PREPARE add_hash FROM @ddl;
+EXECUTE add_hash;
+DEALLOCATE PREPARE add_hash;
+
+SET @ddl := IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_trace' AND COLUMN_NAME = 'prompt_stamps') = 0,
+    'ALTER TABLE agent_trace ADD COLUMN prompt_stamps VARCHAR(512) NULL COMMENT ''本轮用到的外置提示词标识 id@version#hash，多个逗号分隔''',
+    'DO 0');
+PREPARE add_prompt_stamps FROM @ddl;
+EXECUTE add_prompt_stamps;
+DEALLOCATE PREPARE add_prompt_stamps;
 
 -- 分层记忆中间层（issue #19）：画像/偏好/指令/事实，按 userId 整体读取，不需要按条目单独查找/删除。
 

@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -77,16 +78,58 @@ class GoldenTaskLiveIT {
     @Test
     void runsAllGoldenCasesAgainstTheRealAnalyticsAgentAndReportsPassRate() {
         Map<String, Long> userIdsByUsername = loadUserIds();
-        GoldenTaskReport report = GoldenTaskRunner.run(testCase -> observe(testCase, userIdsByUsername));
+        List<GoldenCase> cases = selectCases();
+        GoldenTaskReport report = GoldenTaskRunner.runCaseList(cases, testCase -> observe(testCase, userIdsByUsername));
 
         String markdown = report.markdown();
         System.out.println(markdown);
-        writeReport(markdown);
-        writeFailureDetails(report);
+        if (isFullRun()) {
+            writeReport(markdown);
+            writeFailureDetails(report);
+        }
 
         // 第一次真实跑通：如实记录结果，不为了让断言变绿而放宽评判标准——通过率数字本身
         // 就是交付物。只断言"每条 case 都真的跑完了一次真实调用"，不断言全部通过。
-        assertThat(report.observations()).hasSameSizeAs(GoldenTaskRunner.loadAll());
+        assertThat(report.observations()).hasSameSizeAs(cases);
+    }
+
+    /**
+     * {@code -Dagenttrail.golden.cases=sql-001,perm-003} 只跑指定的几条。
+     *
+     * <p>为什么需要：全量 42 条一轮要跑五分钟以上，而排查回归（"这次改动是不是把整条链跑挂了"）
+     * 只需要一条 case 的结论。没有这个开关时，每次回退验证的周期就是一整轮跑批的时长——
+     * 2026-08-16 定位跑批卡死时，光是"跑一轮看看还卡不卡"就消耗掉大半个下午。
+     *
+     * <p>子集跑**不写报告**：{@code docs/golden-task-report-<date>.md} 是基线之间对比的依据
+     * （issue #98），被一份两条 case 的诊断结果覆盖掉，等于把当天的基线弄丢了。
+     */
+    private static List<GoldenCase> selectCases() {
+        List<GoldenCase> all = GoldenTaskRunner.loadAll();
+        if (isFullRun()) {
+            return all;
+        }
+        List<String> wanted = Arrays.stream(System.getProperty("agenttrail.golden.cases").split(","))
+                .map(String::trim).filter(id -> !id.isBlank()).toList();
+        List<GoldenCase> selected = all.stream().filter(testCase -> wanted.contains(testCase.id())).toList();
+        if (selected.size() != wanted.size()) {
+            List<String> known = all.stream().map(GoldenCase::id).toList();
+            throw new IllegalArgumentException("agenttrail.golden.cases 里有不存在的 case id: "
+                    + wanted.stream().filter(id -> !known.contains(id)).toList() + "；可选值: " + known);
+        }
+        return selected;
+    }
+
+    private static boolean isFullRun() {
+        String filter = System.getProperty("agenttrail.golden.cases");
+        return filter == null || filter.isBlank();
+    }
+
+    /** {@code -Dagenttrail.golden.timeout.seconds=45}：排查挂起时把等待上限压短，省得每条都熬满三分钟。 */
+    private static Duration caseTimeout() {
+        String seconds = System.getProperty("agenttrail.golden.timeout.seconds");
+        return seconds == null || seconds.isBlank()
+                ? Duration.ofMinutes(3)
+                : Duration.ofSeconds(Long.parseLong(seconds.trim()));
     }
 
     private GoldenTaskReport.GoldenObservation observe(GoldenCase testCase, Map<String, Long> userIdsByUsername) {
@@ -102,10 +145,17 @@ class GoldenTaskLiveIT {
                 String.valueOf(userId),
                 Map.of("userId", String.valueOf(userId)));
 
+        // 打点到 stdout 而不是 logger：跑批时日志级别常被调低，而"卡在哪条 case 上"是排查
+        // 挂起的第一手信息——42 条串行跑，只看最终报告分不清是慢还是死。
+        System.out.println("[golden] >>> " + testCase.id() + " 开始: " + testCase.question());
         List<AgentStreamEvent> events = executor.stream(testCase.question(), params)
+                .doOnNext(event -> System.out.println("[golden] " + java.time.LocalTime.now() + " "
+                        + testCase.id() + " 事件 " + event.getClass().getSimpleName() + " " + event))
                 .collectList()
-                .block(Duration.ofMinutes(3));
+                .block(caseTimeout());
         long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
+        System.out.println("[golden] <<< " + testCase.id() + " 结束: " + elapsedMs + "ms, "
+                + (events == null ? "超时无事件" : events.size() + " 个事件"));
 
         List<String> toolCalls = new ArrayList<>();
         StringBuilder resultText = new StringBuilder();

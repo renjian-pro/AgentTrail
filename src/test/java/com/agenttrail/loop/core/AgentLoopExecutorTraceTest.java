@@ -2,9 +2,12 @@ package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
+import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.trace.InMemoryTraceStore;
 import com.agenttrail.loop.trace.TraceRecord;
+import com.agenttrail.loop.trace.TraceStore;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -95,6 +98,53 @@ class AgentLoopExecutorTraceTest {
                 .collectList().block(Duration.ofSeconds(5));
 
         assertThat(events).isNotEmpty();
+    }
+
+    /**
+     * 审计落库整个坏掉时，这一轮仍然必须结束。
+     *
+     * <p>回归的是 2026-08-16 那次全线挂死：{@code agent_trace} 少了 {@code prompt_stamps} 一列，
+     * 成功路径上的 trace 落库抛 {@code BadSqlGrammarException}，转到 {@code failRun}，而
+     * {@code failRun} 头一件事又是落 trace、又抛同一个异常——于是事件流既不出 Error 也不 Complete。
+     * 前端和跑批都挂着等一个不会来的结束信号，会话的单飞锁一直被占着再也发不出下一轮。
+     * 一个审计表的建表遗漏，放大成了整条链路不可用，所以这里钉的不是"审计要能写成功"，
+     * 而是"审计写不成功也不许把这一轮吞掉"。
+     */
+    @Test
+    void stillTerminatesTheRunWhenEveryTraceWriteBlowsUp() {
+        ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("done")));
+        AgentTaskManager taskManager = new AgentTaskManager();
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .traceStore(new ExplodingTraceStore())
+                .taskManager(taskManager)
+                .build();
+
+        List<AgentStreamEvent> events = executor.stream("hi", new RunnableParams("conv-5", "user-1"))
+                .collectList().block(Duration.ofSeconds(5));
+
+        assertThat(events).as("流必须自然结束，而不是永远挂着").isNotNull();
+        assertThat(events).as("失败要以协议内的 Error 事件告诉调用方，而不是静默")
+                .anyMatch(event -> event instanceof AgentStreamEvent.Error);
+        assertThat(taskManager.hasRunningTask("conv-5"))
+                .as("单飞锁必须释放，否则这个会话再也发不出下一轮").isFalse();
+    }
+
+    /** 落库全挂的 {@link TraceStore}——模拟表结构不匹配、审计库不可用这类"写不进去"的故障。 */
+    private static final class ExplodingTraceStore implements TraceStore {
+        @Override
+        public void save(TraceRecord record) {
+            throw new IllegalStateException("Unknown column 'prompt_stamps' in 'field list'");
+        }
+
+        @Override
+        public List<TraceRecord> findByConversationId(String conversationId) {
+            return List.of();
+        }
+
+        @Override
+        public java.util.Optional<Integer> verifyChain(String conversationId) {
+            return java.util.Optional.empty();
+        }
     }
 
     /** 一个直接抛异常的 {@link org.springframework.ai.chat.model.ChatModel}，模拟模型调用失败。 */

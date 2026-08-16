@@ -392,6 +392,10 @@
 			<id>golden</id>
 			<properties>
 				<agenttrail.golden.enabled>true</agenttrail.golden.enabled>
+				<!-- 排查用的两个开关，默认空 = 全量跑、每条等满三分钟。failsafe 是 fork 出去的
+				     JVM，命令行上的 -D 不会自动传进去，必须在这里显式转发一遍。 -->
+				<agenttrail.golden.cases/>
+				<agenttrail.golden.timeout.seconds/>
 			</properties>
 			<build>
 				<plugins>
@@ -402,6 +406,8 @@
 						<configuration>
 							<systemPropertyVariables>
 								<agenttrail.golden.enabled>${agenttrail.golden.enabled}</agenttrail.golden.enabled>
+								<agenttrail.golden.cases>${agenttrail.golden.cases}</agenttrail.golden.cases>
+								<agenttrail.golden.timeout.seconds>${agenttrail.golden.timeout.seconds}</agenttrail.golden.timeout.seconds>
 							</systemPropertyVariables>
 							<includes>
 								<include>**/GoldenTaskIT.java</include>
