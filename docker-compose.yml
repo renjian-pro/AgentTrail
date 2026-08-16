@@ -28,6 +28,37 @@ services:
     depends_on:
       - prometheus
 
+  # 图表生成的 MCP 服务（npm 包 mcp-echarts，不是本仓库的代码，**也不是 app 进程的子进程**——
+  # 见 ChartToolProvider.java 顶部注释）。它一直只在 deploy/docker-compose.prod.yml 里有定义，
+  # 本地全靠人手动开一个终端跑 npx；没人跑的时候 application.yml 里那个 localhost:3033 就是连不上，
+  # 表现为每次启动刷一串 "mcp-echarts MCP 客户端初始化失败"，图表工具静默降级为不挂载。
+  mcp-echarts:
+    image: node:20-alpine
+    container_name: agenttrail-mcp-echarts-local
+    restart: unless-stopped
+    command: ["npx", "-y", "mcp-echarts", "-t", "streamable"]
+    # 必须发布到宿主机：本地开发时 app 跑在宿主机上（不是容器），按 application.yml 的
+    # localhost:3033 来连——这一点和生产相反，那边 app 也在容器里，用服务名直连不发布端口。
+    ports:
+      - "3033:3033"
+    environment:
+      # npx 冷启动要连 registry.npmjs.org 拉包，国内直连经常 ECONNRESET/超时
+      npm_config_registry: "https://registry.npmmirror.com"
+      # 这个地址有两个用途：mcp-echarts 自己上传图表要用它连 MinIO，**同时**它会被原样写进
+      # 工具返回值里当作给浏览器看的图片 URL（这个包没有单独的"公网 URL"配置项）。
+      # 所以不能填 localhost——那在容器里指向容器自己；也不能填容器名——宿主机上的浏览器解析不了。
+      # host.docker.internal 是唯一两边都成立的写法：容器内由 Docker 解析到宿主机，
+      # 宿主机上由 Docker Desktop 写进 hosts 文件，浏览器也能打开。
+      MINIO_ENDPOINT: "host.docker.internal"
+      MINIO_PORT: "9000"
+      MINIO_USE_SSL: "false"
+      # 和 application-local.yml 里 agenttrail.minio.* 指的是同一个 MinIO 实例。改那边记得改这边。
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET_NAME: agenttrail-charts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   langfuse:
     image: langfuse/langfuse:3
     ports:
