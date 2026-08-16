@@ -43,6 +43,11 @@ public class ContextCompactor {
 
     private static final String SUMMARY_SYSTEM_PROMPT = PROMPTS.text("runtime.context_compaction");
 
+    /** 这一版摘要提示词的 {@code id@version#hash}，压缩真的跑过时由调用方记进 trace（issue #101）。 */
+    public static String promptStamp() {
+        return PROMPTS.get("runtime.context_compaction").stamp();
+    }
+
     private final ContextPolicy policy;
     private final ChatModel chatModel;
 

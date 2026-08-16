@@ -608,6 +608,8 @@ public class AgentLoopExecutor {
         // 压缩放在发请求之前：此时上一轮的工具结果刚落进历史，正是上下文最膨胀的时刻
         if (contextCompactor != null) {
             contextCompactor.compact(context.messages(), context.question());
+            // 压缩真的跑过这一轮才记——记"机制启用了"没有意义，要的是"这条记录被哪版提示词影响过"
+            context.usedPromptStamps().add(ContextCompactor.promptStamp());
         }
 
         RoundState state = new RoundState();
@@ -1067,6 +1069,7 @@ public class AgentLoopExecutor {
         // 不会因为这一步把整轮对话搞崩
         if (memoryExtractor != null) {
             memoryExtractor.extractAndSave(context.params().userId(), context.question(), state.text());
+            context.usedPromptStamps().add(MemoryExtractor.promptStamp());
         }
 
         // 答案已经确定，Complete 之前留给 provider 一次机会插引用链接/推荐问题这类收尾输出
@@ -1099,9 +1102,11 @@ public class AgentLoopExecutor {
         }
         String think = state.reasoning().isEmpty() ? null : state.reasoning();
         long durationMillis = System.currentTimeMillis() - state.startMillis();
+        String promptStamps = context.usedPromptStamps().isEmpty() ? null
+                : String.join(",", new java.util.TreeSet<>(context.usedPromptStamps()));
         traceStore.save(new TraceRecord(context.conversationId(), context.roundCounter().get(),
                 requestSnapshot, outputData, think, state.promptTokens(), state.completionTokens(),
-                durationMillis, success, errorMessage, System.currentTimeMillis()));
+                durationMillis, success, errorMessage, System.currentTimeMillis(), promptStamps));
     }
 
     private void fireSessionStart(RunContext context) {

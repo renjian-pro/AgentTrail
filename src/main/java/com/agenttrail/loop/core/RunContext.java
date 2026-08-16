@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -51,7 +52,16 @@ record RunContext(
         Map<String, String> mdcSnapshot,
         Map<String, ToolTimelineEntry> toolTimeline,
         Map<String, Integer> consecutiveToolFailures,
-        AtomicReference<Optional<ToolCallback>> cachedSkillTool) {
+        AtomicReference<Optional<ToolCallback>> cachedSkillTool,
+        /**
+         * 本次运行里真正用过的外置提示词标识（{@code id@version#hash}），落进
+         * {@code agent_trace.prompt_stamps} 供 Golden 分数归因（issue #101）。
+         *
+         * <p>主对话轮次通常是空的——系统提示词的组装是条件拼接代码，按 requirements §6.2
+         * 明确豁免于提示词纳管。真正会往里写的是上下文压缩、记忆提取这类走 PromptRegistry
+         * 的轮内内部调用，所以这个集合非空本身就说明"这一轮触发过压缩/提取"。
+         */
+        Set<String> usedPromptStamps) {
 
     private static final Logger log = LoggerFactory.getLogger(RunContext.class);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -60,7 +70,8 @@ record RunContext(
                AtomicInteger roundCounter, long startTimeMillis, ToolSearchSession toolSearchSession,
                Map<String, String> mdcSnapshot) {
         this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
-                new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>());
+                new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>(),
+                java.util.concurrent.ConcurrentHashMap.newKeySet());
     }
 
     String conversationId() {

@@ -37,6 +37,11 @@ public class MemoryExtractor {
 
     private static final String EXTRACTION_SYSTEM_PROMPT = PROMPTS.text("runtime.memory_extraction");
 
+    /** 见 {@code ContextCompactor#promptStamp}。 */
+    public static String promptStamp() {
+        return PROMPTS.get("runtime.memory_extraction").stamp();
+    }
+
     private record ExtractionItem(String type, String content) {
     }
 
