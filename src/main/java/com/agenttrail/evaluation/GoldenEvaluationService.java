@@ -134,10 +134,16 @@ public class GoldenEvaluationService {
                 default -> { }
             }
         }
-        Map<String, Object> metrics = computeMetrics(rawSql, userId, testCase.referenceSql());
+        MetricsResult computed = computeMetrics(rawSql, userId, testCase.referenceSql());
+        Map<String, Object> metrics = new HashMap<>(computed.metrics());
+        if (rawSql != null && !rawSql.isBlank()) {
+            metrics.put("modelSql", rawSql);
+        }
+        // actualSql 此前恒传 ""，于是 sql_contains_scope_filter 在生产评测路径上**永远失败**——
+        // 权限维度的用例在页面上跑不可能变绿，和 IT 里跑出来的结果对不上（issue #98）。
         return new GoldenTaskReport.GoldenObservation(testCase.id(), testCase.dimension(), !failed,
-                failureReason, toolCalls.size() + 1, elapsedMillis(startedAt), "", result.toString(),
-                toolCalls, metrics, testCase.question());
+                failureReason, toolCalls.size() + 1, elapsedMillis(startedAt), computed.rewrittenSql(),
+                result.toString(), toolCalls, metrics, testCase.question());
     }
 
     /**
@@ -150,27 +156,31 @@ public class GoldenEvaluationService {
      * {@code agenttrail.analytics.datasource.enabled=true} 时才存在——默认关闭，这里用
      * {@link ObjectProvider} 可选注入，拿不到就跳过这几个指标，不阻塞整个评测服务的启动/执行。
      */
-    private Map<String, Object> computeMetrics(String rawSql, String username, String referenceSql) {
+    private record MetricsResult(String rewrittenSql, Map<String, Object> metrics) {
+        static final MetricsResult EMPTY = new MetricsResult("", Map.of());
+    }
+
+    private MetricsResult computeMetrics(String rawSql, String username, String referenceSql) {
         if (rawSql == null || rawSql.isBlank()) {
-            return Map.of();
+            return MetricsResult.EMPTY;
         }
         SqlSafetyGuard safetyGuard = safetyGuardProvider.getIfAvailable();
         DataScopeRewriter scopeRewriter = scopeRewriterProvider.getIfAvailable();
         ReadOnlyQueryRunner queryRunner = queryRunnerProvider.getIfAvailable();
         if (safetyGuard == null || scopeRewriter == null || queryRunner == null) {
-            return Map.of();
+            return MetricsResult.EMPTY;
         }
         Long numericUserId = resolveUserId(username);
         if (numericUserId == null) {
-            return Map.of();
+            return MetricsResult.EMPTY;
         }
         ValidationResult validated = safetyGuard.validate(rawSql);
         if (!validated.valid()) {
-            return Map.of();
+            return MetricsResult.EMPTY;
         }
         String actualSql = scopeRewriter.rewrite(validated.safeSql(), scopeResolver.resolve(numericUserId));
         if (actualSql.isBlank()) {
-            return Map.of();
+            return MetricsResult.EMPTY;
         }
         Map<String, Object> metrics = new HashMap<>();
         try {
@@ -190,7 +200,7 @@ public class GoldenEvaluationService {
         } catch (Exception failure) {
             metrics.put("queryError", failure.getMessage());
         }
-        return metrics;
+        return new MetricsResult(actualSql, metrics);
     }
 
     private Long resolveUserId(String username) {

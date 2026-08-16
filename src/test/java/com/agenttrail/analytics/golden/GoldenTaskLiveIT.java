@@ -220,9 +220,18 @@ class GoldenTaskLiveIT {
         return byUsername;
     }
 
+    /**
+     * 按**跑批当天**命名，不写死日期——之前文件名里硬编码 2026-08-05，跑一次就把上一轮的报告
+     * 覆盖掉，而基线之间的对比恰恰是这套评测最大的产出（issue #98）。
+     */
+    private static Path reportPath(String suffix) {
+        return Path.of("docs/golden-task-report-"
+                + java.time.LocalDate.now() + suffix + ".md");
+    }
+
     private void writeReport(String markdown) {
         try {
-            Files.writeString(Path.of("docs/golden-task-report-2026-08-05.md"), markdown);
+            Files.writeString(reportPath(""), markdown);
         } catch (IOException failure) {
             throw new UncheckedIOException(failure);
         }
@@ -242,7 +251,7 @@ class GoldenTaskLiveIT {
                     .append("- actualResult:\n\n```\n").append(observation.actualResult()).append("\n```\n\n");
         }
         try {
-            Files.writeString(Path.of("docs/golden-task-report-2026-08-05-failures.md"), detail.toString());
+            Files.writeString(reportPath("-failures"), detail.toString());
         } catch (IOException failure) {
             throw new UncheckedIOException(failure);
         }

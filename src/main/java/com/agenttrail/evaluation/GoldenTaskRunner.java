@@ -1,5 +1,7 @@
 package com.agenttrail.evaluation;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.yaml.snakeyaml.LoaderOptions;
@@ -21,6 +23,8 @@ import java.util.function.IntConsumer;
 
 /** Production-capable Golden Set loader and deterministic assertion harness. */
 public final class GoldenTaskRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(GoldenTaskRunner.class);
     private GoldenTaskRunner() { }
 
     private static volatile List<GoldenCase> cachedBaseline;
@@ -77,6 +81,26 @@ public final class GoldenTaskRunner {
         }
     }
 
+    /** 异常类型 + message + 第一帧调用点——报告里一行放得下，又足够定位到代码。 */
+    private static String describe(Throwable failure) {
+        StringBuilder text = new StringBuilder(failure.getClass().getSimpleName());
+        if (failure.getMessage() != null) {
+            text.append(": ").append(failure.getMessage());
+        }
+        StackTraceElement[] frames = failure.getStackTrace();
+        if (frames.length > 0) {
+            text.append(" @ ").append(frames[0]);
+        }
+        Throwable cause = failure.getCause();
+        if (cause != null && cause != failure) {
+            text.append(" <- ").append(cause.getClass().getSimpleName());
+            if (cause.getMessage() != null) {
+                text.append(": ").append(cause.getMessage());
+            }
+        }
+        return text.toString();
+    }
+
     public static GoldenTaskReport run(Function<GoldenCase, GoldenTaskReport.GoldenObservation> executor) {
         return runCaseList(loadAll(), executor);
     }
@@ -111,8 +135,11 @@ public final class GoldenTaskRunner {
         try {
             observation = executor.apply(testCase);
         } catch (RuntimeException failure) {
+            // 只记 message 时 NPE 会变成字面量 "executor failed: null"，查无可查——2026-08-05
+            // 那轮 4 次跑批里它出现 3 次、每次命中不同 case，就是因为这里丢了类型和堆栈（issue #98）。
+            log.warn("Golden case {} 执行抛异常", testCase.id(), failure);
             observation = new GoldenTaskReport.GoldenObservation(testCase.id(), testCase.dimension(), false,
-                    "executor failed: " + failure.getMessage(), 0, 0, "", "", List.of(), Map.of(),
+                    "executor failed: " + describe(failure), 0, 0, "", "", List.of(), Map.of(),
                     testCase.question());
         }
         Map<String, Object> metrics = new LinkedHashMap<>(observation.metrics());
