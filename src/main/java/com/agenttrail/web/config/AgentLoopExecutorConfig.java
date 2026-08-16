@@ -10,6 +10,7 @@ import com.agenttrail.web.service.CapabilityConversationService;
 
 import com.agenttrail.capability.analytics.AnalyticsToolProvider;
 import com.agenttrail.capability.file.FileStore;
+import com.agenttrail.conversation.digest.ConversationDigestService;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.loop.hook.ToolRiskLevel;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
@@ -126,6 +127,16 @@ public class AgentLoopExecutorConfig {
     @Bean
     public ConversationHistoryService conversationHistoryService(@Qualifier("dataSource") DataSource dataSource) {
         return new ConversationHistoryService(dataSource);
+    }
+
+    /**
+     * 跨能力上下文摘要（issue #103）。PPT / DeepResearch 两个控制器构造注入它——
+     * 漏了这个 Bean 时单测照样全绿（它们不加载完整上下文），只有起 Spring 的 IT 会炸，
+     * 而那正是生产启动会发生的事。
+     */
+    @Bean
+    public ConversationDigestService conversationDigestService(ConversationHistoryService historyService) {
+        return new ConversationDigestService(historyService);
     }
 
     @Bean
@@ -338,13 +349,28 @@ public class AgentLoopExecutorConfig {
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
                 new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(models, "qwen-plus", agentTaskManager,
-                tavilySearchToolProvider,
-                chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
-                analyticsToolProvider.getIfAvailable(), pauseConfig, toolRiskRegistry, sessionBudgetTracker, traceStore,
-                meterRegistryProvider.getIfAvailable(), promptInjectionGuard, piiMasker, toolRateLimiter,
-                skillManagerProvider.getIfAvailable(), memoryStoreProvider.getIfAvailable(),
-                viewImageToolProvider.getIfAvailable());
+        // 具名装配，不用位置槽（issue #99）：漏传/传错顺序在这里是编译错误，
+        // 而不是运行时某个机制静默失效——DataAgent 拿不到 SOP 就是位置槽时代的产物
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(models, "qwen-plus")
+                .taskManager(agentTaskManager)
+                .webSearch(tavilySearchToolProvider)
+                .charts(chartToolProvider)
+                .persistence(turnPersistenceHook)
+                .fileContentTool(fileContentToolProvider.getIfAvailable())
+                .fileStore(fileStoreProvider.getIfAvailable())
+                .analytics(analyticsToolProvider.getIfAvailable())
+                .pause(pauseConfig)
+                .toolRisk(toolRiskRegistry)
+                .budget(sessionBudgetTracker)
+                .trace(traceStore)
+                .metrics(meterRegistryProvider.getIfAvailable())
+                .promptInjectionGuard(promptInjectionGuard)
+                .piiMasker(piiMasker)
+                .toolRateLimiter(toolRateLimiter)
+                .skills(skillManagerProvider.getIfAvailable())
+                .memory(memoryStoreProvider.getIfAvailable())
+                .viewImageTool(viewImageToolProvider.getIfAvailable())
+                .build();
         log.info("agentLoopExecutorFactory configured: profile=chat-default model={} models={} "
                         + "tools=[web-search,chart] pause={} memory={} trace={} metrics={}",
                 "qwen-plus", models.stream().map(RegisteredModel::id).toList(), pauseConfig != null,

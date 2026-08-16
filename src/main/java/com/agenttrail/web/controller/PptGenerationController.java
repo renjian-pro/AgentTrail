@@ -9,6 +9,7 @@ import com.agenttrail.capability.ppt.PptTask;
 import cn.dev33.satoken.stp.StpUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -61,6 +62,8 @@ public class PptGenerationController {
      */
     private final ConversationDigestService digestService;
 
+    /** 多个构造函数并存时 Spring 无法自行选择，生产装配走这一个。 */
+    @Autowired
     public PptGenerationController(PptGenerationService pptGenerationService,
             CapabilityConversationService conversationService,
             @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor,

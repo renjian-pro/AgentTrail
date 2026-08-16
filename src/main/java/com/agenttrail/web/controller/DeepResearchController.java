@@ -48,6 +48,7 @@ public class DeepResearchController {
     private final AtomicLong publicIds = new AtomicLong();
     private final Map<Long, Handle> handles = new ConcurrentHashMap<>();
 
+    /** 多个构造函数并存时 Spring 无法自行选择，生产装配走这一个。 */
     @Autowired
     public DeepResearchController(DeepResearchTaskWorker worker,
             CapabilityConversationService conversationService,

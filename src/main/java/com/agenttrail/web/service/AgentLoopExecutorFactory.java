@@ -116,6 +116,82 @@ public class AgentLoopExecutorFactory {
      * 一起换成由 {@code AgentDefinition} 驱动的声明式装配；在那之前，
      * {@code AgentLoopExecutor.Builder} 是唯一类型安全的构造入口。
      */
+
+    /**
+     * 类型安全的装配入口（issue #99）。
+     *
+     * <p>取代 {@code Object...} 位置槽：那套写法编译期零检查，传错顺序只在运行时炸成
+     * {@code ClassCastException}，而**在中间插一个参数会静默顶掉后面所有的下标**——
+     * 加数据来源门禁（issue #104）时差点就把 {@code runtimeProfile} 顶掉，编译器毫无提示。
+     * 生产装配一律走这里；{@code Object...} 那个构造保留给已有测试，标了 deprecated。
+     */
+    public static final class Builder {
+        private final List<RegisteredModel> models;
+        private final String defaultModelId;
+        private AgentTaskManager taskManager = new AgentTaskManager();
+        private TavilySearchToolProvider webSearchToolProvider;
+        private ChartToolProvider chartToolProvider;
+        private TurnPersistenceHook persistenceHook;
+        private FileContentTool fileContentTool;
+        private FileStore fileStore;
+        private AnalyticsToolProvider analyticsToolProvider;
+        private PauseConfig pauseConfig;
+        private ToolRiskRegistry toolRiskRegistry = ToolRiskRegistry.defaults();
+        private SessionBudgetTracker sessionBudgetTracker;
+        private TraceStore traceStore;
+        private MeterRegistry meterRegistry;
+        private PromptInjectionGuard promptInjectionGuard;
+        private PiiMasker piiMasker;
+        private ToolRateLimiter toolRateLimiter;
+        private SkillManager skillManager;
+        private MemoryStore memoryStore;
+        private ViewImageTool viewImageTool;
+
+        private Builder(List<RegisteredModel> models, String defaultModelId) {
+            this.models = models;
+            this.defaultModelId = defaultModelId;
+        }
+
+        public Builder taskManager(AgentTaskManager value) { this.taskManager = value; return this; }
+        public Builder webSearch(TavilySearchToolProvider value) { this.webSearchToolProvider = value; return this; }
+        public Builder charts(ChartToolProvider value) { this.chartToolProvider = value; return this; }
+        public Builder persistence(TurnPersistenceHook value) { this.persistenceHook = value; return this; }
+        public Builder fileContentTool(FileContentTool value) { this.fileContentTool = value; return this; }
+        public Builder fileStore(FileStore value) { this.fileStore = value; return this; }
+        public Builder analytics(AnalyticsToolProvider value) { this.analyticsToolProvider = value; return this; }
+        public Builder pause(PauseConfig value) { this.pauseConfig = value; return this; }
+        public Builder toolRisk(ToolRiskRegistry value) {
+            this.toolRiskRegistry = value == null ? ToolRiskRegistry.defaults() : value;
+            return this;
+        }
+        public Builder budget(SessionBudgetTracker value) { this.sessionBudgetTracker = value; return this; }
+        public Builder trace(TraceStore value) { this.traceStore = value; return this; }
+        public Builder metrics(MeterRegistry value) { this.meterRegistry = value; return this; }
+        public Builder promptInjectionGuard(PromptInjectionGuard value) { this.promptInjectionGuard = value; return this; }
+        public Builder piiMasker(PiiMasker value) { this.piiMasker = value; return this; }
+        public Builder toolRateLimiter(ToolRateLimiter value) { this.toolRateLimiter = value; return this; }
+        public Builder skills(SkillManager value) { this.skillManager = value; return this; }
+        public Builder memory(MemoryStore value) { this.memoryStore = value; return this; }
+        public Builder viewImageTool(ViewImageTool value) { this.viewImageTool = value; return this; }
+
+        @SuppressWarnings("deprecation")
+        public AgentLoopExecutorFactory build() {
+            return new AgentLoopExecutorFactory(models, defaultModelId, taskManager, webSearchToolProvider,
+                    chartToolProvider, persistenceHook, fileContentTool, fileStore, analyticsToolProvider,
+                    pauseConfig, toolRiskRegistry, sessionBudgetTracker, traceStore, meterRegistry,
+                    promptInjectionGuard, piiMasker, toolRateLimiter, skillManager, memoryStore, viewImageTool);
+        }
+    }
+
+    public static Builder builder(List<RegisteredModel> models, String defaultModelId) {
+        return new Builder(models, defaultModelId);
+    }
+
+    /**
+     * @deprecated 位置槽没有编译期检查，且中间插参数会静默顶掉后续下标。生产装配走
+     *             {@link #builder(List, String)}；这个重载只为已有测试保留。
+     */
+    @Deprecated
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId, Object... options) {
         AgentTaskManager taskManager = option(options, 0, AgentTaskManager.class, new AgentTaskManager());
         TavilySearchToolProvider webSearchToolProvider = option(options, 1, TavilySearchToolProvider.class, null);
