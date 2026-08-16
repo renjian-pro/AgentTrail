@@ -21,7 +21,13 @@ export type ResearchEntry = {
   currentStep?: ResearchStep | null
   error?: string
 }
-export type ChatMessage = ChatTurn | PptEntry | ResearchEntry
+/**
+ * 普通对话里问了数据问题时插进流里的引导卡片（issue #94）。没有任何负载——它只是一个位置标记，
+ * 文案和动作都在 `SwitchAgentHint.vue` 里。不落库，刷新后不会重建，这是有意的：它是当下的引导，
+ * 不是对话内容的一部分。
+ */
+export type SwitchHintEntry = { kind: 'switch-hint' }
+export type ChatMessage = ChatTurn | PptEntry | ResearchEntry | SwitchHintEntry
 
 export type ChatSession = { id: string; title: string }
 

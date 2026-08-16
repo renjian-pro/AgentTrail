@@ -570,3 +570,30 @@ button { cursor: pointer; }
 .agent-fork:hover { color: var(--text); }
 .history button .kind-mark { margin-right: 6px; color: var(--faint); }
 .dark .agent-current, .dark .agent-option.active { color: #16180f; background: #e7e9e0; }
+
+/* 普通对话里问了数据问题时的引导卡片（issue #94）。做成对话流里的 inline 卡片而不是 toast——
+   它解释的是"接下来这个回答为什么可能不靠谱"，用户回头翻记录时仍然需要看到。 */
+.switch-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 6px 0 10px 44px;
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.switch-hint p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.switch-hint strong { color: var(--text); }
+.switch-hint button {
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 13px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: #fff;
+  background: var(--accent);
+  font-size: 12px;
+}
+.switch-hint button:hover { filter: brightness(1.08); }

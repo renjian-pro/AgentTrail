@@ -164,6 +164,49 @@ describe('ChatView', () => {
     expect(useChatStore().agentKind).toBe('analytics')
   })
 
+  /**
+   * issue #94。会话级绑定之后，用户在普通对话里问数据问题仍然会拿到编造的数字——他不知道
+   * 自己在哪个 Agent 下，也不知道该怎么切。卡片插在提问之后、回答之前，等模型答完再提示就晚了。
+   */
+  it('offers a switch to analytics when a data question lands in a plain chat', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await wrapper.find('textarea').setValue('上个月的订单量是多少')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.switch-hint').exists()).toBe(true)
+
+    await wrapper.find('.switch-hint button').trigger('click')
+    const store = useChatStore()
+    expect(store.agentKind).toBe('analytics')
+    expect(store.conversationId).toBeUndefined()
+    expect(store.messages).toEqual([])
+  })
+
+  /** 数据分析会话里不该出现这张卡片——它已经在正确的 Agent 上了。 */
+  it('stays quiet about switching when the session is already analytics', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await wrapper.findAll('.agent-option')[1].trigger('click')
+    await wrapper.find('textarea').setValue('上个月的订单量是多少')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.switch-hint').exists()).toBe(false)
+  })
+
+  /** 普通闲聊不该被打断。识别的主要风险是误报，不是漏报。 */
+  it('leaves ordinary chat alone', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await wrapper.find('textarea').setValue('帮我写一段自我介绍')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.switch-hint').exists()).toBe(false)
+  })
+
   /** 输入为空时点任务按钮什么都不发生——按钮本身就是"带着当前输入去做一件事"的语义。 */
   it('ignores a task button pressed with an empty composer', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })

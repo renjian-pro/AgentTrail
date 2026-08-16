@@ -10,6 +10,7 @@ import FileUploadWidget from '../components/FileUploadWidget.vue'
 import MessageInput from '../components/MessageInput.vue'
 import PptTaskCard from '../components/PptTaskCard.vue'
 import ResearchReportCard from '../components/ResearchReportCard.vue'
+import SwitchAgentHint from '../components/SwitchAgentHint.vue'
 import TodoProgressBar from '../components/TodoProgressBar.vue'
 import { chatApi, streamChat } from '../api/chat-api'
 import { fileApi, type AttachedFile } from '../api/file-api'
@@ -19,6 +20,7 @@ import { researchApi, type ResearchTask } from '../api/research-api'
 import { renderMarkdown } from '../utils/renderMarkdown'
 import { chartImageUrl } from '../utils/chartResult'
 import { resolveDroppedFile } from '../utils/fileDrop'
+import { looksLikeDataQuestion } from '../utils/dataQuestionHint'
 import { useChatStore, type AgentKind, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
 /**
@@ -111,6 +113,11 @@ function newFromHere() {
   chat.startNewConversation(agentKind.value)
 }
 
+/** 引导卡片的动作：直接开一个数据分析会话。带上下文摘要要等后端 ConversationDigest（issue #103）。 */
+function switchToAnalytics() {
+  chat.startNewConversation('analytics')
+}
+
 const TOOL_LABELS: Record<string, string> = {
   list_tables: '查看数据表',
   describe_tables: '展开表结构',
@@ -127,6 +134,11 @@ async function send(message: string) {
   error.value = ''
   busy.value = true
   messages.value.push({ kind: 'chat', role: 'user', content: message })
+  // 卡片插在提问之后、回答之前：这条会话本来就没有数据库工具，等模型答完再提示就晚了——
+  // 用户已经读到一个可能是编出来的数字了（issue #94）。
+  if (agentKind.value === 'chat' && looksLikeDataQuestion(message)) {
+    messages.value.push({ kind: 'switch-hint' })
+  }
   // Keep the exact object mutated by the SSE loop reactive. Vue wraps objects read
   // through a reactive array, but mutating this original reference would otherwise
   // bypass that proxy and make the answer appear only when the stream completes.
@@ -297,6 +309,7 @@ async function removeFile(fileId: number) {
             </template>
           </div>
         </article>
+        <SwitchAgentHint v-else-if="message.kind === 'switch-hint'" @switch-to-analytics="switchToAnalytics" />
         <PptTaskCard v-else-if="message.kind === 'ppt'" :entry="message" />
         <ResearchReportCard v-else-if="message.kind === 'research'" :entry="message" />
       </template>
