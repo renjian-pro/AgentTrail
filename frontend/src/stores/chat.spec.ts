@@ -25,6 +25,42 @@ describe('chat store', () => {
     expect(store.sessions).toEqual([{ id: 'saved-conversation', title: '上一轮问题' }])
   })
 
+  /**
+   * Agent 是会话级的（issue #92）。绑定关系存在本地映射里而不是挂在 ChatSession 上——
+   * hydrateSessions() 会用服务端列表整体覆盖 sessions，而服务端不知道 Agent 这个概念。
+   */
+  it('binds the agent to the conversation and restores it when reopening', async () => {
+    const store = useChatStore()
+    store.setAgentKind('analytics')
+    store.acceptConversation('analytics-conversation', '上个月的订单量')
+
+    expect(store.agentLocked).toBe(true)
+    expect(store.agentKindFor('analytics-conversation')).toBe('analytics')
+
+    store.startNewConversation()
+    expect(store.agentKind).toBe('chat')
+
+    vi.mocked(chatApi.history).mockResolvedValue({ turns: [] } as never)
+    await store.openSession('analytics-conversation')
+    expect(store.agentKind).toBe('analytics')
+  })
+
+  /** 锁定后不许换 Agent——静默忽略，调用方本来就该先看 agentLocked。 */
+  it('refuses to change the agent once the conversation has an id', () => {
+    const store = useChatStore()
+    store.acceptConversation('locked-conversation', '第一句')
+
+    store.setAgentKind('analytics')
+
+    expect(store.agentKind).toBe('chat')
+  })
+
+  /** 存量会话（本地映射里没有记录）一律按普通对话处理——spec 3.4 的有意识取舍。 */
+  it('treats conversations with no recorded agent as plain chat', () => {
+    const store = useChatStore()
+    expect(store.agentKindFor('legacy-conversation-from-before-this-change')).toBe('chat')
+  })
+
   it('hydrates the sidebar from the paginated server-side conversation list', async () => {
     vi.mocked(chatApi.sessions).mockResolvedValue({
       page: 0,

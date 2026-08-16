@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { chatApi, type ConversationSummary, type HistoryTurn } from '../api/chat-api'
 import type { PptTask } from '../api/ppt-api'
@@ -25,8 +25,37 @@ export type ChatMessage = ChatTurn | PptEntry | ResearchEntry
 
 export type ChatSession = { id: string; title: string }
 
+/**
+ * 会话绑定的 Agent（issue #92）。**是会话级的，不是消息级的**——工具集在一个会话里必须稳定，
+ * 否则消息历史里的 tool_calls 会指向当前执行器根本没挂载的工具（见 `docs/requirements.md` §7.3
+ * 的推导：DataAgent 不能挂 Bash → 基线不可能是全集 → 换模式就是换执行器 → 工具集必须会话内稳定）。
+ *
+ * <p>改这个之前的行为是"模式只对下一条消息生效、发完立刻复位"，用户追问时会静默掉回普通对话，
+ * 模型没有数据库工具就去编造演示数据——这条静默失败链路正是本次要堵掉的。
+ */
+export type AgentKind = 'chat' | 'analytics'
+
 const STORAGE_KEY = 'agenttrail.chat-sessions'
+/**
+ * `conversationId → AgentKind` 的本地映射。为什么单独存一份而不是塞进 `ChatSession`：
+ * `hydrateSessions()` 会用服务端返回的列表整体覆盖 `sessions`，而服务端不知道 Agent 这个概念
+ * （F6 明确不改后端），挂在 ChatSession 上每次刷新都会丢。
+ */
+const AGENT_KIND_STORAGE_KEY = 'agenttrail.chat-agent-kinds'
 const TITLE_MAX_LENGTH = 60
+
+/** 读不出/解析失败一律当空表——存量会话按普通对话处理是本票有意识的取舍（见 spec 3.4）。 */
+function readAgentKinds(): Record<string, AgentKind> {
+  const raw = localStorage.getItem(AGENT_KIND_STORAGE_KEY)
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as Record<string, AgentKind>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    localStorage.removeItem(AGENT_KIND_STORAGE_KEY)
+    return {}
+  }
+}
 
 /** 侧栏标题永远单行截断显示，但防线不能只放在 CSS 里——曾经真实发生过内部编排子提示词
  *（几千到上万字）被当成"问题"落库当标题，撑爆整个侧栏布局，这里从数据源头也截一刀。 */
@@ -53,13 +82,40 @@ export const useChatStore = defineStore('chat', () => {
   // 自己的请求当成"别人的"中断掉）——只 watch conversationId 分不清这两种情况，这个计数器
   // 只在 startNewConversation/openSession 这两个明确的"用户导航"入口才自增。
   const navigationSeq = ref(0)
+  const agentKind = ref<AgentKind>('chat')
+  const agentKinds = ref<Record<string, AgentKind>>(readAgentKinds())
+
+  /**
+   * 锁定点就是"会话已经有 id 了"——`conversationId` 在首条消息发出前是 undefined
+   * （`acceptConversation` 那时才赋值），所以这个判断天然等价于"首条消息已发出"，
+   * 不需要另外维护一个标志位。
+   */
+  const agentLocked = computed(() => conversationId.value !== undefined)
 
   function persistSessions() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions.value))
   }
 
+  function persistAgentKind(id: string, kind: AgentKind) {
+    agentKinds.value = { ...agentKinds.value, [id]: kind }
+    localStorage.setItem(AGENT_KIND_STORAGE_KEY, JSON.stringify(agentKinds.value))
+  }
+
+  /** 已锁定的会话不允许换 Agent——静默忽略而不是抛错，调用方本来就该先看 `agentLocked`。 */
+  function setAgentKind(kind: AgentKind) {
+    if (agentLocked.value) return
+    agentKind.value = kind
+  }
+
+  /** 侧栏会话列表用：未知会话（含全部存量会话）一律普通对话。 */
+  function agentKindFor(id: string): AgentKind {
+    return agentKinds.value[id] ?? 'chat'
+  }
+
   function acceptConversation(id: string, title: string) {
     conversationId.value = id
+    // 会话号是这一刻才拿到的，绑定关系必须在这里落地，否则刷新后就丢了
+    persistAgentKind(id, agentKind.value)
     const safeTitle = truncateTitle(title)
     const existing = sessions.value.find(session => session.id === id)
     if (existing) {
@@ -70,10 +126,12 @@ export const useChatStore = defineStore('chat', () => {
     persistSessions()
   }
 
-  function startNewConversation() {
+  /** @param kind 新会话的 Agent，默认普通对话（spec 3.3：零摩擦，数据分析靠引导卡片进入）。 */
+  function startNewConversation(kind: AgentKind = 'chat') {
     conversationId.value = undefined
     messages.value = []
     todos.value = []
+    agentKind.value = kind
     navigationSeq.value++
   }
 
@@ -180,6 +238,9 @@ export const useChatStore = defineStore('chat', () => {
   async function openSession(id: string) {
     const page = await chatApi.history(id)
     conversationId.value = id
+    // 切回历史会话要恢复它自己的 Agent，不能沿用上一个会话的——否则在分析会话里点开一个
+    // 普通会话，界面会显示"数据分析"而请求实际走普通对话
+    agentKind.value = agentKindFor(id)
     messages.value = turnToMessages(page.turns)
     todos.value = []
     navigationSeq.value++
@@ -223,7 +284,8 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     conversationId, messages, todos, sessions, sessionsHasMore, navigationSeq,
-    acceptConversation, ensureConversation, applyStreamEvent,
+    agentKind, agentKinds, agentLocked,
+    acceptConversation, ensureConversation, applyStreamEvent, setAgentKind, agentKindFor,
     startNewConversation, openSession, hydrateSessions, loadMoreSessions
   }
 })

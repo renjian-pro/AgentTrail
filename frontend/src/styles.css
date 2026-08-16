@@ -523,3 +523,39 @@ button { cursor: pointer; }
   .schema-list h2 { display: none; }
   .schema-list button { min-width: 145px; }
 }
+
+/* 会话级 Agent 标识（issue #92）。放在会话顶部而不是输入框旁边——位置编码作用域：
+   越靠上作用域越大。Agent 管整个会话，任务和开关管单次发送，不该在同一视觉层级。 */
+.agent-header { display: flex; align-items: center; gap: 8px; padding: 8px 6px 10px; }
+.agent-label { color: var(--faint); font-size: 11px; font-weight: 650; letter-spacing: .04em; }
+.agent-note { color: var(--faint); font-size: 11px; }
+.agent-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 999px;
+  color: #fff;
+  background: #30332f;
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #5f625b;
+  background: var(--surface);
+  font-size: 12px;
+}
+.agent-option:hover { border-color: #cdd0c9; color: var(--text); }
+.agent-option.active { border-color: #30332f; color: #fff; background: #30332f; }
+.agent-fork { color: var(--muted); background: none; border: none; font-size: 11px; text-decoration: underline; }
+.agent-fork:hover { color: var(--text); }
+.history button .kind-mark { margin-right: 6px; color: var(--faint); }
+.dark .agent-current, .dark .agent-option.active { color: #16180f; background: #e7e9e0; }

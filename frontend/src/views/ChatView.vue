@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import AgentHeader from '../components/AgentHeader.vue'
 import AttachedFileList from '../components/AttachedFileList.vue'
 import ChartToolCard from '../components/ChartToolCard.vue'
 import CollapsibleChip from '../components/CollapsibleChip.vue'
@@ -18,18 +19,26 @@ import { researchApi, type ResearchTask } from '../api/research-api'
 import { renderMarkdown } from '../utils/renderMarkdown'
 import { chartImageUrl } from '../utils/chartResult'
 import { resolveDroppedFile } from '../utils/fileDrop'
-import { useChatStore, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
+import { useChatStore, type AgentKind, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
 /**
- * 三种能力共用一个入口：默认发送走普通对话，先选中下面的模式再发送才会触发对应能力。
- * research/ppt 各自另起一条同步创建任务 + 轮询的链路（见 runResearch/runPpt），提交后立即
- * 解锁 busy；analytics 不脱离聊天的 SSE 流本身——只是随消息带上 mode:'analytics'，
- * 让后端把这一轮切到数据分析执行器（见 send() 里的 streamChat 调用）。
+ * 能力分三层，交互语义各不相同（见 `docs/requirements.md` §7.2）：
+ *
+ * <ul>
+ *   <li><b>Agent 层</b>（普通对话 / 数据分析）——换一套执行器，工具集不相交。**会话级绑定**，
+ *       由 store 的 `agentKind` 持有，首条消息发出后锁定；不在这里用 `pendingMode` 表达。
+ *   <li><b>任务层</b>（research / ppt）——各自另起一条同步创建任务 + 轮询的链路
+ *       （见 runResearch/runPpt），提交后立即解锁 busy，不影响当前会话的工具集。
+ *   <li><b>开关层</b>（联网搜索）——往同一份工具列表里叠加工具。
+ * </ul>
+ *
+ * <p>`Mode` 现在只表示任务层。数据分析曾经也在这里，且发送后立刻复位——用户追问时会静默
+ * 掉回普通对话，模型没有数据库工具就去编造演示数据。那条链路已经被 `agentKind` 取代（issue #92）。
  */
-type Mode = 'research' | 'ppt' | 'analytics' | undefined
+type Mode = 'research' | 'ppt' | undefined
 
 const chat = useChatStore()
-const { conversationId, messages, todos, navigationSeq } = storeToRefs(chat)
+const { conversationId, messages, todos, navigationSeq, agentKind, agentLocked } = storeToRefs(chat)
 const busy = ref(false)
 const error = ref('')
 const webSearch = ref(false)
@@ -45,7 +54,7 @@ let aborter: AbortController | undefined
 onMounted(() => {
   if (typeof window === 'undefined' || window.location.pathname !== '/chat') return
   const params = new URLSearchParams(window.location.search)
-  if (params.get('mode')?.toLowerCase() === 'analytics') pendingMode.value = 'analytics'
+  if (params.get('mode')?.toLowerCase() === 'analytics') chat.setAgentKind('analytics')
   initialMessage.value = params.get('q') ?? ''
 })
 
@@ -72,17 +81,30 @@ watch(navigationSeq, () => {
 // cannot be cancelled by the chat stop endpoint, so showing that control there
 // would promise an action the backend cannot perform.
 const canStop = computed(() => busy.value && aborter !== undefined)
-const modeLabel = computed(() => pendingMode.value === 'research' ? 'Deep Research' : pendingMode.value === 'ppt' ? 'PPT 生成' : pendingMode.value === 'analytics' ? '数据分析' : '')
+const modeLabel = computed(() => pendingMode.value === 'research' ? 'Deep Research' : pendingMode.value === 'ppt' ? 'PPT 生成' : '')
+/** 数据分析执行器明确不挂联网搜索工具（DataAgent 不复用通用工具），开着只是摆设。 */
+const webSearchDisabled = computed(() => busy.value || pendingMode.value !== undefined || agentKind.value === 'analytics')
+const webSearchHint = computed(() => {
+  if (pendingMode.value) return 'PPT 生成和深度研究都会自己做资料检索，这个开关对它们不生效'
+  return agentKind.value === 'analytics' ? '数据分析不挂载联网搜索工具，这个开关对它不生效' : ''
+})
 
 function toggleMode(mode: Mode) {
   pendingMode.value = pendingMode.value === mode ? undefined : mode
   // PPT 状态机和 DeepResearch 各自内部都无条件做自己的资料检索，都不接收/不使用这个开关——
-  // 勾着它在这两种模式下纯粹是摆设，还会让人以为真的多做了一次联网搜索。数据分析同理：
-  // forAnalytics 装配的执行器明确不挂联网搜索工具（DataAgent 不复用通用工具），开着这个
-  // 开关同样只是摆设。
-  if (pendingMode.value === 'ppt' || pendingMode.value === 'research' || pendingMode.value === 'analytics') {
-    webSearch.value = false
-  }
+  // 勾着它在这两种模式下纯粹是摆设，还会让人以为真的多做了一次联网搜索。
+  if (pendingMode.value) webSearch.value = false
+}
+
+function changeAgent(kind: AgentKind) {
+  chat.setAgentKind(kind)
+  if (kind === 'analytics') webSearch.value = false
+}
+
+/** 会话已锁定时换 Agent 的出口：开一个新会话、沿用当前 Agent（未锁定，可再改）。
+ *  带上下文摘要要等后端 ConversationDigest（R15 / issue #103），本票只做新建。 */
+function newFromHere() {
+  chat.startNewConversation(agentKind.value)
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -98,8 +120,9 @@ async function send(message: string) {
   if (pendingMode.value === 'research') return runResearch(message)
   if (pendingMode.value === 'ppt') return runPpt(message)
 
-  const mode = pendingMode.value
-  pendingMode.value = undefined
+  // Agent 是会话级的，不在这里读取后复位——曾经这一行是 `pendingMode.value = undefined`，
+  // 导致用户追问时静默掉回普通对话（issue #92）。
+  const mode = agentKind.value === 'analytics' ? 'analytics' : undefined
   error.value = ''
   busy.value = true
   messages.value.push({ kind: 'chat', role: 'user', content: message })
@@ -252,6 +275,7 @@ async function removeFile(fileId: number) {
 
 <template>
   <div class="chat-view" :class="{ 'is-empty': !messages.length }">
+    <AgentHeader :agent-kind="agentKind" :locked="agentLocked" @change="changeAgent" @new-from-here="newFromHere" />
     <div v-if="!messages.length" class="welcome">
       <span class="welcome-mark">✦</span>
       <h1>AgentTrail，我帮你</h1>
@@ -286,9 +310,7 @@ async function removeFile(fileId: number) {
         <div class="mode-picker">
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'research' }" @click="toggleMode('research')">⌕ 深度研究</button>
           <button type="button" :disabled="busy" :class="{ active: pendingMode === 'ppt' }" @click="toggleMode('ppt')">▣ 生成 PPT</button>
-          <button type="button" :disabled="busy" :class="{ active: pendingMode === 'analytics' }" @click="toggleMode('analytics')">⌁ 数据分析</button>
-          <button type="button" :disabled="busy || pendingMode === 'ppt' || pendingMode === 'research' || pendingMode === 'analytics'"
-              :title="pendingMode === 'ppt' || pendingMode === 'research' ? 'PPT 生成和深度研究都会自己做资料检索，这个开关对它们不生效' : pendingMode === 'analytics' ? '数据分析不挂载联网搜索工具，这个开关对它不生效' : ''"
+          <button type="button" :disabled="webSearchDisabled" :title="webSearchHint"
               :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         </div>
         <FileUploadWidget @upload="upload" />

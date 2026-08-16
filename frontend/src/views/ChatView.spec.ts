@@ -115,14 +115,18 @@ describe('ChatView', () => {
   })
 
   /**
-   * 数据分析和 research/ppt 不一样，不脱离普通聊天的 SSE 流——选中模式只是给下一条消息的
-   * streamChat 请求体带上 mode:'analytics'，让后端路由到分析执行器（见 ChatToolScopeRuntimeAdapter）。
-   * 这里验证请求体真的带上了这个字段，且发送后模式会复位、联网搜索开关不会被一并带上去。
+   * 数据分析和 research/ppt 不一样，不脱离普通聊天的 SSE 流——它是 **Agent 层**，会话级绑定：
+   * 选中之后整个会话的每一条消息都带 mode:'analytics'，让后端路由到分析执行器
+   * （见 ChatToolScopeRuntimeAdapter）。
+   *
+   * <p>**这是 issue #92 的核心回归**。改之前是"模式只对下一条消息生效、发完立刻复位"，
+   * 用户追问时会静默掉回普通对话，模型没有数据库工具就去编造演示数据画图。断言必须钉住
+   * "同一会话连续两条消息带的 mode 一致"，否则哪天改回去了没人会发现。
    */
-  it('tags the next message with mode:analytics when that capability is selected, then reverts to chat', async () => {
+  it('keeps mode:analytics for every message in the session, not just the next one', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.mode-picker button')[2].trigger('click')
+    await wrapper.findAll('.agent-option')[1].trigger('click')
     await wrapper.find('textarea').setValue('上个月的订单量是多少')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
@@ -130,15 +134,30 @@ describe('ChatView', () => {
     expect(streamChat).toHaveBeenCalledWith(
       expect.objectContaining({ message: '上个月的订单量是多少', mode: 'analytics', webSearchEnabled: false }),
       expect.anything())
-    expect(wrapper.find('.mode-hint').exists()).toBe(false)
 
-    await wrapper.find('textarea').setValue('这条应该走普通对话')
+    await wrapper.find('textarea').setValue('那上上个月呢')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     expect(streamChat).toHaveBeenLastCalledWith(
-      expect.objectContaining({ message: '这条应该走普通对话', mode: undefined }),
+      expect.objectContaining({ message: '那上上个月呢', mode: 'analytics' }),
       expect.anything())
+  })
+
+  /** 首条消息发出即锁定：选择器消失、原地换成只读标识 + 「基于此会话新建」出口。 */
+  it('locks the agent once the first message is sent', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await wrapper.findAll('.agent-option')[1].trigger('click')
+    expect(wrapper.find('.agent-current').exists()).toBe(false)
+
+    await wrapper.find('textarea').setValue('上个月的订单量是多少')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.findAll('.agent-option')).toHaveLength(0)
+    expect(wrapper.find('.agent-current').text()).toContain('数据分析')
+    expect(wrapper.find('.agent-fork').exists()).toBe(true)
   })
 
   it('renders the Deep Research clarification card inline instead of dumping raw JSON', async () => {
