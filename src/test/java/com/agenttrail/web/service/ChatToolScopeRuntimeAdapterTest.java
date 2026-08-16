@@ -1,14 +1,24 @@
 package com.agenttrail.web.service;
 
 import com.agenttrail.loop.core.AgentLoopExecutor;
+import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.loop.pause.InMemoryPauseStateStore;
+import com.agenttrail.loop.pause.PauseConfig;
+import com.agenttrail.loop.pause.PauseReason;
+import com.agenttrail.loop.pause.PauseState;
+import com.agenttrail.loop.pause.PauseStateStore;
+import com.agenttrail.loop.pause.SafePoint;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.platform.identity.Principal;
 import com.agenttrail.platform.ids.ConversationId;
 import com.agenttrail.runtime.api.AgentRequest;
+import com.agenttrail.runtime.api.ResumeCommand;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -99,5 +109,87 @@ class ChatToolScopeRuntimeAdapterTest {
 
         verify(taskManager).stopTask("conversation-1");
         verify(factory, never()).forModelWithCharts(anyString(), anyBoolean());
+    }
+
+    /** 暂停快照，只填 resume 变体判定真正会读到的字段。 */
+    private static PauseConfig pauseConfigHolding(String conversationId, Map<String, Object> toolParams) {
+        PauseStateStore store = new InMemoryPauseStateStore();
+        store.save(new PauseState(conversationId, List.of(), List.of(), PauseReason.HITL_APPROVAL,
+                SafePoint.BEFORE_TOOL_EXECUTION, "上个月的订单量是多少",
+                new RunnableParams(conversationId, "user-1", toolParams), 1, 0L));
+        return new PauseConfig(Set.of(), store);
+    }
+
+    /**
+     * issue #96。`AgentRuntimePort.resume` 只给 RunId/ResumeCommand，拿不到当次请求，所以这里
+     * 曾经固定走 forModelWithCharts(modelId, false)——被中断的分析会话恢复后拿到的是普通聊天
+     * 执行器，工具集整个换掉。当时的辩护是"分析执行器不接受 HITL 中断所以撞不到"，但那依赖
+     * "分析工具永远不进审批名单"这个前提，ToolRiskRegistry 改一次就失效。
+     */
+    @Test
+    void resumeRebuildsTheSameExecutorVariantTheRunWasPausedOn() {
+        AgentLoopExecutorFactory factory = mock(AgentLoopExecutorFactory.class);
+        AgentLoopExecutor executor = mock(AgentLoopExecutor.class);
+        when(factory.forAnalytics(eq("qwen-plus"))).thenReturn(executor);
+        when(executor.resume(any(), any())).thenReturn(Flux.empty());
+
+        ChatToolScopeRuntimeAdapter adapter = new ChatToolScopeRuntimeAdapter(factory, "qwen-plus",
+                new AgentTaskManager(), pauseConfigHolding("conversation-1", Map.of("analyticsEnabled", true)));
+
+        adapter.resume(com.agenttrail.platform.ids.RunId.of("conversation-1"), new ResumeCommand.Approve());
+
+        verify(factory).forAnalytics("qwen-plus");
+        verify(factory, never()).forModelWithCharts(anyString(), anyBoolean());
+    }
+
+    /** 普通会话的联网搜索开关同样要还原，否则恢复后模型手里的工具比中断前少。 */
+    @Test
+    void resumeCarriesTheWebSearchFlagBackFromTheSnapshot() {
+        AgentLoopExecutorFactory factory = mock(AgentLoopExecutorFactory.class);
+        AgentLoopExecutor executor = mock(AgentLoopExecutor.class);
+        when(factory.forModelWithCharts(eq("qwen-plus"), eq(true))).thenReturn(executor);
+        when(executor.resume(any(), any())).thenReturn(Flux.empty());
+
+        ChatToolScopeRuntimeAdapter adapter = new ChatToolScopeRuntimeAdapter(factory, "qwen-plus",
+                new AgentTaskManager(), pauseConfigHolding("conversation-1", Map.of("webSearchEnabled", true)));
+
+        adapter.resume(com.agenttrail.platform.ids.RunId.of("conversation-1"), new ResumeCommand.Approve());
+
+        verify(factory).forModelWithCharts("qwen-plus", true);
+    }
+
+    /**
+     * 快照走 JSON 往返，历史数据里布尔值以字符串形式出现过。只认 Boolean.TRUE 会把恢复出来的
+     * 分析会话静默判成普通聊天——静默降级正是这张票要消灭的那类故障。
+     */
+    @Test
+    void resumeAcceptsFlagsThatSurvivedJsonRoundTripAsStrings() {
+        AgentLoopExecutorFactory factory = mock(AgentLoopExecutorFactory.class);
+        AgentLoopExecutor executor = mock(AgentLoopExecutor.class);
+        when(factory.forAnalytics(eq("qwen-plus"))).thenReturn(executor);
+        when(executor.resume(any(), any())).thenReturn(Flux.empty());
+
+        ChatToolScopeRuntimeAdapter adapter = new ChatToolScopeRuntimeAdapter(factory, "qwen-plus",
+                new AgentTaskManager(), pauseConfigHolding("conversation-1", Map.of("analyticsEnabled", "true")));
+
+        adapter.resume(com.agenttrail.platform.ids.RunId.of("conversation-1"), new ResumeCommand.Approve());
+
+        verify(factory).forAnalytics("qwen-plus");
+    }
+
+    /** 没配暂停机制时退回既有行为，由下游 AgentLoopExecutor#resume 抛明确异常，不在这层提前失败。 */
+    @Test
+    void resumeFallsBackToPlainChatWhenNoSnapshotIsAvailable() {
+        AgentLoopExecutorFactory factory = mock(AgentLoopExecutorFactory.class);
+        AgentLoopExecutor executor = mock(AgentLoopExecutor.class);
+        when(factory.forModelWithCharts(eq("qwen-plus"), eq(false))).thenReturn(executor);
+        when(executor.resume(any(), any())).thenReturn(Flux.empty());
+
+        ChatToolScopeRuntimeAdapter adapter =
+                new ChatToolScopeRuntimeAdapter(factory, "qwen-plus", new AgentTaskManager());
+
+        adapter.resume(com.agenttrail.platform.ids.RunId.of("conversation-1"), new ResumeCommand.Approve());
+
+        verify(factory).forModelWithCharts("qwen-plus", false);
     }
 }

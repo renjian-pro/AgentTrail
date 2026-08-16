@@ -254,11 +254,15 @@ public class AgentLoopExecutorConfig {
      */
     @Bean
     public com.agenttrail.capability.chat.application.RuntimeProfileRegistry runtimeProfileRegistry(
-            AgentLoopExecutorFactory executorFactory, AgentTaskManager agentTaskManager) {
+            AgentLoopExecutorFactory executorFactory, AgentTaskManager agentTaskManager, PauseConfig pauseConfig) {
+        // pauseConfig 是给 resume 用的：恢复时接口只给 RunId，变体要从暂停快照的 toolParams 里取，
+        // 否则被中断的分析会话会恢复成普通聊天执行器（issue #96）。
         return new com.agenttrail.capability.chat.application.RuntimeProfileRegistry(
                 Map.of(
-                        "qwen-plus", new ChatToolScopeRuntimeAdapter(executorFactory, "qwen-plus", agentTaskManager),
-                        "deepseek-chat", new ChatToolScopeRuntimeAdapter(executorFactory, "deepseek-chat", agentTaskManager)),
+                        "qwen-plus",
+                        new ChatToolScopeRuntimeAdapter(executorFactory, "qwen-plus", agentTaskManager, pauseConfig),
+                        "deepseek-chat",
+                        new ChatToolScopeRuntimeAdapter(executorFactory, "deepseek-chat", agentTaskManager, pauseConfig)),
                 "qwen-plus", "deepseek-chat");
     }
 
