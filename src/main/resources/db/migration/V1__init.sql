@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS agent_trace
     recorded_at       BIGINT       NOT NULL COMMENT '记录写入时刻（epoch millis）',
     prev_hash         VARCHAR(64)  NULL COMMENT '上一条记录的 hash，本会话第一条为 NULL',
     hash              VARCHAR(64)  NULL COMMENT 'SHA-256(关键字段拼接 + prev_hash)，写入后不可再改',
+    prompt_stamps     VARCHAR(512) NULL COMMENT '本轮用到的外置提示词标识 id@version#hash，多个逗号分隔；非空时才计入 hash（见 JdbcTraceStore.computeHash）',
     PRIMARY KEY (id),
     -- 读回一个会话的完整 trace 永远是「按轮次正序」，复合索引直接支撑这个查询
     KEY idx_trace_conversation_round (conversation_id, round)

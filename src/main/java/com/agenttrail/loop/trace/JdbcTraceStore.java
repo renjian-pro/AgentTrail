@@ -26,8 +26,8 @@ public class JdbcTraceStore implements TraceStore {
             INSERT INTO agent_trace
                 (conversation_id, round, input_data, output_data, think,
                  prompt_tokens, completion_tokens, duration_millis, success, error_message, recorded_at,
-                 prev_hash, hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 prev_hash, hash, prompt_stamps)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String LAST_HASH_SQL = """
@@ -37,7 +37,8 @@ public class JdbcTraceStore implements TraceStore {
     /** 一个会话的完整 trace 永远按轮次正序读回，重建执行时间线。 */
     private static final String SELECT_BY_CONVERSATION_SQL = """
             SELECT conversation_id, round, input_data, output_data, think,
-                   prompt_tokens, completion_tokens, duration_millis, success, error_message, recorded_at
+                   prompt_tokens, completion_tokens, duration_millis, success, error_message, recorded_at,
+                   prompt_stamps
             FROM agent_trace
             WHERE conversation_id = ?
             ORDER BY round ASC, id ASC
@@ -46,7 +47,7 @@ public class JdbcTraceStore implements TraceStore {
     private static final String SELECT_CHAIN_SQL = """
             SELECT conversation_id, round, input_data, output_data, think,
                    prompt_tokens, completion_tokens, duration_millis, success, error_message, recorded_at,
-                   prev_hash, hash
+                   prev_hash, hash, prompt_stamps
             FROM agent_trace
             WHERE conversation_id = ?
             ORDER BY id ASC
@@ -92,6 +93,7 @@ public class JdbcTraceStore implements TraceStore {
                 .param(record.recordedAtMillis())
                 .param(prevHash)
                 .param(hash)
+                .param(record.promptStamps())
                 .update();
     }
 
@@ -110,7 +112,8 @@ public class JdbcTraceStore implements TraceStore {
                         rs.getLong("duration_millis"),
                         rs.getBoolean("success"),
                         rs.getString("error_message"),
-                        rs.getLong("recorded_at")))
+                        rs.getLong("recorded_at"),
+                        rs.getString("prompt_stamps")))
                 .list();
     }
 
@@ -130,7 +133,8 @@ public class JdbcTraceStore implements TraceStore {
                                 rs.getLong("duration_millis"),
                                 rs.getBoolean("success"),
                                 rs.getString("error_message"),
-                                rs.getLong("recorded_at")),
+                                rs.getLong("recorded_at"),
+                                rs.getString("prompt_stamps")),
                         rs.getString("prev_hash"),
                         rs.getString("hash")))
                 .list();
@@ -149,6 +153,18 @@ public class JdbcTraceStore implements TraceStore {
         return Optional.empty();
     }
 
+    /**
+     * {@code promptStamps} **非空才拼进 payload**（issue #101）。三种走法里选了这一种：
+     *
+     * <ul>
+     *   <li>直接加字段——存量记录该列为 null，payload 多一段分隔符，已有会话的 verifyChain 会全红
+     *   <li>不入链——字段不受审计保护，而它恰恰是"这轮用的哪版提示词"的唯一证据
+     *   <li>非空才入链——存量记录逐字节走旧 payload，链保持有效；新记录带值则受保护
+     * </ul>
+     *
+     * <p>代价是"把该列从有值改成 null"这一种篡改检测不到。相比让全部存量审计链失效，
+     * 这个残留风险是可接受的取舍，但要写下来，不能假装它不存在。
+     */
     private static String computeHash(TraceRecord record, String prevHash) {
         String payload = String.join("|",
                 record.conversationId(), String.valueOf(record.round()),
@@ -156,6 +172,9 @@ public class JdbcTraceStore implements TraceStore {
                 String.valueOf(record.promptTokens()), String.valueOf(record.completionTokens()),
                 String.valueOf(record.success()), nullToEmpty(record.errorMessage()),
                 String.valueOf(record.recordedAtMillis()), nullToEmpty(prevHash));
+        if (record.promptStamps() != null && !record.promptStamps().isBlank()) {
+            payload = payload + "|" + record.promptStamps();
+        }
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(payload.getBytes(StandardCharsets.UTF_8));

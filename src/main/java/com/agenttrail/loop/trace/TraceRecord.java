@@ -21,6 +21,10 @@ package com.agenttrail.loop.trace;
  * @param success         本轮模型调用是否成功
  * @param errorMessage    失败时的错误信息；成功时为 null
  * @param recordedAtMillis 记录写入时刻
+ * @param promptStamps    本轮用到的外置提示词标识（{@code id@version#hash}，多个用逗号分隔）；
+ *                        没用到外置提示词时为 null。主对话轮次通常就是 null——系统提示词的组装
+ *                        是条件拼接代码，按 requirements §6.2 明确豁免于提示词纳管，只有上下文压缩、
+ *                        记忆提取这类走 {@code PromptRegistry} 的内部调用才会填上（issue #101）
  */
 public record TraceRecord(
         String conversationId,
@@ -33,5 +37,14 @@ public record TraceRecord(
         long durationMillis,
         boolean success,
         String errorMessage,
-        long recordedAtMillis) {
+        long recordedAtMillis,
+        String promptStamps) {
+
+    /** 兼容既有调用方：没有提示词标识时等价于旧构造。 */
+    public TraceRecord(String conversationId, int round, String inputData, String outputData, String think,
+            long promptTokens, long completionTokens, long durationMillis, boolean success,
+            String errorMessage, long recordedAtMillis) {
+        this(conversationId, round, inputData, outputData, think, promptTokens, completionTokens,
+                durationMillis, success, errorMessage, recordedAtMillis, null);
+    }
 }
