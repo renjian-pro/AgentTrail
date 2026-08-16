@@ -10,7 +10,7 @@ import com.agenttrail.runtime.api.AgentRunSnapshot;
 import com.agenttrail.runtime.api.AgentRuntimePort;
 import com.agenttrail.runtime.api.CancellationReason;
 import com.agenttrail.runtime.api.ResumeCommand;
-import com.agenttrail.runtime.api.legacy.LegacyAgentLoopExecutorAdapter;
+import com.agenttrail.infrastructure.runtime.LegacyAgentLoopExecutorAdapter;
 
 import java.util.Objects;
 

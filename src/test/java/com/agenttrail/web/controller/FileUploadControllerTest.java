@@ -1,17 +1,22 @@
 package com.agenttrail.web.controller;
-import com.agenttrail.web.dto.FileUploadResponse;
-import com.agenttrail.web.dto.FileContentResponse;
 
 import cn.dev33.satoken.stp.StpUtil;
-import com.agenttrail.loop.core.support.ScriptedChatModel;
-import com.agenttrail.capability.file.FileQaService;
 import com.agenttrail.capability.file.FileTextParser;
+import com.agenttrail.capability.file.FileUploadPolicy;
 import com.agenttrail.capability.file.InMemoryFileStore;
-import com.agenttrail.capability.file.multimodal.ImageDescriptionService;
-import com.agenttrail.capability.file.multimodal.support.RecordingSyncChatModel;
+import com.agenttrail.capability.fileqa.application.FileContentQueryUseCase;
+import com.agenttrail.capability.fileqa.application.FileIngestTaskWorker;
+import com.agenttrail.capability.fileqa.application.FileIngestUseCase;
+import com.agenttrail.capability.fileqa.application.FileRetrievalUseCase;
+import com.agenttrail.capability.fileqa.application.LegacyEmbeddingAdapter;
+import com.agenttrail.capability.fileqa.application.LegacyFileStoreAdapter;
+import com.agenttrail.capability.fileqa.application.LegacyRetrievalAdapter;
 import com.agenttrail.capability.rag.FileVectorizationService;
 import com.agenttrail.capability.rag.RagRetrievalService;
 import com.agenttrail.capability.rag.support.RecordingVectorStore;
+import com.agenttrail.loop.core.support.ScriptedChatModel;
+import com.agenttrail.web.dto.FileContentResponse;
+import com.agenttrail.web.dto.FileUploadResponse;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.springframework.mock.web.MockMultipartFile;
@@ -23,20 +28,35 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mockStatic;
 
+/**
+ * 装配的是**生产真正使用的那条路径**（{@code FileIngestUseCase}/{@code FileContentQueryUseCase}）。
+ *
+ * <p>这一点是 Phase -1 修正的：此前这个类构造的是 {@code FileUploadController(FileQaService)}
+ * 兼容构造函数，而 Spring 注入的从来是另一条 UseCase 路径——下面那几个 IDOR / fail-open 回归断言
+ * 因此一直守在一条生产不执行的分支上。兼容构造函数已删除，控制器只剩一条路径。
+ */
 class FileUploadControllerTest {
 
+    private static final int RAG_THRESHOLD_CHARS = 100;
+
     private final RecordingVectorStore vectorStore = new RecordingVectorStore();
-    private final FileUploadController controller = new FileUploadController(
-            new FileQaService(new InMemoryFileStore(), new FileTextParser(),
-                    new FileVectorizationService(vectorStore),
-                    new RagRetrievalService(vectorStore, new ScriptedChatModel()),
-                    new ImageDescriptionService(new RecordingSyncChatModel(), "vl-model"),
-                    100));
+    private final LegacyFileStoreAdapter fileStore = new LegacyFileStoreAdapter(new InMemoryFileStore());
+    private final FileIngestUseCase ingest = new FileIngestUseCase(fileStore, new FileTextParser(),
+            new LegacyEmbeddingAdapter(new FileVectorizationService(vectorStore)), RAG_THRESHOLD_CHARS);
+    private final FileContentQueryUseCase contentQuery = new FileContentQueryUseCase(fileStore,
+            new FileRetrievalUseCase(new LegacyRetrievalAdapter(
+                    new RagRetrievalService(vectorStore, new ScriptedChatModel())), RAG_THRESHOLD_CHARS));
+
+    /**
+     * 阈值设成 {@link Long#MAX_VALUE}：这些用例断言的是同步上传路径的行为，
+     * 异步 reserve/worker 分支由 {@code FileIngestUseCase} 自己的测试覆盖。
+     */
+    private final FileUploadController controller = new FileUploadController(ingest, contentQuery,
+            new FileIngestTaskWorker(ingest, Runnable::run), FileUploadPolicy.defaults(), Long.MAX_VALUE);
 
     @Test
     void uploadParsesAndPersistsThenReturnsTheRoutingDecision() {
-        MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain",
-                "hello world".getBytes(StandardCharsets.UTF_8));
+        MockMultipartFile file = textFile();
 
         FileUploadResponse response;
         try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
@@ -51,12 +71,7 @@ class FileUploadControllerTest {
 
     @Test
     void contentReturnsWhatTheUploadProducedToTheOwningUser() {
-        MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain",
-                "hello world".getBytes(StandardCharsets.UTF_8));
-        long fileId;
-        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
-            fileId = controller.upload(file, "conv-1").fileId();
-        }
+        long fileId = uploadAs("user-1");
 
         FileContentResponse content;
         try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
@@ -69,12 +84,7 @@ class FileUploadControllerTest {
     /** Regression test for the IDOR this endpoint used to have: ownership must be checked per caller, not skipped. */
     @Test
     void contentRejectsAFileThatBelongsToADifferentUser() {
-        MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain",
-                "hello world".getBytes(StandardCharsets.UTF_8));
-        long fileId;
-        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
-            fileId = controller.upload(file, "conv-1").fileId();
-        }
+        long fileId = uploadAs("user-1");
 
         try (MockedStatic<StpUtil> stp = loggedInAs("user-2")) {
             assertThatThrownBy(() -> controller.content(fileId, null))
@@ -90,12 +100,7 @@ class FileUploadControllerTest {
      */
     @Test
     void contentRejectsWhenThereIsNoCallerIdentity() {
-        MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain",
-                "hello world".getBytes(StandardCharsets.UTF_8));
-        long fileId;
-        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
-            fileId = controller.upload(file, "conv-1").fileId();
-        }
+        long fileId = uploadAs("user-1");
 
         // No mocked StpUtil context here at all — matches what currentUserId() actually falls back
         // to outside of a real HTTP request (see its RuntimeException-catch branch).
@@ -120,12 +125,7 @@ class FileUploadControllerTest {
      */
     @Test
     void deleteRemovesTheFileSoItCanNoLongerBeRead() {
-        MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain",
-                "hello world".getBytes(StandardCharsets.UTF_8));
-        long fileId;
-        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
-            fileId = controller.upload(file, "conv-1").fileId();
-        }
+        long fileId = uploadAs("user-1");
 
         try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
             controller.delete(fileId);
@@ -141,12 +141,7 @@ class FileUploadControllerTest {
     /** Regression test for the same IDOR shape as content(): ownership must be checked per caller. */
     @Test
     void deleteRejectsAFileThatBelongsToADifferentUser() {
-        MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain",
-                "hello world".getBytes(StandardCharsets.UTF_8));
-        long fileId;
-        try (MockedStatic<StpUtil> stp = loggedInAs("user-1")) {
-            fileId = controller.upload(file, "conv-1").fileId();
-        }
+        long fileId = uploadAs("user-1");
 
         try (MockedStatic<StpUtil> stp = loggedInAs("user-2")) {
             assertThatThrownBy(() -> controller.delete(fileId))
@@ -166,6 +161,17 @@ class FileUploadControllerTest {
                     .isInstanceOf(ResponseStatusException.class)
                     .hasMessageContaining("404");
         }
+    }
+
+    private long uploadAs(String userId) {
+        try (MockedStatic<StpUtil> stp = loggedInAs(userId)) {
+            return controller.upload(textFile(), "conv-1").fileId();
+        }
+    }
+
+    private static MockMultipartFile textFile() {
+        return new MockMultipartFile("file", "note.txt", "text/plain",
+                "hello world".getBytes(StandardCharsets.UTF_8));
     }
 
     private static MockedStatic<StpUtil> loggedInAs(String userId) {

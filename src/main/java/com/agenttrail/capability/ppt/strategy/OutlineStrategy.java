@@ -1,7 +1,7 @@
 package com.agenttrail.capability.ppt.strategy;
 
 import com.agenttrail.loop.core.AgentLoopExecutor;
-import com.agenttrail.loop.model.OutputType;
+import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptGenerationException;

@@ -4,7 +4,7 @@ import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.MessageRendering;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.core.StructuredLlmCall;
-import com.agenttrail.loop.model.OutputType;
+import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;

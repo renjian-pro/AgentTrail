@@ -2,7 +2,6 @@ package com.agenttrail.web.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.agenttrail.capability.file.FileParsingException;
-import com.agenttrail.capability.file.FileQaService;
 import com.agenttrail.capability.file.FileUploadPolicy;
 import com.agenttrail.capability.fileqa.application.FileContentQueryUseCase;
 import com.agenttrail.capability.fileqa.application.FileIngestTaskWorker;
@@ -29,7 +28,15 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.NoSuchElementException;
 
-/** HTTP adapter for the File QA ports. Expensive parsing and vectorization run in a worker. */
+/**
+ * HTTP adapter for the File QA ports. Expensive parsing and vectorization run in a worker.
+ *
+ * <p>只有一条路径。这里原先还有一个接 {@code FileQaService} 的兼容构造函数，配合三处
+ * {@code legacyService != null ? ... : ...} 三元分支——生产从不走它，但
+ * {@code FileUploadControllerTest} 的全部用例（包括两个 IDOR 回归和一个 fail-open 回归）
+ * 恰恰跑在那条分支上，等于安全断言守着一条没人执行的代码。Phase -1 删掉兼容分支，
+ * 测试改造到生产路径，让那些回归断言真正保护线上行为。
+ */
 @RestController
 public class FileUploadController {
     private final FileIngestUseCase ingest;
@@ -37,7 +44,6 @@ public class FileUploadController {
     private final FileIngestTaskWorker taskWorker;
     private final FileUploadPolicy uploadPolicy;
     private final long asyncThresholdBytes;
-    private final FileQaService legacyService;
 
     @Autowired
     public FileUploadController(FileIngestUseCase ingest, FileContentQueryUseCase contentQuery,
@@ -48,17 +54,6 @@ public class FileUploadController {
         this.taskWorker = taskWorker;
         this.uploadPolicy = uploadPolicy;
         this.asyncThresholdBytes = asyncThresholdBytes;
-        this.legacyService = null;
-    }
-
-    /** Compatibility constructor for callers that still exercise the pre-port service directly. */
-    public FileUploadController(FileQaService legacyService) {
-        this.ingest = null;
-        this.contentQuery = null;
-        this.taskWorker = null;
-        this.uploadPolicy = FileUploadPolicy.defaults();
-        this.asyncThresholdBytes = Long.MAX_VALUE;
-        this.legacyService = legacyService;
     }
 
     @PostMapping("/agent/v1/files")
@@ -66,10 +61,6 @@ public class FileUploadController {
             @RequestParam("conversationId") String conversationId) {
         String userId = currentUserId();
         try {
-            if (legacyService != null) {
-                return FileUploadResponse.from(legacyService.ingest(userId, conversationId,
-                        file.getOriginalFilename(), file.getContentType(), file.getInputStream(), file.getSize()));
-            }
             uploadPolicy.validate(file.getOriginalFilename(), file.getContentType(), file.getSize());
             uploadPolicy.validateSignature(file.getContentType(), readHeader(file));
             if (file.getSize() > asyncThresholdBytes) {
@@ -97,15 +88,12 @@ public class FileUploadController {
     public FileContentResponse content(@PathVariable long fileId,
             @RequestParam(name = "question", required = false) String question) {
         String userId = currentUserId();
-        if (userId == null || (legacyService != null
-                ? !legacyService.belongsToUser(fileId, userId)
-                : !contentQuery.belongsToUser(fileId, userId))) {
+        // userId 为 null 必须直接拒绝，不能跳过归属校验——那是 fail-open，见对应回归测试
+        if (userId == null || !contentQuery.belongsToUser(fileId, userId)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件不存在: " + fileId);
         }
         try {
-            String content = legacyService != null ? legacyService.contentFor(fileId, question)
-                    : contentQuery.contentFor(fileId, question);
-            return new FileContentResponse(fileId, content);
+            return new FileContentResponse(fileId, contentQuery.contentFor(fileId, question));
         } catch (NoSuchElementException notFound) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, notFound.getMessage(), notFound);
         }
@@ -115,12 +103,11 @@ public class FileUploadController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable long fileId) {
         String userId = currentUserId();
-        boolean belongs = userId != null && (legacyService != null
-                ? legacyService.belongsToUser(fileId, userId)
-                : contentQuery.belongsToUser(fileId, userId));
-        if (!belongs) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件不存在: " + fileId);
+        if (userId == null || !contentQuery.belongsToUser(fileId, userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件不存在: " + fileId);
+        }
         try {
-            if (legacyService != null) legacyService.delete(fileId); else ingest.delete(fileId);
+            ingest.delete(fileId);
         } catch (NoSuchElementException notFound) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, notFound.getMessage(), notFound);
         }

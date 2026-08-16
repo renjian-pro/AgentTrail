@@ -6,7 +6,6 @@ import com.agenttrail.capability.file.FileTextParser;
 import com.agenttrail.capability.file.JdbcFileStore;
 import com.agenttrail.capability.file.FileUploadPolicy;
 import com.agenttrail.capability.fileqa.application.FileContentQueryUseCase;
-import com.agenttrail.capability.fileqa.application.FileContextProviderImpl;
 import com.agenttrail.capability.fileqa.application.FileIngestTaskWorker;
 import com.agenttrail.capability.fileqa.application.FileIngestUseCase;
 import com.agenttrail.capability.fileqa.application.FileRetrievalUseCase;
@@ -14,7 +13,6 @@ import com.agenttrail.capability.fileqa.application.LegacyEmbeddingAdapter;
 import com.agenttrail.capability.fileqa.application.LegacyFileStoreAdapter;
 import com.agenttrail.capability.fileqa.application.LegacyRetrievalAdapter;
 import com.agenttrail.capability.fileqa.port.EmbeddingPort;
-import com.agenttrail.capability.fileqa.port.FileContextProvider;
 import com.agenttrail.capability.fileqa.port.FileStorePort;
 import com.agenttrail.capability.fileqa.port.RetrievalPort;
 import com.agenttrail.capability.file.multimodal.ImageDescriptionService;
@@ -98,11 +96,6 @@ public class FileQaConfig {
     public FileContentQueryUseCase fileContentQueryUseCase(FileStorePort fileStorePort,
             FileRetrievalUseCase retrievalUseCase) {
         return new FileContentQueryUseCase(fileStorePort, retrievalUseCase);
-    }
-
-    @Bean
-    public FileContextProvider fileContextProvider(FileStorePort fileStorePort) {
-        return new FileContextProviderImpl(fileStorePort);
     }
 
     @Bean

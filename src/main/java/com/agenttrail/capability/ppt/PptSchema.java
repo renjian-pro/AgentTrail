@@ -1,5 +1,6 @@
 package com.agenttrail.capability.ppt;
 
+import com.agenttrail.runtime.api.OutputType;
 import java.util.List;
 
 /**
@@ -8,7 +9,7 @@ import java.util.List;
  * {@code subtitle_text}），{@code contentSlides} 每一项对应一张内容页（模板第 1 张幻灯片
  * 复制出来的一份，{@code slide_title_text}/{@code slide_body_text}）。
  *
- * <p>{@link com.agenttrail.loop.model.OutputType} 只支持单对象类型，{@code contentSlides}
+ * <p>{@link com.agenttrail.runtime.api.OutputType} 只支持单对象类型，{@code contentSlides}
  * 这个列表包在这个类里而不是单独结构化输出一个 {@code List}，是 {@code OutputType} 类注释里
  * 写明的既有约定（{@code DeepResearch} 的 {@code ResearchPlan} 同理）。
  *

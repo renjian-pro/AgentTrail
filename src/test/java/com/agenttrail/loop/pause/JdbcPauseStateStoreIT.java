@@ -1,6 +1,6 @@
 package com.agenttrail.loop.pause;
 
-import com.agenttrail.loop.model.OutputType;
+import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.support.SharedMySql;
 import org.junit.jupiter.api.BeforeAll;

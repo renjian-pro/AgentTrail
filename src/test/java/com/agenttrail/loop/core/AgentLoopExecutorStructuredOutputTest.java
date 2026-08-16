@@ -1,7 +1,7 @@
 package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.core.support.ScriptedChatModel;
-import com.agenttrail.loop.model.OutputType;
+import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.structured.JsonRepair;

@@ -21,7 +21,7 @@ import com.agenttrail.capability.ppt.strategy.SearchStrategy;
 import com.agenttrail.capability.ppt.strategy.TemplateStrategy;
 import com.agenttrail.runtime.lifecycle.InMemoryLeaseManager;
 import com.agenttrail.runtime.lifecycle.LeaseManager;
-import com.agenttrail.runtime.lifecycle.RedisLeaseManager;
+import com.agenttrail.infrastructure.lease.RedisLeaseManager;
 import com.agenttrail.loop.task.RedisTaskLock;
 import io.minio.MinioClient;
 import okhttp3.OkHttpClient;

@@ -1,6 +1,6 @@
 package com.agenttrail.runtime.api;
 
-import com.agenttrail.loop.model.OutputType;
+import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.platform.identity.Principal;
 import com.agenttrail.platform.ids.ConversationId;
 

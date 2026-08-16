@@ -13,7 +13,6 @@ import com.agenttrail.runtime.api.AgentEvent;
 import com.agenttrail.runtime.api.AgentRunHandle;
 import com.agenttrail.runtime.api.AgentRuntimePort;
 import com.agenttrail.web.dto.AgentChatRequest;
-import com.agenttrail.web.dto.AgentChatResponse;
 import com.agenttrail.web.dto.DeepResearchTaskResponse;
 import com.agenttrail.web.dto.FileUploadResponse;
 import com.agenttrail.web.dto.PptGenerationResponse;
@@ -37,11 +36,6 @@ import static org.mockito.Mockito.when;
 class HttpContractSnapshotTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-
-    @Test
-    void legacyChatResponseShapeIsFrozen() {
-        assertThat(fieldNames(new AgentChatResponse("answer"))).containsExactly("answer");
-    }
 
     @Test
     void deepResearchTaskResponseShapeIncludesProgress() {

@@ -2,7 +2,7 @@ package com.agenttrail.capability.ppt;
 
 /**
  * REQUIREMENT 状态的产出：把用户一段自然语言原始需求，提炼成结构化的 PPT 制作需求
- * （issue #24）。{@link com.agenttrail.loop.model.OutputType} 结构化输出的目标类型。
+ * （issue #24）。{@link com.agenttrail.runtime.api.OutputType} 结构化输出的目标类型。
  *
  * @param title      PPT 标题
  * @param topic      核心主题，一句话概括

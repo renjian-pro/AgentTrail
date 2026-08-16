@@ -1,6 +1,6 @@
 # AgentTrail 重构技术文档
 
-> 最后更新：2026-08-11
+> 最后更新：2026-08-16
 > 这是唯一一份重构技术文档，取代并合并了此前的 `architecture-refactor-blueprint-2026-08-03.md` 与
 > `refactor-audit-2026-08-11.md`——两份文档已删除，内容全部并入本文档。
 > **按系统层级组织**：核心层（Agent Runtime 引擎）→ 业务层（Capability Packs）→ 监控层（Metrics &
@@ -13,22 +13,46 @@
 
 ## 0. 先给结论
 
-当前工程不是没有架构，而是处在"Runtime 已经长出来，Capability Pack 正在从 Runtime 剥离"的过渡阶段——`capability/`（analytics/auth/sys/deepresearch/ppt/file/rag）已经落地，`loop/` 下已经只剩纯 Runtime 机制。
+**2026-08-16 复核后的判断变了**：不再是"Runtime 已经长出来、Capability Pack 正在剥离"的良性过渡，而是**三代实现并存、谁也没替换掉谁**——`legacy/V0`（还挂在 `/agent/chat`）、`loop/`（真正跑生产）、`runtime/`（62 类 1495 行，平均每类 24 行的空壳骨架）。本文档 §1.8 定的目标架构被"执行"成了**只建了模块名、没搬逻辑**：六个目标模块类全部存在于 `runtime/`，但 `AgentLoopExecutor` 仍是 1181 行。
+
+因此第一优先级从"继续按 Phase 往下拆"改成了**先做减法**。在删掉空壳层之前继续加抽象，只会让并存的层数从 3 变 4。
+
+**✅ Phase -1 已于 2026-08-16 完成**（85 文件，+414/−1273，净减 859 行；删除 37 个文件、移动 18 个；`mvn test` 666 通过）。做完之后：
+
+- `runtime/` 从 62 类降到 25 类，只剩端口契约（`api`/`model`/`tool`/`agent`）和两个真实在用的存储（`repository`/`lifecycle`）
+- **`loop` ↔ `runtime` 包循环已消除**，方向单向化为 `loop → runtime`，并由 `ArchitectureBaselineTest.runtimePortLayerShouldNotDependOnTheLoopImplementation`（**未 `@Disabled`**）钉死
+- V0 的 HTTP 入口和 Spring 装配已删，双入口问题消失
+- 四张空表 DDL 已从 `db/schema.sql` 和 `db/migration/V1__init.sql` 同时移除
+
+逐项落地结果见 §6 Phase -1。下一步是 Phase 0（架构护栏）。
+
+> 本轮明确排除的范围：**多租户不做**。`platform/identity/TenantContext.DEFAULT` 恒为 `"default"`、`ExecutionPrincipal.tenantId` 调用方一律传 null、`agent_run.tenant_id` 注释写着 `'Tenant placeholder'`——这些占位是死的，处置方式是删除或标注放弃，不是补齐。用户级隔离（`user_id` + Sa-Token + `sys_*` + `DataScopeRewriter`）照常维护。
 
 | 优先级 | 所属层 | 问题 | 一句话 | 章节 |
 |---|---|---|---|---|
+| ✅ 已解决 | 核心层 | `runtime/` 整层是空壳，四张表 DDL 无写入方 | Phase -1 删除 `task`/`outbox`/`coordinator` 及 `RunRepository`/`AgentRouter`/`SubAgentRunner` 等 28 个类，四张表 DDL 一并移除 | §6 |
+| ✅ 已解决 | 核心层 | `loop` ↔ `runtime` 包循环依赖 | Phase -1 把 loop 内部类搬回 `loop.core`/`loop.profile`、适配器下沉 `infrastructure`，方向单向化并由 ArchUnit 钉死 | §6 |
+| ✅ 已解决 | 业务层 | `FileUploadController` 双路径，安全回归测试守着死分支 | Phase -1 删除 `legacyService` 兼容构造函数，8 个用例（含 2 个 IDOR、1 个 fail-open 回归）迁到生产路径 | §2.4 |
+| 🔴 P0 | 核心层 | telescoping constructor 被"修"成了 `Object... options` | 执行器 21 个位置槽、工厂 17 个，编译期零类型检查，传错顺序只在运行时 `ClassCastException`。Phase 3 处理 | §1.3 |
+| 🔴 P0 | 核心层 | 能力 = 代码分支，不是数据 | 工厂 5 个 `forXxx` 方法 + 4 个缓存 map，方法体是同一段 builder 链的复制。Phase 3 处理 | §1.3 |
+| 🟠 P1 | 核心层 | 提示词零外置、零版本 | `resources/` 下没有任何提示词文件，全是 Java 字符串常量；改一句要重编译，Golden 评测无法归因到提示词版本 | §1.9 |
+| 🟠 P1 | 核心层 | 缺**能力级**意图路由 | 能力包内部各有一套关键词判定（`PptIntentRecognizer`、`DeepResearchService#needsMoreInfo`），但选哪个能力全靠前端传 `mode`，后端只有 `"analytics".equals(mode)` 一处比较 | §1.9 |
+| 🟠 P1 | 核心层 | `runId ≡ conversationId` | `RunId.of(conversationId)`——一个会话永远只能有一个 run，历史 run 不可回溯，`snapshot()` 直接抛 `UnsupportedOperationException` | §1.9 |
+| 🟠 P1 | 业务层 | 文件问答两条编排路径并存 | HTTP 上传/查询走 `capability/fileqa` 的 UseCase，Agent 工具 `load_file_content` 走 `capability/file/FileQaService`，共用 `JdbcFileStore` 但各有一套解析/向量化编排——**图片描述只有后者做**。Phase 8 合并 | §2.4 |
+| 🟠 P1 | 核心层 | 超时收尾与锁释放存在竞态（一族计时测试不稳定） | 4 次全量跑挂 2 次、每次挂不同用例、单独跑必过：`AgentLoopExecutorRoundTimeoutTest` 与 `SynchronousLlmCallTest`。真实后果是同一会话紧接着重试可能拿到假的 `CONCURRENT_EXECUTION` | §1.4 |
 | 🔴 P0 | 观测审计层 | Golden Case / 审计接口无角色校验 | 任何登录用户可跨用户浏览会话、改评测用例、查审计哈希链 | §4.1 |
 | 🔴 P0 | 业务层 | PPT 下载接口未登录请求绕过归属校验 + MinIO bucket 公开读 | 任何人拿到/猜到 taskId 就能下载别人的 PPT 产物，不需要登录 | §2.3 |
-| 🔴 P0 | 核心层 | `AgentLoopExecutorFactory` 比 `AgentLoopExecutor` 本体更严重的 telescoping constructor | 24 字段、12 构造函数，原蓝图只诊断了执行器一个类 | §1.3 |
-| 🔴 P0 | 核心层 | V0/V1 双入口同时暴露 | `legacy/V0.java` 的阻塞调用至今零超时，是"给每个调用加超时"这个 fix 唯一没盖到的路径 | §1.3 |
+| ✅ 已解决 | 核心层 | V0/V1 双入口同时暴露 | Phase -1 删除 `/agent/chat` 端点与 `AgentRuntimeConfig` 装配；`legacy/V0.java` 保留为不装配的参考实现（8 份文档引用它，且有 AgentScope Golden 证明测试） | §6 |
 | 🟠 P0 | 核心层 | 主 HikariCP 连接池从未显式调参 | 全部 JDBC 存储共用默认 10 连接，次要连接池反而调过参 | §1.5 |
 | 🟠 P0 | 核心层 | 两个后台线程池硬编码 4 线程 + 无界队列 | `PptGenerationConfig`/`DeepResearchConfig`，突发负载下是 OOM 风险点 | §1.5 |
 | 🟠 P0 | 观测审计层 | 集成测试里能跑进 CI 的部分也没跑 | ~28 个 `*IT.java` 里 Testcontainers 自包含的那部分本可零成本接入 CI | §4.4 |
 | 🟡 P1 | 核心层 | `Hook`/`StageOutputProvider` 两套 SPI 零实现 | 生产里完全没人用，抽象没有回本；**2026-08-11 已定案：留、不删**（`PreToolUse` 已有限速/审批场景，ASJ `SkillHook`/SAA `SkillsAgentHook` 证明"技能注入做成 Hook"是生产验证过的真实需求，具体理由见 [ticket-14.md](specs/refactor-remediation/refactor-remediation-ticket-14.md) §3.1）——这一行的"没有回本"是问题现状描述，不是删除建议 | §1.6 |
 | 🟡 P1 | 核心层 | 新增 Tool 没有注册机制 | `GrepTool`/`BashTool`/`FileSystemTools` 甚至没接入生产 | §1.6 |
-| 🟡 P1 | 业务层 | 5 处重复的"结构化 LLM 调用+JsonRepair+解析"逻辑 | 该抽个 `StructuredLlmCall`，仿照已有的 `SynchronousLlmCall` | §2.4 |
+| ✅ 已解决 | 业务层 | 5 处重复的"结构化 LLM 调用+JsonRepair+解析"逻辑 | 已收敛到 `loop/core/StructuredLlmCall`，2026-08-16 复核确认 | §2.4 |
+| 🟡 P1 | 业务层 | 跨层重复：任务存储三套、会话读写三套、线程池六处 | 完整清单和处置阶段见 §2.4 表 | §2.4 |
+| 🟡 P1 | 核心层 | 分布式一半真一半假 | Redis 锁+中断广播是真的（但不续期）；DeepResearch 任务 ID 是进程内自增 long，PPT 租约默认内存版，chat SSE 不支持断线重放 | §1.9 |
 | 🟡 P1 | 业务层 | DeepResearch/PPT 任务模型深浅不一 | PPT 有 DB checkpoint，DeepResearch 纯内存 Map，重启即丢且从不清理终态任务 | §2.3 |
-| 🟡 P1 | 业务层 | DeepResearch 进度对前端完全黑盒 | 前端已经画好"规划→检索→验证→综合"流程图等着数据，后端 `DeepResearchTaskResponse` 却只有 status 一个字段，四个环节永远不会高亮 | §2.7 |
+| ✅ 已解决 | 业务层 | DeepResearch 进度对前端完全黑盒 | `DeepResearchTaskResponse` 已带 `currentStep`，`DeepResearchService` 沿 CLARIFYING/PLANNING/SEARCHING 逐步上报，worker 持有 `volatile currentStep`；2026-08-16 复核确认 | §2.7 |
 | 🟢 P2 | 核心层 | `AgentLoopExecutor` 每轮看门狗定时器不主动释放 | 多轮对话下是真实的内存/定时器堆积 | §1.4 |
 
 ---
@@ -41,8 +65,8 @@
 
 | 入口 | 当前实现 | 判断 |
 |---|---|---|
-| `POST /agent/chat` | [legacy/V0.java](../src/main/java/com/agenttrail/legacy/V0.java)（`AgentScopeRuntime`） | V0 旧演示路径，不再演进但仍装配、仍能跑，保留作历史对照 |
-| `POST /agent/v1/chat` | [loop/core/AgentLoopExecutor.java](../src/main/java/com/agenttrail/loop/core/AgentLoopExecutor.java) | V1 主线流式 Agent，当前主入口 |
+| ~~`POST /agent/chat`~~ | 已删除 | ✅ Phase -1：端点（`AgentController`）、装配（`AgentRuntimeConfig`）、DTO（`AgentChatResponse`）已删。`legacy/V0.java` 本身**保留**为不装配的参考实现——8 份文档引用它，`AgentScopeRuntimeProofTest` 还在用真实 AgentScope 适配器跑 Golden 任务。它现在只是一个库，不再是活跃入口，零超时的风险随之消失 |
+| `POST /agent/v1/chat` | [loop/core/AgentLoopExecutor.java](../src/main/java/com/agenttrail/loop/core/AgentLoopExecutor.java) | V1 主线流式 Agent，当前主入口。实际调用链六跳、中间四跳纯转发：`AgentLoopController → ChatApplicationService → RuntimeProfileRegistry → ChatToolScopeRuntimeAdapter → LegacyAgentLoopExecutorAdapter → AgentLoopExecutorFactory → AgentLoopExecutor` |
 
 ```text
 loop/                          # 只剩纯 Runtime 机制，不再有业务能力包（capability/ 已在 2026-08-06 剥离完成）
@@ -55,7 +79,30 @@ loop/                          # 只剩纯 Runtime 机制，不再有业务能�
 ├── hook/                      # Hook SPI（6 拦截点，生产零实现，见 §1.6）
 └── security/                  # PromptInjectionGuard/PiiMasker/ToolRateLimiter（这三个机制的现状
                                 #   属于观测审计层，见 §4.3，这里只是代码位置）
+
+runtime/                       # ✅ Phase -1 后：25 个类，只剩端口契约和真实在用的存储
+├── api/                       # 端口定义：AgentRuntimePort/AgentRequest/AgentEvent/OutputType
+├── model/ tool/               # ModelGateway/ToolDefinition/ToolExecutor
+├── agent/                     # AgentDefinition/AgentRegistry——Phase 3 的落点，目前无生产使用方
+├── repository/                # CheckpointStore/RunEventStore（DeepResearch 真实在用，内存实现）
+└── lifecycle/                 # LeaseManager/InMemoryLeaseManager（PPT 真实在用）
+
+loop/core/                     # Phase -1 从 runtime/ 搬回来的 loop 内部类：
+│                               #   ContextAssembler/RoundDriver/RunCompletionCoordinator/
+│                               #   RunLifecycleManager/ToolRoundExecutor
+loop/profile/                  # 同上：RuntimeModule/RuntimeProfile/RuntimeProfileValidator
+infrastructure/runtime/        # LegacyAgentLoopExecutorAdapter（loop → runtime.api 的适配器）
+infrastructure/lease/          # RedisLeaseManager（依赖 loop.task.RedisTaskLock，属于 infra）
 ```
+
+**Phase -1 删除的**（28 个类）：`a2a/`（4）、`task/`（6）、`outbox/`（4）、`coordinator/`（2）、
+`repository/RunRepository`+`InMemoryRunRepository`、`lifecycle/CancellationPort`+`PersistentCancellationPort`、
+`AgentRunCoordinator`、`agent/AgentRouter`+`SubAgentRunner`、`tool/` 下 5 个只互相引用的死类。
+配套的 `agent_run` / `agent_run_event` / `agent_run_checkpoint` / `agent_run_outbox` 四张表 DDL
+也从 `db/schema.sql` 和 `db/migration/V1__init.sql` 同时移除——主代码从来没有一处 SQL 写过它们。
+
+> 搬迁的原则是"谁的内部实现就放回谁那里"：`ContextAssembler` 这些只被 `AgentLoopExecutor` 使用，
+> 它们是 loop 的内部结构而不是 runtime 的端口；放在 `runtime/` 才是造成双向依赖的直接原因。
 
 ### 1.2 调用关系：普通流式对话
 
@@ -99,8 +146,12 @@ sequenceDiagram
 |---|---|---|
 | V0/V1 双入口同时暴露 | `/agent/chat` 仍装配 `V0.AgentScopeRuntime`；`legacy/V0.java` 的 `agent.call(...).block()` 至今零超时——是"给每个模型/工具调用加超时"这个 fix（[SynchronousLlmCall.java](../src/main/java/com/agenttrail/loop/core/SynchronousLlmCall.java) 覆盖了 6 处同步调用点）唯一没盖到的第四条路径 | 更深层的修法不是再补一个调用点的超时，而是在 `ChatModel` 底层 HTTP client 上配置 read timeout——目前 `application*.yml` 里 `spring.ai.*timeout` 是空的，任何未来新增调用点默认都不设防 |
 | 业务直接依赖 `AgentLoopExecutor` | PPT 策略、DeepResearch、WebSearch 测试直接 `new`/`forModel().call()` | Runtime 无法替换，业务无法独立测试（这条的业务侧后果见 §2.3） |
-| `AgentLoopExecutor` 依赖过多、telescoping constructor | 1206 行，全项目最大类，25 个字段，16 个依次转发的构造函数（已有 `Builder` 覆盖同样能力，构造函数链是纯历史包袱） | 空值语义、装配错误和回归风险持续增加 |
-| **`AgentLoopExecutorFactory` 比执行器本体更严重**（本次审计新发现） | 497 行，**24 个字段，12 个 telescoping 构造函数**——比 `AgentLoopExecutor` 还多几个；还揉进了 4 个独立的 `ConcurrentHashMap` executor 缓存（plain/webSearch/analytics/chart）和一处硬编码模型兼容性绕过逻辑（`resolveToolCallingModel()` 把带工具的 `qwen-plus` 请求悄悄路由到 `deepseek-chat`，`deepseek-chat` 未注册时直接抛 `IllegalStateException`） | 同上，且范围比原诊断更大 |
+| ~~**`runtime/` 整层是空壳**~~ | ✅ **Phase -1 已解决**。当时的证据：62 类 1495 行、零 Spring 注解；`repository`/`outbox`/`task`/`coordinator` 只有 `InMemory*` 实现，**没有任何 Jdbc 实现**；四张表 DDL 主代码零写入；`AgentRouter`/`SubAgentRunner` 只有测试引用 | 这是"不引入自研工作流引擎"这条约束最终被违反的落点。已删除 28 个类 + 四张表 DDL，`runtime/` 降到 25 类 |
+| ~~**`loop` ↔ `runtime` 包循环依赖**~~ | ✅ **Phase -1 已解决**。当时反向 import 有 15 处（`RuntimeModule` 引 `loop.context`/`loop.memory`/`loop.trace`，`RunLifecycleManager` 引 `loop.task.AgentTaskManager`，`AgentRequest` 引 `loop.model.OutputType`……） | 修法不是加接口，而是承认那些类本来就属于 `loop`：搬回 `loop.core`/`loop.profile`，适配器下沉 `infrastructure`，`OutputType` 上提到 `runtime.api`。现由未 `@Disabled` 的 ArchUnit 规则钉死 |
+| **telescoping constructor 被"修"成了 `Object... options`** | 原诊断的 16/12 个构造函数已经不存在了，换成 [AgentLoopExecutor.java:154](../src/main/java/com/agenttrail/loop/core/AgentLoopExecutor.java) 的 `AgentLoopExecutor(ChatModel, List<ToolCallback>, int, Object... options)` **21 个位置槽**、[AgentLoopExecutorFactory.java:131](../src/main/java/com/agenttrail/web/service/AgentLoopExecutorFactory.java) 的 **17 个位置槽**，槽位靠 `option(options, 7, PauseConfig.class, null)` 按下标取 | **比原来更糟**：把编译期类型检查换成了运行时 `ClassCastException`，传错顺序编译器一句话都不说。`Builder` 仍在且是唯一安全入口。附带：`AgentLoopExecutorFactory.java:110-129` 留着 6 个方法体已删、注释还在的孤儿 Javadoc 块 |
+| **能力 = 代码分支而不是数据** | `AgentLoopExecutorFactory` 5 个工厂方法（`forModel`/`forModel(webSearch)`/`forModelWithCharts`/`forAnalytics`/`forInternalOrchestration`）+ 4 个 `ConcurrentHashMap` 缓存，方法体是同一段 builder 链的复制，差别只在工具列表和 `ContextPolicy`；还揉进硬编码模型兼容性绕过（`resolveToolCallingModel()` 把带工具的 `qwen-plus` 悄悄路由到 `deepseek-chat`） | 加第 6 种能力 = 加第 6 个方法 + 第 5 个缓存 map。`runtime/agent/AgentDefinition` 已经把这件事的正确形态写出来了（`id/description/RuntimeProfile/tools/InputContract/OutputContract/AgentPolicy`），只是没人用——**它是重构的落点，不是删除对象** |
+| `profileId` 参数从未被读取 | `RuntimeProfileRegistry.resolve(profileId, modelId, scope)`（[:25](../src/main/java/com/agenttrail/capability/chat/application/RuntimeProfileRegistry.java)）方法体里完全不碰 `profileId`，runtime 实际按 modelId 索引 | "profile"概念只有签名没有实现，读代码的人会以为有一套 profile 机制 |
+| 模型兼容性回退逻辑两处独立实现 | `AgentLoopExecutorFactory:428` 和 `RuntimeProfileRegistry:28` 各自调 `ToolCallingCompatibility.needsFallback` 做同一个决策 | 两处任一改动就会不一致 |
 | Spring AI 类型泄漏到核心和业务 | `ChatModel`、`ToolCallback`、`Message`、`Flux` 出现在核心公开接口和业务构造函数 | 无法做框架迁移或多语言 sidecar |
 | `skillTool`/`toolSearchSession` 共用同一个会话级工具槽位（2026-08-08 新增） | `AgentLoopExecutor.finishRound` 靠代码注释"生产环境下两者互斥"保证不撞车，不是类型系统保证 | 以后两者要共存会静默出错 |
 | `SkillController` 违反刚定的包规范 | 放在 `loop/skills/` 而不是 `web/controller/` | 和团队自己刚统一好的分包原则矛盾 |
@@ -108,6 +159,11 @@ sequenceDiagram
 ### 1.4 效率与资源泄漏
 
 - **看门狗定时器不主动释放**：[AgentLoopExecutor.java:707-717](../src/main/java/com/agenttrail/loop/core/AgentLoopExecutor.java) 每轮 `Mono.delay(roundTimeout).subscribe(...)` 正常结束时从不 dispose，持有整个 `RunContext`（含消息列表）直到 8 分钟超时自然触发。`ToolCallExecutor` 已经用 `.timeout(...)` 串联管道做到同样效果且不泄漏，`AgentLoopExecutor` 应该抄同样写法。
+- **一族计时断言在满负载下不稳定**（2026-08-16 观察到）：本轮 4 次全量运行挂了 2 次，**每次挂的是不同的用例**，单独跑都必过：
+  - `AgentLoopExecutorRoundTimeoutTest.abandonsARoundThatKeepsEmittingContentlessChunksWithoutEverCompleting`——挂在 `taskManager.hasRunningTask("conv-1")` 为 false 这条，即"超时收尾必须释放单飞锁"。含义是超时异常已经回到调用方、但 watchdog 那条链上的锁释放还没跑完，两者存在竞态。**这不只是测试问题**：真实场景下同一会话紧接着重试，可能拿到一次假的 `CONCURRENT_EXECUTION`。
+  - `SynchronousLlmCallTest.failsWithinTheConfiguredTimeoutInsteadOfHangingForeverWhenTheModelNeverResponds`——同类形状，断言"在配置的超时附近拿回控制权"。
+
+  两者共同的问题是**用 200ms 级的墙钟阈值断言异步收尾**，CI/满负载机器上余量不够。修的方向有两个，建议一起做：把锁释放放到调用方拿到异常之前（这是真实的时序缺陷，不是测试问题），以及把测试的时间阈值改成虚拟时钟（Reactor 的 `StepVerifier.withVirtualTime`）而不是 `System.currentTimeMillis()`。与上面的"看门狗定时器不主动释放"是同一处代码。
 - **Skill 列表每轮重新查库+读盘**：`SkillManager.buildSkillsTool()` 每一**轮**（不是每次对话开始）都做 JDBC 查询 + 逐个技能读盘解析 + 重建工具描述字符串。语义上只需要按对话粒度缓存+失效钩子。
 
 ### 1.5 高并发支持
@@ -140,15 +196,19 @@ sequenceDiagram
 
 | 类 | 行数 | 混杂的职责 |
 |---|---|---|
-| [AgentLoopExecutor.java](../src/main/java/com/agenttrail/loop/core/AgentLoopExecutor.java) | 1206 行，25 个字段 | 单飞注册、记忆注入、文件注入、看门狗定时器、Micrometer 指标、工具延迟发现、暂停/恢复/HITL、追踪记录、预算熔断、限速执行、六个 Hook 生命周期触发 |
-| [AgentLoopExecutorFactory.java](../src/main/java/com/agenttrail/web/service/AgentLoopExecutorFactory.java) | 497 行，24 个字段 | 模型注册表 + 4 个独立 executor 缓存 + 硬编码模型兼容性绕过逻辑 |
+| [AgentLoopExecutor.java](../src/main/java/com/agenttrail/loop/core/AgentLoopExecutor.java) | **1181 行**，38 个字段 | 单飞注册、记忆注入、文件注入、看门狗定时器、Micrometer 指标、工具延迟发现、暂停/恢复/HITL、追踪记录、预算熔断、限速执行、六个 Hook 生命周期触发 |
+| [AgentLoopExecutorFactory.java](../src/main/java/com/agenttrail/web/service/AgentLoopExecutorFactory.java) | **445 行** | 模型注册表 + 4 个独立 executor 缓存 + 5 个工厂方法 + 硬编码模型兼容性绕过逻辑 |
 
 **最该拆的是 `AgentLoopExecutor`**，按"改动理由是否相同"拆成 4 块：
 
 1. **RoundDriver**（模型流式协议变了才动）
 2. **RunLifecycleManager**（治理策略变了才动）
-3. **RunObservability**（追踪记录 + Micrometer 计时器——本次审计新发现，之前的模块划分没单独点出来，指标库升级和暂停恢复 bugfix 现在会改同一个 1206 行的文件）
+3. **RunObservability**（追踪记录 + Micrometer 计时器——指标库升级和暂停恢复 bugfix 现在会改同一个文件）
 4. **ContextAssembler**（Prompt 组装规则变了才动）
+
+> ⚠️ **2026-08-16 复核：这次拆分只拆了名字，没搬逻辑。** 上面四个类名（以及 §1.8 完整六模块里的其余两个）现在都真实存在于 `runtime/`，但全是转发器或空实现：`AgentRunCoordinator` 是两个方法的委托；`ContextAssembler.assemble(systemPrompt, history, user)` 唯一调用点传的是 `assemble(null, messages, ...)`，实际只做了个 `addAll`；`RunLifecycleManager.cancel()` 一行转调 `taskManager.stopTask()`；`ToolRoundExecutor` 在执行器里是 `new ToolRoundExecutor()`（`toolExecutor` 为 null，`execute()` 一调就 NPE，真正的工具执行仍走 `ToolCallExecutor`）；`RunCompletionCoordinator` 传的是空 lambda。
+>
+> 而 `AgentLoopExecutor` 本身**一行没少**——1206 → 1181 行只是别处的清理。教训：模块拆分的验收标准必须是"源类行数下降 + 新类有真实逻辑 + 旧路径被删除"，不能是"新类文件存在 + 编译通过"。
 
 ### 1.8 目标架构与落地阶段
 
@@ -164,16 +224,16 @@ public interface AgentRuntimePort {
 }
 ```
 
-`AgentLoopExecutor` 先保留为兼容 facade，内部拆成 6 个模块（对应 §1.7 的 4 块拆分，这里是完整目标态）：
+`AgentLoopExecutor` 先保留为兼容 facade，内部拆成 6 个模块（对应 §1.7 的 4 块拆分，这里是完整目标态）。**"实际状态"列是 2026-08-16 复核结果**——六个类都建出来了，逻辑一个都没搬：
 
-| 新模块 | 只负责什么 | 当前来源 |
-|---|---|---|
-| `AgentRunCoordinator` | 创建/恢复 RunContext，驱动整体生命周期 | `stream`/`resume` |
-| `RoundDriver` | 一轮模型请求、chunk 收集、终局判断 | `scheduleRound`/`processChunk` |
-| `ToolRoundExecutor` | 工具解析、权限校验、并发执行、结果排序 | `ToolCallExecutor` |
-| `ContextAssembler` | 历史、记忆、附件、系统 Prompt 组装 | `stream` 中的消息准备逻辑 |
-| `RunCompletionCoordinator` | 落库、Stage、Trace、Memory、Complete 事件 | `completeRun` |
-| `RunLifecycleManager` | 单飞、取消、暂停、租约、恢复 | `AgentTaskManager` + pause |
+| 新模块 | 只负责什么 | 当前来源 | 实际状态 |
+|---|---|---|---|
+| `AgentRunCoordinator` | 创建/恢复 RunContext，驱动整体生命周期 | `stream`/`resume` | ❌ 两方法委托壳，且主代码零引用 |
+| `RoundDriver` | 一轮模型请求、chunk 收集、终局判断 | `scheduleRound`/`processChunk` | 🟡 包了 `LlmInvoker`，chunk 收集/终局判断仍在执行器里 |
+| `ToolRoundExecutor` | 工具解析、权限校验、并发执行、结果排序 | `ToolCallExecutor` | ❌ 生产以 `toolExecutor=null` 构造，只有 `validate()` 有用 |
+| `ContextAssembler` | 历史、记忆、附件、系统 Prompt 组装 | `stream` 中的消息准备逻辑 | ❌ 唯一调用点传 `systemPrompt=null`，退化成 `addAll` |
+| `RunCompletionCoordinator` | 落库、Stage、Trace、Memory、Complete 事件 | `completeRun` | ❌ 传入空 lambda |
+| `RunLifecycleManager` | 单飞、取消、暂停、租约、恢复 | `AgentTaskManager` + pause | ❌ 一行转调 `taskManager.stopTask()` |
 
 用 `RuntimeProfile`/`RuntimeModule` 替代 telescoping constructor + null：可选能力不再通过 null 表达，而是 `RuntimeModule.contextCompaction(...)`/`memory(...)`/`pauseResume(...)`/`trace(...)`/`stageOutput(...)`/`toolSearch(...)` 这样的显式模块；装配失败必须在启动时失败，生产 Bean 打印最终 Profile 摘要（`profile=chat-default model=deepseek-chat tools=[web-search,chart] pause=false memory=false trace=true persistence=jdbc`）。
 
@@ -181,7 +241,81 @@ public interface AgentRuntimePort {
 
 事件协议：统一 `EventEnvelope`（eventId/runId/taskId/conversationId/sequence/occurredAt/type/source/visibility/payload），支持 `RunStarted`/`ModelDelta`/`ToolStarted`/`ToolCompleted`/`CheckpointSaved`/`Paused`/`RunCompleted`/`RunFailed`/`RunCancelled`，断线用 `Last-Event-ID`/`afterSequence` 重放。
 
-**对应落地阶段**（完整 Phase 列表见 §6）：Phase 0（架构护栏）→ Phase 1（冻结 `AgentRuntimePort` 契约）→ Phase 2（切断 Spring AI 泄漏）→ Phase 3（拆分 6 模块、删 telescoping constructor、给 `Hook`/`StageOutputProvider`——已定案保留——接上第一个真实实现）→ Phase 4（统一 Run/Task/Checkpoint/Event 基础设施，供业务层使用）。
+**对应落地阶段**（完整 Phase 列表见 §6）：Phase -1（先做减法，删空壳层）→ Phase 0（架构护栏）→ Phase 1（冻结 `AgentRuntimePort` 契约）→ Phase 2（切断 Spring AI 泄漏）→ Phase 3（拆分 6 模块、删 `Object... options`、给 `Hook`/`StageOutputProvider`——已定案保留——接上第一个真实实现）→ Phase 4（统一 Run/Task/Checkpoint/Event 基础设施，供业务层使用）。
+
+### 1.9 Agent 工程能力缺口（2026-08-16 新增）
+
+前面几节讲的是"代码结构"问题。这一节讲的是"作为一个 Agent 平台该有而没有"的能力缺口——这些不是重构能顺手带出来的，需要单独设计。
+
+#### 提示词管理：基本不存在
+
+`src/main/resources/` 下**零个提示词文件**。全部是 Java 字符串常量：`PptPrompts`（4 个）、`DeepResearchPrompts`（8 个），加上散落在 `ContextCompactor`、`MemoryExtractor`、`PromptInjectionGuard`、`ToolSearchCallback`、`LlmJudge`、以及 `AgentLoopExecutor.buildDateSection/buildMemorySection/buildFileSection` 里的内联文本。
+
+缺的是：版本化、变量契约（哪些占位符必填）、灰度/AB、**与 Golden 评测的联动**。`resources/analytics/golden/*.yml` 评测集已经有了，但改一句提示词仍要重编译部署，`agent_trace` 里也没记本次用的提示词版本——于是评测结果无法归因到"是提示词改动导致的还是模型抖动"。
+
+最小可行形态：`resources/prompts/<capability>/<name>.md` + front-matter 版本号，加载时校验占位符，`TraceRecord` 增加 `promptVersion` 字段。业界参照 Langfuse / PromptLayer 的 prompt registry。
+
+#### 会话上下文管理：机制齐，装配散
+
+**做得好的部分**：`HistoryBudget`（按 token 预算而非固定轮数回填历史）+ `ContextCompactor`（轮内压缩 + 保护名单）分工清楚，两者类注释都写明了"一轮开始前"vs"一轮进行中"的边界。这块比多数同类项目扎实，不要动。
+
+问题：
+
+- `HISTORY_TOKEN_BUDGET = 8_000` 是 [AgentLoopExecutor.java:95](../src/main/java/com/agenttrail/loop/core/AgentLoopExecutor.java) 的 `private static final int`——不随模型上下文窗口变化，deepseek-chat 和 qwen-plus 共用一个数
+- 上下文组装就地拼在编排方法里：`stream()` 第 495-517 行连着 `buildDateSection()` / `buildMemorySection()` / `buildFileSection()` / `persistenceHook.loadHistory()` 四段来源硬编码，新增一类上下文（如工作区状态、长期记忆分层）要改这个 1181 行的方法
+- `ContextAssembler` 存在但没接上（见 §1.8 表）
+
+#### 意图识别：缺的是**能力级**路由，不是"完全没有意图识别"
+
+先把事实说准（这一条 2026-08-16 初稿写错过，说"意图识别不存在"）：**能力包内部是有意图判定的**，而且各写各的——
+
+| 位置 | 判定什么 | 手法 |
+|---|---|---|
+| `capability/ppt/PptIntentRecognizer` | CREATE / MODIFY / RESUME | 固定标记（`【开始生成PPT】`/`【暂停生成PPT】`）优先，关键词兜底 |
+| `DeepResearchService#needsMoreInfo` | 要不要继续追问澄清 | `NEEDS_INFO_MARKER`/`READY_MARKER` 三段式判断 |
+
+两者是同一套"标记优先、关键词兜底、不做语义解析"的解法，`PptIntentRecognizer` 的类注释自己也点明了这个对应关系——但它们是两份独立实现，没有共享机制。
+
+**真正缺的是上一层：选哪个能力。** 这一层的全部逻辑就是 [ChatApplicationService.java:54](../src/main/java/com/agenttrail/capability/chat/application/ChatApplicationService.java) 的一行：
+
+```java
+boolean analyticsEnabled = "analytics".equals(mode);
+```
+
+`mode` 由前端传入，DeepResearch / PPT / FileQA 根本不在这条链上——各有独立 URL，靠用户在界面上点按钮选能力。（Phase -1 前 `runtime/agent/AgentRouter` 里写过一套 rule-match + model-fallback 两级路由，主代码零引用、rule 层只是 `keywords.contains()`，已随空壳层一并删除；重做时不会沿用那个形态。）
+
+这件事和 §1.3 的"能力 = 代码分支"是同一个问题的两面：能力一旦变成 `AgentDefinition` 数据，`InputContract` 就是天然的路由依据。所以**不要单独做意图识别，它是 Phase 3 的副产品**；两份能力包内部的关键词判定也应当在那时收敛成一套。
+
+#### Agent 状态管理：run 和 conversation 是同一个身份
+
+```java
+// ChatApplicationService.java:68 / 77
+runtime.resume(RunId.of(conversationId), command);
+runtime.cancel(RunId.of(conversationId), CancellationReason.USER_REQUESTED);
+```
+
+`runId ≡ conversationId`。后果：一个会话永远只能有一个 run；历史 run 不可回溯；并发子 run（SubAgent）无法表达；`ChatToolScopeRuntimeAdapter.snapshot()` 直接 `throw new UnsupportedOperationException`。
+
+状态持久化仍是互不相干的两套：`loop/pause/JdbcPauseStateStore`（HITL 审批断点，落 MySQL）vs `runtime/repository/CheckpointStore`（DeepResearch 的阶段检查点，只有内存实现）。Phase -1 只删掉了后者**没人用的那部分**（`RunRepository`/outbox/task queue）和它的四张空表；`CheckpointStore`/`RunEventStore` 本身 DeepResearch 真在用，保留。两套的合并留到 Phase 6——那时 DeepResearch 的检查点才需要真正落库。
+
+拆开 `runId` / `conversationId` 是"一个会话多次运行"的地基，也是 §2.3 各能力包任务模型能统一的前提——统一之后 PPT / DeepResearch / Chat 都是同一个 run。
+
+#### 分布式：一半真一半假
+
+**真的**：`AgentTaskManager` + `RedisTaskLock` + `InterruptBroadcaster`（Redis Pub/Sub 跨实例中断）。设计和注释都对，包括它自己承认的缺口——**不续期 Redis 锁**，跑得比 TTL 久的会话会被另一个实例抢走，两边同时跑同一个会话。
+
+**假的**：
+
+| 位置 | 问题 |
+|---|---|
+| `DeepResearchController.java:46-47` | `AtomicLong publicIds` + `ConcurrentHashMap<Long, Handle> handles`——任务 ID 是**进程内自增整数**，多实例必然撞号，重启即丢，且可枚举 |
+| `PptGenerationService.java:52` | 默认 `new InMemoryLeaseManager()`；`RedisLeaseManager` 写了但要配置开关才启用 |
+| `AgentLoopExecutorFactory` | 4 个 executor 缓存 map 全是进程内 |
+| SSE 断线续传 | 只有 DeepResearch 实现了 `Last-Event-ID`/`afterSequence`，`/agent/v1/chat` 没有 |
+
+另：`DeepResearchController.java:59-62` 的兼容构造函数里 new 了**两个不同的** `InMemoryRunEventStore` 实例（workflow 写一个、worker 读另一个）。生产走 `@Autowired` 那条不受影响，但这个构造函数被测试用着，是个埋着的坑。
+
+> **这是一类问题，不是一处。** `FileUploadController` 有完全同型的坑，而且更严重——它的兼容构造函数接 `FileQaService`，测试全部跑在那条分支上，包括两个 IDOR 回归和一个 fail-open 回归，等于安全断言守着一条生产不执行的代码。Phase -1 已删除该构造函数并把 8 个用例迁到生产路径（见 §2.4）。`DeepResearchController` 的同型构造函数还在，处置留到 Phase 6。**通用教训：controller 上的"兼容构造函数"会让测试悄悄跑偏到生产路径之外，加之前先问是否真有非 Spring 调用方。**
 
 ---
 
@@ -266,9 +400,25 @@ stateDiagram-v2
 
 ### 2.4 复用与重复代码
 
-**五处重复的"结构化 LLM 调用"模式**：[RequirementStrategy.java:38-48](../src/main/java/com/agenttrail/capability/ppt/strategy/RequirementStrategy.java)、[SchemaStrategy.java:44-55](../src/main/java/com/agenttrail/capability/ppt/strategy/SchemaStrategy.java)、[OutlineStrategy.java:46-57](../src/main/java/com/agenttrail/capability/ppt/strategy/OutlineStrategy.java)、`DeepResearchService.java` 的 `critique`/`generatePlan` 各自独立实现同一套步骤：构造 `RunnableParams` → `executor.call(...)` → `JsonRepair.fixJson` → 反序列化 → catch 包装异常。核心层已经为"同步 LLM 调用"抽象过一次（`SynchronousLlmCall`，六处正确复用），但没有等价的"结构化调用+JsonRepair+解析"版本，fallback 行为已经开始漂移。**建议**：加一个 `StructuredLlmCall.call(executor, prompt, params, Class<T>)`，五处调用点各自从十来行缩到 3 行。
+**✅ 已解决——五处重复的"结构化 LLM 调用"模式**：`RequirementStrategy`/`SchemaStrategy`/`OutlineStrategy`/`DeepResearchService.critique`/`generatePlan` 曾各自实现"构造 `RunnableParams` → `executor.call(...)` → `JsonRepair.fixJson` → 反序列化 → catch 包装异常"。现已收敛到 `loop/core/StructuredLlmCall`（`call`/`parse` 两个入口，五处调用点全部改造完成），与 `SynchronousLlmCall`（八处复用）配套。2026-08-16 复核确认。
 
 **`GoldenCaseService.create()`/`update()` 重复记录构造**：[GoldenCaseService.java:43-79](../src/main/java/com/agenttrail/evaluation/GoldenCaseService.java) 两个方法完整重复校验+构造逻辑，抽一个 `buildRecord(...)` 私有方法即可，低风险。
+
+**跨层重复清单**（2026-08-16 复核，按"删除难度从低到高"排序）：
+
+| 重复的东西 | 位置 | 处置 |
+|---|---|---|
+| **文件问答两条编排路径**（2026-08-16 修正） | ~~"`fileqa` 是死的重写，删掉即可"——**这个前提是错的**~~。核实后：`capability/fileqa/*` 在生产**装配并在用**（`FileQaConfig` 建全部 Bean，`FileUploadController` 走 UseCase）；`capability/file/FileQaService` 也在用，是 Agent 工具 `load_file_content` 的实现。两者共用底层 `JdbcFileStore`，但各有一套解析/向量化/检索编排——**已知行为差异：图片描述只有 `FileQaService` 那条做，HTTP 上传的图片在 `contentFor` 里会返回"图片描述尚未生成"** | 合并是行为变更，Phase 8。Phase -1 只删了零消费方的 `FileContextProvider`/`FileContextProviderImpl` |
+| ✅ `FileUploadController` 双路径 | 兼容构造函数 + 3 处 `legacyService != null ? ... : ...` 三元分支；8 个测试用例（含 2 个 IDOR、1 个 fail-open 回归）全跑在生产不走的分支上 | **Phase -1 已完成**：删构造函数与分支，测试迁到生产路径 |
+| 任务存储三套 | `PptTaskStore`(Jdbc+InMemory)、DeepResearch 的 `Map<Long,Handle>`、`AgentTaskManager`（`runtime/task/*` 已在 Phase -1 删除） | Phase 6/7 统一 |
+| 会话读写三套 | `loop/persistence/JdbcSessionStore`、`conversation/application/JdbcConversationPort`、`web/service/ConversationHistoryService` | Phase 2 尾声收敛到 `conversation` |
+| 模型兼容性回退 | `AgentLoopExecutorFactory:428` 与 `RuntimeProfileRegistry:28` 两处独立决策 | Phase 3 |
+| 任务生命周期（提交/查状态/取消/列 running） | PPT、DeepResearch、Golden、Chat 各一套，四组 REST 端点、四套并发策略 | Phase 6/7，前提是 §1.9 拆开 `runId`/`conversationId` |
+| 能力包内部意图判定两套 | `PptIntentRecognizer` 与 `DeepResearchService#needsMoreInfo`，同一套"标记优先+关键词兜底"各写一遍 | Phase 3 随能力路由一起收敛 |
+| 线程池 | `PptGenerationConfig`(2 个)、`DeepResearchConfig`、`FileQaConfig`、`MschemaIntrospector`、`ToolCallExecutor` 各自 `new`，参数各写各的 | 与 §1.5 的有界化一起做 |
+| 建表 DDL 两份 | `db/schema.sql` 与 `db/migration/V1__init.sql` 高度重复（差异仅十余行），改表要同时改两处 | 见 §4.5：要么打开 Flyway，要么删 V1 |
+| JSON 修复启发式 | `structured/JsonRepair` 与 `ppt/strategy/OutlineStrategy:104,170`（注释自己写着"与 JsonRepair 启发式一致"） | 低优先，合并到 `JsonRepair` |
+| 身份类型三个 | `platform.identity.Principal` / `platform.identity.TenantContext` / `chat.application.ExecutionPrincipal` | 租户不做，直接收敛成一个 `Principal` |
 
 ### 2.5 单一职责违反
 
@@ -285,8 +435,8 @@ stateDiagram-v2
 |---|---|---|---|
 | 加一个新的 PPT 步骤 | 真实的注册表：`Map<PptState,PptGenerationStrategy>` 按 `handledState()` 建表，启动时缺状态就 fail-fast（但不是 `@Component` 自动扫描，是手动 `@Bean`） | 新枚举值 + 新 Strategy + 加一个 `@Bean`——3 个文件 | 恰当的简单 |
 | 加一个全新业务能力 | 没有能力层的统一扩展点 | 要仿 PPT 整套新建包、Config、Controller、DTO，前端路由 | 目标架构 Phase 9（`AgentDefinition`/`AgentRegistry`）就是为解决这个缺口设计的 |
-| 换模型/供应商 | 只在"新增一个 ChatModel Bean"这个子场景成立零代码；实际有硬编码的 `"qwen-plus"`/`"deepseek-chat"` 字符串特判（见 §1.3） | 文档声称"零代码"，实际有一半是理想状态 |
-| 前端 admin 加新页面 | 无注册机制，`AdminLayout.vue` 硬编码 `<RouterLink>`，`router.ts` 硬编码路由数组 | 至少 3 个文件，`GoldenCasesView.vue`/`GoldenCandidatesView.vue` 重复实现几乎相同的 error/loading ref + 页面外壳，没有共享 composable |
+| 换模型/供应商 | 只在"新增一个 ChatModel Bean"这个子场景成立零代码；实际有硬编码的 `"qwen-plus"`/`"deepseek-chat"` 字符串特判（见 §1.3） | 新增 `ChatModel` `@Bean` + `RegisteredModel` 注册 + yml 配置；一旦涉及工具调用兼容性还要动 `ToolCallingCompatibility`，而该判断在工厂和 `RuntimeProfileRegistry` 两处各写了一遍 | 文档声称"零代码"，实际有一半是理想状态 |
+| 前端 admin 加新页面 | 无注册机制，`AdminLayout.vue` 硬编码 `<RouterLink>`，`router.ts` 硬编码路由数组 | 至少 3 个文件，`GoldenCasesView.vue`/`GoldenCandidatesView.vue` 重复实现几乎相同的 error/loading ref + 页面外壳，没有共享 composable | 缺注册机制，且已经在重复 |
 
 （Skills 系统的插件化评估属于核心层机制，见 §1.6——`SkillReconciliation` 定时扫描技能目录、自动注册/清理孤儿，加新技能 0 个 Java 文件，是目前做得最好的扩展点。）
 
@@ -396,12 +546,12 @@ Task 统一模型（解决 §2.3 的"任务模型深浅不一"）：`taskId/capa
 ### 4.5 合规与上线差距
 
 - **`docker-compose.yml` 的 `langfuse` 服务硬编码了密钥字面量**——本地用没问题，但没有机制阻止这份 compose 文件被原样搬去真实部署环境。
-- **数据库迁移是单个扁平 `db/schema.sql`**，靠 `spring.sql.init.mode: always` 每次启动重跑幂等 DDL，没有 Flyway/Liquibase，没有版本化，环境间 schema 漂移无法检测。
-- **多租户**：`grep -rn tenantId src/main/java` 零命中——目前是完全未动工的状态，`RunnableParams` 用 `Map<String,Object>` 承载系统参数，权限字段、租户字段和工具注入没有强类型约束。
+- **数据库迁移已引入 Flyway 但默认关闭**（2026-08-16 复核修正，原文写的"没有 Flyway/Liquibase"已过时）：`pom.xml` 有 `flyway-core`/`flyway-mysql`，`application.yml` 配了 `spring.flyway`（`enabled` 默认 false + `baseline-on-migrate`），`db/migration/V1__init.sql` 是引入 Flyway 那一刻的快照。实际生效的仍是 `spring.sql.init` 跑 `db/schema.sql`。**真正的问题变成了另一个**：`db/schema.sql` 和 `db/migration/V1__init.sql` 是两份高度重复的文件（差异仅十余行），改表结构要记得同时改两处——Phase -1 删四张空表时就必须两份都改。要么打开 Flyway 让 V1 成为唯一事实源，要么删掉 V1 承认还没做迁移工具化，现在这种两份并存是最差状态。
+- **~~多租户~~**：**已定案不做**（见 §0）。2026-08-16 复核：`tenantId` 现在有 8 处命中，但全是死的占位（`TenantContext.DEFAULT="default"`、`ExecutionPrincipal.tenantId` 一律传 null、`agent_run.tenant_id` 注释就是 `'Tenant placeholder'`），处置是删除而不是补齐。**仍然成立的那半条问题**：`RunnableParams` 用 `Map<String,Object>` 承载系统参数，权限字段和工具注入没有强类型约束——这条与租户无关，独立保留（见 §5 依赖规则）。
 
 ### 4.6 目标：统一安全边界
 
-所有请求必须有 `tenantId/userId`，不能继续用生产默认 `anonymous`；工具权限在 Tool Gateway 做服务端校验，不能只依赖 Prompt；系统参数注入使用强类型 `ExecutionPrincipal`，不使用自由 Map；文件/Python/Shell/MCP/下载 URL 都必须有 allowlist、超时和审计；产物默认私有，使用签名 URL；Prompt、工具返回值和错误日志要有 PII/Secret 脱敏策略；管理类接口必须有角色校验（§4.1，这条是目前唯一违反的）。
+所有请求必须有 `userId`，不能继续用生产默认 `anonymous`；工具权限在 Tool Gateway 做服务端校验，不能只依赖 Prompt；系统参数注入使用强类型 `ExecutionPrincipal`，不使用自由 Map；文件/Python/Shell/MCP/下载 URL 都必须有 allowlist、超时和审计；产物默认私有，使用签名 URL；Prompt、工具返回值和错误日志要有 PII/Secret 脱敏策略；管理类接口必须有角色校验（§4.1，这条是目前唯一违反的）。
 
 **对应落地任务**：这一层的问题大多是独立的配置/注解改动（§4.1 权限校验、§4.4 CI profile），不依赖 Phase 0-10 的架构大改，应该最先做，见 §9。
 
@@ -413,7 +563,8 @@ Task 统一模型（解决 §2.3 的"任务模型深浅不一"）：`taskId/capa
 
 ```text
 com.agenttrail
-├── platform          # 【跨层基础设施】TenantId/RunId/EventEnvelope/ErrorCode/Clock
+├── platform          # 【跨层基础设施】Principal/RunId/ConversationId/EventEnvelope/ErrorCode/Clock
+│                       #   ⚠️ 不含 TenantId——多租户明确不做，见 §0；现有的 TenantContext 一并删除
 │
 ├── runtime            # 【核心层目标态，对应 §1.8】
 │   ├── api / engine / model / tool / context / lifecycle / middleware / profile
@@ -421,6 +572,9 @@ com.agenttrail
 ├── task               # 【核心层↔业务层共用的任务/检查点/事件基础设施——不是通用工作流引擎，
 │   │                    #   见 §2.8：DeepResearch/PPT 各自的状态机是具体类，只共用这层基础设施】
 │   ├── coordinator（TaskCoordinator）/ checkpoint（CheckpointStore）/ event（RunEventStore）/ lease
+│                       #   ⚠️ 2026-08-16：这一块的第一次尝试（现 runtime/{task,outbox,coordinator,
+│                       #   repository}）已判定为空壳，Phase -1 先删掉。重做时必须先有真实的持久化
+│                       #   实现和至少一个真实使用方，不允许再出现"接口+DDL 齐全、实现只有内存版"
 │
 ├── capability          # 【业务层目标态，对应 §2.8】
 │   ├── chat / deepresearch / ppt / fileqa / analytics / skills / multiagent
@@ -458,11 +612,34 @@ flowchart TB
     ENGINE -.禁止依赖.-> capability.deepresearch
 ```
 
-规则：`runtime.engine` 不能 import `capability.*`；`capability.*` 不能 import `interfaces.*`；`interfaces.rest` 只能依赖 `application` 与 DTO mapper；`infrastructure.*` 只能通过 port 接入；Spring AI/Reactor/Jackson/JDBC/Redis 类型只允许出现在 adapter 层；`AgentRequest` 的身份、租户、预算、工具权限必须是强类型，禁止塞进 `Map`；`capability.*` 之间不共用状态/驱动逻辑，只共用 `task.*` 这层基础设施。
+规则：`runtime.engine` 不能 import `capability.*`；`capability.*` 不能 import `interfaces.*`；`interfaces.rest` 只能依赖 `application` 与 DTO mapper；`infrastructure.*` 只能通过 port 接入；Spring AI/Reactor/Jackson/JDBC/Redis 类型只允许出现在 adapter 层；`AgentRequest` 的身份、预算、工具权限必须是强类型，禁止塞进 `Map`（当前 `webSearchEnabled`/`analyticsEnabled` 正是塞在 `toolParams` 这个 `Map` 里的，见 §1.3）；`capability.*` 之间不共用状态/驱动逻辑，只共用 `task.*` 这层基础设施。
 
 ---
 
 ## 6. 逐阶段重构计划
+
+### ✅ Phase -1：先做减法（2026-08-16 完成）
+
+**前提判断**：在删掉空壳层之前继续按 Phase 0→10 往下加抽象，只会让并存的实现层数从 3 变 4。这一阶段几乎全是删除和移动，风险低、收益立刻可见，且不依赖任何设计决策。
+
+**总计**：85 文件，+414/−1273（净减 859 行），删除 37 个文件、移动 18 个；`mvn test` 666 通过。
+
+| # | 计划 | 实际落地 |
+|---|---|---|
+| 1 | 删 `runtime/{task,outbox,coordinator,repository}` + 四张空表 | ✅ 但**范围收窄**：`repository/{CheckpointStore,InMemoryCheckpointStore,RunEventStore,InMemoryRunEventStore}` 和 `lifecycle/{LeaseManager,InMemoryLeaseManager}` DeepResearch/PPT 真在用，保留。删除 28 个类（含 `a2a/`、`AgentRouter`、`SubAgentRunner`、`tool/` 下 5 个互相引用的死类），四张表 DDL 从两份 schema 同时移除 |
+| 2 | 删 `capability/fileqa/` | ❌ **前提有误，已改写**：`fileqa` 在生产装配并在用。改为删除零消费方的 `FileContextProvider`/`FileContextProviderImpl`，并消除 `FileUploadController` 的双路径（见下） |
+| 3 | 删 `legacy/V0.java` + `/agent/chat` | ✅ **范围收窄**：删端点、装配、DTO、对应测试；`legacy/V0.java` 保留为不装配的参考实现（8 份文档引用 + AgentScope Golden 证明测试）。缺陷本身（零超时的活跃入口、V0/V1 双入口）已消除 |
+| 4 | 打破 `loop ↔ runtime` 包循环 | ✅ 反向 import 从 15 处降到 0。手法：`ContextAssembler`/`RoundDriver`/`RunCompletionCoordinator`/`RunLifecycleManager`/`ToolRoundExecutor` → `loop.core`；`RuntimeModule`/`RuntimeProfile`/`RuntimeProfileValidator` → `loop.profile`；`LegacyAgentLoopExecutorAdapter` → `infrastructure.runtime`；`RedisLeaseManager` → `infrastructure.lease`；`OutputType` → `runtime.api`；`AgentDefinition.profile` 改为 `profileId` 字符串 |
+| 5 | 清理孤儿注释 | ✅ `AgentLoopExecutorFactory` 那 6 个方法体已删、Javadoc 还在的块 |
+| + | （计划外）`FileUploadController` 双路径 | ✅ 删除 `legacyService` 兼容构造函数与 3 处三元分支；8 个测试用例（含 2 个 IDOR、1 个 fail-open 回归）从生产不走的分支迁到真实路径 |
+| + | （计划外）ArchUnit 护栏 | ✅ `runtimePortLayerShouldNotDependOnTheLoopImplementation`，**未 `@Disabled`**——它是当前真实成立的约束，不是目标态 |
+
+**两条经验**（写下来是因为它们会重复发生）：
+
+- **"删掉死代码"这类计划必须逐个核实引用，不能按包整删。** 本阶段两处前提出错：`repository/` 被当成全死的（实际一半在用）、`capability/fileqa` 被当成死重写（实际是生产路径）。引用计数要区分"包内互相引用"和"包外真实使用"——只数总引用数会把死代码岛看成活的，只数包外引用又会把嵌套类型（如 `AgentRunSnapshot.RunStatus` 与顶层 `RunStatus` 同名）算混。
+- **打破包循环的正确手法通常是"搬回去"而不是"加接口"。** `runtime` 里那些类之所以造成反向依赖，是因为它们本来就是 `loop` 的内部实现被放错了位置；给它们加一层接口只会多一层间接，边界照样不成立。
+
+**这一步不是推翻之前的工作**，而是承认 §1.8 那次拆分只落地了模块名。逻辑搬迁仍按 Phase 3 做，只是不再在一个空壳骨架上叠加。
 
 ### Phase 0：建立事实基线和架构护栏（跨四层）
 
@@ -474,7 +651,13 @@ flowchart TB
 
 ### Phase 1-4：核心层（对应 §1.8）
 
-Phase 1 冻结 `AgentRuntimePort` 契约，不移动实现；Phase 2 切断 Spring AI 从业务向外泄漏；Phase 3 拆分 Runtime 内部 6 模块、删除 telescoping constructor（`AgentLoopExecutor` 和 `AgentLoopExecutorFactory` 一起处理，见 §1.3）、给已定案保留的 `Hook`/`StageOutputProvider` 两套 SPI 接上第一个真实实现（不再是"要不要保留"的开放问题）；Phase 4 统一 Run/Task/Checkpoint/Event 基础设施。验收标准见各阶段小节末尾（原文见 §1.8）。
+Phase 1 冻结 `AgentRuntimePort` 契约，不移动实现；Phase 2 切断 Spring AI 从业务向外泄漏；Phase 3 拆分 Runtime 内部 6 模块、删除 `Object... options` 位置槽构造（`AgentLoopExecutor` 和 `AgentLoopExecutorFactory` 一起处理，见 §1.3）、给已定案保留的 `Hook`/`StageOutputProvider` 两套 SPI 接上第一个真实实现（不再是"要不要保留"的开放问题）；Phase 4 统一 Run/Task/Checkpoint/Event 基础设施。
+
+**Phase 3 的验收标准必须改**（§1.7 的教训）：不能是"新模块类存在且编译通过"——上一轮正是这么验收的，六个类全建出来了、`AgentLoopExecutor` 一行没少。改成三条硬指标：**① `AgentLoopExecutor` 行数下降到 400 行以内；② 每个新模块有独立单测且断言的是真实行为不是委托；③ 旧路径（`ToolCallExecutor` 之于 `ToolRoundExecutor` 这类）被删除而不是并存**。
+
+**Phase 3 顺带解决能力路由**（§1.9）：能力一旦从 `forXxx` 分支变成 `AgentDefinition` 数据，`InputContract` 就是天然的路由依据，这时候才有东西可路由。不要把它当独立任务做。路由器本身要重写——Phase -1 删掉的那版只是 `keywords.contains()`，不足以承担能力分派。
+
+**Phase 4 之前先做 §1.9 的 `runId`/`conversationId` 拆分**——它是"一个会话多次运行"的地基，也是各能力包任务模型能统一的前提。
 
 ### Phase 5-9：业务层（对应 §2.8）
 
@@ -492,7 +675,7 @@ Phase 5 迁移普通 Chat；Phase 6 把 DeepResearch 接入 Task 基础设施（
 
 **业务层测试**：节点成功后 checkpoint 才推进；节点失败按 RetryClass 处理；Worker 重启后从 checkpoint 恢复；同一个 idempotency key 不重复执行副作用；并行节点结果合并顺序稳定；取消后不再启动下一节点。
 
-**观测审计层测试**：MySQL（Run/Task/Checkpoint/Outbox/时间线）、Redis（租约/续期/抢占/广播取消）、PgVector（租户过滤/索引状态）、MinIO（私有 bucket/签名 URL/清理）、Python Worker（超时/非零退出/半成品清理）、SSE（断线/重连/afterSequence/去重）。
+**观测审计层测试**：MySQL（Run/Task/Checkpoint/Outbox/时间线）、Redis（租约/续期/抢占/广播取消）、PgVector（用户归属过滤/索引状态）、MinIO（私有 bucket/签名 URL/清理）、Python Worker（超时/非零退出/半成品清理）、SSE（断线/重连/afterSequence/去重）。
 
 **架构测试**（ArchUnit，跨四层强制执行 §5 的依赖方向规则）：`runtime.engine` 不得依赖 `capability.*`；`capability.*` 不得依赖 `interfaces.*`；`interfaces.*` 不得依赖 infrastructure 实现类；`capability.*` 不得依赖 `org.springframework.ai.*`；所有 Repository 实现只能出现在 `infrastructure.*`；所有 Controller 只能调用 application service。
 
@@ -522,9 +705,10 @@ Phase 5 迁移普通 Chat；Phase 6 把 DeepResearch 接入 Task 基础设施（
 6. 【监控层】补齐 Redis/PgVector/MinIO/DashScope 的 `HealthIndicator`（§3.3）。
 7. 【业务层】DeepResearch 补 `currentStep` 字段打通已经画好的前端进度图（§2.7）——加一个字段、几个 `log.info` 调用点顺手多写一行，不需要等 Phase 6。
 
-**需要按 Phase 0-10 分阶段做的**（涉及核心执行路径和多个测试文件的调用点，不建议脱离计划单独改）：
+**需要按 Phase -1~10 分阶段做的**（涉及核心执行路径和多个测试文件的调用点，不建议脱离计划单独改）：
 
-1. 先落本文档、ArchUnit 和运行时装配摘要（Phase 0）。
+0. ~~**【核心层】先做减法**（Phase -1）~~ ✅ **2026-08-16 已完成**，落地明细见 §6。
+1. 先落本文档、ArchUnit 和运行时装配摘要（Phase 0）。**← 当前位置**
 2. 【核心层】引入 `AgentRuntimePort`，让 DeepResearch/PPT 不再直接依赖 `AgentLoopExecutor`（Phase 1）。
 3. 【核心层】抽 `ModelGateway` 和 `ToolGateway`，切断 Spring AI 类型泄漏（Phase 2）。
 4. 【核心层】拆分 `AgentLoopExecutor`/`AgentLoopExecutorFactory` 的 telescoping constructor，给已定案保留的 `Hook`/`StageOutputProvider` 两套 SPI 接上第一个真实实现（Phase 3）。

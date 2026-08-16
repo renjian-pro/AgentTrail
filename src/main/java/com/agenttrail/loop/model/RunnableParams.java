@@ -1,5 +1,6 @@
 package com.agenttrail.loop.model;
 
+import com.agenttrail.runtime.api.OutputType;
 import java.util.Map;
 
 /**

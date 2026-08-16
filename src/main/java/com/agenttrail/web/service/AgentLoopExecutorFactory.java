@@ -23,8 +23,8 @@ import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchConfig;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
-import com.agenttrail.runtime.RuntimeModule;
-import com.agenttrail.runtime.RuntimeProfile;
+import com.agenttrail.loop.profile.RuntimeModule;
+import com.agenttrail.loop.profile.RuntimeProfile;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -107,27 +107,14 @@ public class AgentLoopExecutorFactory {
      */
     private final MemoryStore memoryStore;
 
-
-
-
-
-
-
     /**
-     * 生产装配用的扩展构造函数：保留上面的兼容重载，让单元测试和内部调用方可以继续使用
-     * 没有审批/预算机制的最小装配；生产 Bean 则显式传入治理依赖。
+     * One constructor seam; optional collaborators are selected by the named factory configuration.
+     *
+     * <p>这些 {@code Object...} 位置槽是待偿的技术债，不是目标形态——编译期不做任何类型检查，
+     * 传错顺序只会在运行时炸成 {@code ClassCastException}。Phase 3 会连同 {@code AgentLoopExecutor}
+     * 一起换成由 {@code AgentDefinition} 驱动的声明式装配；在那之前，
+     * {@code AgentLoopExecutor.Builder} 是唯一类型安全的构造入口。
      */
-
-    /** 生产装配扩展：在治理依赖之后注入持久化审计存储。 */
-
-    /** 生产装配扩展：可选的 Micrometer registry 为空时关闭运行时指标。 */
-
-    /** 生产装配扩展：安全纵深（ticket 09）——Prompt Injection 检测 / PII 打码 / 工具调用限速。 */
-
-    /** 生产装配扩展：接入 Skill 能力（普通对话执行器现取当下启用的技能，见 {@link #buildExecutor}）。 */
-
-    /** 生产装配扩展：接入分层记忆（issue #19，见 {@link #memoryStore} 字段的接入范围说明）。 */
-    /** One constructor seam; optional collaborators are selected by the named factory configuration. */
     public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId, Object... options) {
         AgentTaskManager taskManager = option(options, 0, AgentTaskManager.class, new AgentTaskManager());
         TavilySearchToolProvider webSearchToolProvider = option(options, 1, TavilySearchToolProvider.class, null);

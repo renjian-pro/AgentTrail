@@ -3,7 +3,7 @@ package com.agenttrail.capability.ppt;
 /**
  * PPT 生成各 LLM 驱动状态的提示词（issue #24）——REQUIREMENT/OUTLINE/SCHEMA 三个状态各一段，
  * 风格上和 {@code DeepResearchPrompts} 保持一致：结构化输出的格式指令由
- * {@link com.agenttrail.loop.model.OutputType} 机制自动追加在问题末尾，这里的常量本身不含
+ * {@link com.agenttrail.runtime.api.OutputType} 机制自动追加在问题末尾，这里的常量本身不含
  * 格式指令文本。
  */
 public final class PptPrompts {
