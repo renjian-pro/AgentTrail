@@ -34,7 +34,16 @@ import java.util.NoSuchElementException;
 public final class PromptRegistry {
 
     private static final Logger log = LoggerFactory.getLogger(PromptRegistry.class);
-    private static final String LOCATION_PATTERN = "classpath*:prompts/**/*.md";
+    /**
+     * 提示词目录，可由系统属性切换到变体目录做离线 A/B（issue #102）。
+     *
+     * <p>为什么是"换目录重跑"而不是运行时切换：各能力的提示词是 {@code static final} 字段，
+     * 在类加载那一刻就定死了，进程内换不掉。而这恰恰和 A/B 的正确形态吻合——
+     * requirements §6.5 已定**只做离线对照**：同一套用例、两版提示词各跑一遍再比，
+     * 用例固定所以差异归因干净。线上按会话哈希分流在这个项目里出不了统计结论（流量是开发者本人）。
+     */
+    public static final String LOCATION_PROPERTY = "agenttrail.prompts.dir";
+    private static final String DEFAULT_LOCATION = "prompts";
     private static final int HASH_LENGTH = 8;
 
     private final Map<String, PromptDefinition> byId;
@@ -45,7 +54,13 @@ public final class PromptRegistry {
 
     public static PromptRegistry loadFromClasspath() {
         try {
-            Resource[] resources = new PathMatchingResourcePatternResolver().getResources(LOCATION_PATTERN);
+            String location = System.getProperty(LOCATION_PROPERTY, DEFAULT_LOCATION);
+            Resource[] resources = new PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:" + location + "/**/*.md");
+            if (resources.length == 0) {
+                throw new IllegalStateException("提示词目录为空: " + location
+                        + "——变体目录写错时必须炸掉，静默回落到默认目录会让整轮 A/B 悄悄比较同一版");
+            }
             Map<String, PromptDefinition> loaded = new LinkedHashMap<>();
             for (Resource resource : resources) {
                 PromptDefinition definition = parse(readAll(resource), resource.getFilename());
@@ -54,7 +69,7 @@ public final class PromptRegistry {
                     throw new IllegalStateException("提示词 id 重复: " + definition.id());
                 }
             }
-            log.info("已加载 {} 份外置提示词", loaded.size());
+            log.info("已从 {} 加载 {} 份外置提示词", System.getProperty(LOCATION_PROPERTY, DEFAULT_LOCATION), loaded.size());
             return new PromptRegistry(loaded);
         } catch (IOException failure) {
             throw new IllegalStateException("提示词加载失败", failure);
