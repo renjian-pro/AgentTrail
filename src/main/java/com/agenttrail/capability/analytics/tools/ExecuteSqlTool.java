@@ -11,6 +11,8 @@ import com.agenttrail.capability.analytics.sql.SqlResultFormatter;
 import com.agenttrail.capability.analytics.sql.SqlSafetyGuard;
 import com.agenttrail.capability.analytics.sql.ValidationResult;
 import com.agenttrail.loop.tools.JsonToolCallback;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.agenttrail.loop.tools.ToolArguments;
 import com.agenttrail.sys.datascope.DataScopeContext;
 import com.agenttrail.sys.datascope.DataScopeResolver;
@@ -20,6 +22,8 @@ import java.util.function.Consumer;
 
 /** validate -> rewrite -> EXPLAIN -> 只读执行 -> 脱敏 -> Markdown。 */
 public final class ExecuteSqlTool {
+
+    private static final Logger log = LoggerFactory.getLogger(ExecuteSqlTool.class);
     private final SqlSafetyGuard safetyGuard;
     private final DataScopeResolver scopeResolver;
     private final DataScopeRewriter scopeRewriter;
@@ -92,6 +96,10 @@ public final class ExecuteSqlTool {
             SqlResult masked = sensitiveFilter.mask(result, rewritten);
             return SqlResultFormatter.format(masked, properties.getPreviewRows());
         } catch (Exception failure) {
+            // 给模型的是分类过的简短原因（它要据此决定下一步），给日志的是完整堆栈——
+            // 2026-08-16 的评测里出现过一条裸的 NullPointerException，只看模型侧的文案
+            // 完全无从定位（和 GoldenTaskRunner 那个 "executor failed: null" 是同一类问题）。
+            log.warn("execute_sql 执行失败，sql={}", sql, failure);
             return "Error: 查询执行失败：" + SqlErrorClassifier.message(failure);
         }
     }

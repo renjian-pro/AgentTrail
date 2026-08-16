@@ -43,7 +43,8 @@ class GoldenTaskRunnerTest {
             List<String> effectiveTools = "sql_safety".equals(testCase.dimension())
                     ? List.of("validate_sql") : tools;
             return new GoldenTaskReport.GoldenObservation(testCase.id(), testCase.dimension(), true, "", 1, 4,
-                    "SELECT * FROM rental WHERE dept_id IN (3)", result, effectiveTools,
+                    // 同时含 dept_id 和 user_id：DEPT 档位的用例断言前者，SELF 档位（sales_a*）断言后者
+                    "SELECT * FROM rental WHERE dept_id IN (3) AND user_id = 6", result, effectiveTools,
                     Map.of("rowCount", 1, "scalar.total", 1, "resultMatchesReference", true,
                             "modelSql", "SELECT COUNT(*) FROM rental"));
         });
