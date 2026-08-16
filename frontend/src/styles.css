@@ -226,7 +226,13 @@ button { cursor: pointer; }
 .chat-bottom.dragging { border-color: var(--accent); background-color: color-mix(in srgb, var(--accent) 6%, transparent); }
 .capability-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 5px 10px; }
 .mode-picker { display: flex; flex-wrap: wrap; gap: 7px; }
+/* 任务层和开关层视觉上分组：任务是动作（无选中态），开关是状态（有选中态）。
+   两组之间留出间距，让"这两类东西不一样"不用读文档就能看出来（issue #93）。 */
+.task-actions, .toggles { display: flex; flex-wrap: wrap; gap: 7px; }
+.task-actions { margin-right: auto; }
 .mode-picker button,
+.task-actions button,
+.toggles button,
 .file-upload button {
   height: 30px;
   padding: 0 11px;
@@ -237,9 +243,14 @@ button { cursor: pointer; }
   font-size: 12px;
 }
 .mode-picker button:hover,
+.task-actions button:hover,
+.toggles button:hover,
 .file-upload button:hover { border-color: #cdd0c9; color: var(--text); }
-.mode-picker button.active { border-color: #30332f; color: #fff; background: #30332f; }
-.mode-picker button:disabled { opacity: .42; cursor: not-allowed; }
+.mode-picker button.active,
+.toggles button.active { border-color: #30332f; color: #fff; background: #30332f; }
+.mode-picker button:disabled,
+.task-actions button:disabled,
+.toggles button:disabled { opacity: .42; cursor: not-allowed; }
 .mode-hint { display: block; margin: -3px 8px 8px; color: var(--accent); font-size: 11px; }
 .file-upload { display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 11px; }
 

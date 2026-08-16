@@ -26,16 +26,16 @@ import { useChatStore, type AgentKind, type ChatTurn, type PptEntry, type Resear
  *
  * <ul>
  *   <li><b>Agent 层</b>（普通对话 / 数据分析）——换一套执行器，工具集不相交。**会话级绑定**，
- *       由 store 的 `agentKind` 持有，首条消息发出后锁定；不在这里用 `pendingMode` 表达。
+ *       由 store 的 `agentKind` 持有，首条消息发出后锁定。
  *   <li><b>任务层</b>（research / ppt）——各自另起一条同步创建任务 + 轮询的链路
  *       （见 runResearch/runPpt），提交后立即解锁 busy，不影响当前会话的工具集。
  *   <li><b>开关层</b>（联网搜索）——往同一份工具列表里叠加工具。
  * </ul>
  *
- * <p>`Mode` 现在只表示任务层。数据分析曾经也在这里，且发送后立刻复位——用户追问时会静默
- * 掉回普通对话，模型没有数据库工具就去编造演示数据。那条链路已经被 `agentKind` 取代（issue #92）。
+ * <p>三层曾经被平铺成同一排 chip，作用域完全不同的东西共用一种交互——那是"用户在一个会话里
+ * 随便切、模型看到历史里有当前不存在的工具"的根源。Agent 层已经上移到会话头部（issue #92），
+ * 任务层这里改成动作按钮：点一下就带着当前输入发起任务，没有选中态，也不改变会话状态（issue #93）。
  */
-type Mode = 'research' | 'ppt' | undefined
 
 const chat = useChatStore()
 const { conversationId, messages, todos, navigationSeq, agentKind, agentLocked } = storeToRefs(chat)
@@ -47,8 +47,9 @@ const files = ref<AttachedFile[]>([])
 const uploadBusy = ref(false)
 const uploadError = ref('')
 const composerDragging = ref(false)
-const pendingMode = ref<Mode>(undefined)
 const initialMessage = ref('')
+/** 任务按钮要取走输入框里的当前内容，见 runTask —— 输入状态仍归 MessageInput 自己持有。 */
+const composer = ref<InstanceType<typeof MessageInput>>()
 let aborter: AbortController | undefined
 
 onMounted(() => {
@@ -61,7 +62,7 @@ onMounted(() => {
 // PPT/Research 提交后立即解锁 busy、靠轮询在后台推进（见 runPpt/runResearch），不会再让 busy
 // 跨会话悬空；但普通聊天的 SSE 流仍然可能在切换会话那一刻正流着。ChatView 是同一个组件实例
 // 跨会话复用的（路由没变，只是 conversationId 这个 store 里的值变了），不重置的话上一个会话
-// 遗留的 busy/pendingMode/error 会继续锁住新会话的输入框和工具栏——这正是切换会话后 PPT 任务
+// 遗留的 busy/error 会继续锁住新会话的输入框和工具栏——这正是切换会话后 PPT 任务
 // "消失"、界面卡死的根因。切会话时顺手把还挂着的 SSE 流也中断掉，没有理由让它继续跑。
 //
 // watch 的是 navigationSeq，不是 conversationId 本身——同一个 send() 请求成功后，服务端
@@ -74,26 +75,29 @@ watch(navigationSeq, () => {
   aborter = undefined
   busy.value = false
   error.value = ''
-  pendingMode.value = undefined
 })
 
 // Only the chat SSE owns an AbortController. Synchronous Research/PPT calls
 // cannot be cancelled by the chat stop endpoint, so showing that control there
 // would promise an action the backend cannot perform.
 const canStop = computed(() => busy.value && aborter !== undefined)
-const modeLabel = computed(() => pendingMode.value === 'research' ? 'Deep Research' : pendingMode.value === 'ppt' ? 'PPT 生成' : '')
 /** 数据分析执行器明确不挂联网搜索工具（DataAgent 不复用通用工具），开着只是摆设。 */
-const webSearchDisabled = computed(() => busy.value || pendingMode.value !== undefined || agentKind.value === 'analytics')
-const webSearchHint = computed(() => {
-  if (pendingMode.value) return 'PPT 生成和深度研究都会自己做资料检索，这个开关对它们不生效'
-  return agentKind.value === 'analytics' ? '数据分析不挂载联网搜索工具，这个开关对它不生效' : ''
-})
+const webSearchDisabled = computed(() => busy.value || agentKind.value === 'analytics')
+const webSearchHint = computed(() =>
+  agentKind.value === 'analytics' ? '数据分析不挂载联网搜索工具，这个开关对它不生效' : '')
 
-function toggleMode(mode: Mode) {
-  pendingMode.value = pendingMode.value === mode ? undefined : mode
-  // PPT 状态机和 DeepResearch 各自内部都无条件做自己的资料检索，都不接收/不使用这个开关——
-  // 勾着它在这两种模式下纯粹是摆设，还会让人以为真的多做了一次联网搜索。
-  if (pendingMode.value) webSearch.value = false
+/**
+ * 任务层：点一下就带着当前输入发起，不进入任何"选中"状态，也不影响会话的 Agent 和工具集。
+ * 输入为空或正忙时 take() 返回 undefined，什么都不做——不弹错误，按钮本身就是不可用的语义。
+ *
+ * <p>PPT 状态机和 DeepResearch 各自内部都无条件做自己的资料检索，不接收联网搜索开关，
+ * 所以这里也不需要像以前那样把它关掉——开关只作用于普通对话，两者已经不在同一个语义层上了。
+ */
+function runTask(kind: 'research' | 'ppt') {
+  const message = composer.value?.take()
+  if (!message) return
+  if (kind === 'research') void runResearch(message)
+  else void runPpt(message)
 }
 
 function changeAgent(kind: AgentKind) {
@@ -117,9 +121,6 @@ const TOOL_LABELS: Record<string, string> = {
 const toolLabel = (name: string) => TOOL_LABELS[name] ?? name
 
 async function send(message: string) {
-  if (pendingMode.value === 'research') return runResearch(message)
-  if (pendingMode.value === 'ppt') return runPpt(message)
-
   // Agent 是会话级的，不在这里读取后复位——曾经这一行是 `pendingMode.value = undefined`，
   // 导致用户追问时静默掉回普通对话（issue #92）。
   const mode = agentKind.value === 'analytics' ? 'analytics' : undefined
@@ -169,7 +170,6 @@ async function pollUntilTerminal<T>(fetchStatus: () => Promise<T>, isTerminal: (
 }
 
 async function runResearch(question: string) {
-  pendingMode.value = undefined
   const entry = reactive<ResearchEntry>({ kind: 'research', question, currentStep: null })
   chat.ensureConversation(question)
   messages.value.push(entry)
@@ -203,7 +203,6 @@ function applyResearchTask(entry: ResearchEntry, task: ResearchTask) {
 }
 
 async function runPpt(prompt: string) {
-  pendingMode.value = undefined
   const entry = reactive<PptEntry>({ kind: 'ppt', prompt })
   chat.ensureConversation(prompt)
   messages.value.push(entry)
@@ -307,16 +306,17 @@ async function removeFile(fileId: number) {
         @dragover.prevent="composerDragging = true" @dragleave="composerDragging = false" @drop.prevent="onComposerDrop">
       <AttachedFileList :files="files" :busy="uploadBusy" :error="uploadError" @remove="removeFile" />
       <div class="capability-bar">
-        <div class="mode-picker">
-          <button type="button" :disabled="busy" :class="{ active: pendingMode === 'research' }" @click="toggleMode('research')">⌕ 深度研究</button>
-          <button type="button" :disabled="busy" :class="{ active: pendingMode === 'ppt' }" @click="toggleMode('ppt')">▣ 生成 PPT</button>
+        <div class="task-actions">
+          <button type="button" :disabled="busy" @click="runTask('research')">⌕ 深度研究</button>
+          <button type="button" :disabled="busy" @click="runTask('ppt')">▣ 生成 PPT</button>
+        </div>
+        <div class="toggles">
           <button type="button" :disabled="webSearchDisabled" :title="webSearchHint"
               :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         </div>
         <FileUploadWidget @upload="upload" />
       </div>
-      <span v-if="pendingMode" class="mode-hint">下一条消息将使用 {{ modeLabel }}</span>
-      <MessageInput :busy="busy" :initial-value="initialMessage" @send="send" />
+      <MessageInput ref="composer" :busy="busy" :initial-value="initialMessage" @send="send" />
       <div class="controls">
         <span>当前模型</span>
         <select v-model="modelId" aria-label="当前模型"><option>qwen-plus</option><option>deepseek-chat</option></select>

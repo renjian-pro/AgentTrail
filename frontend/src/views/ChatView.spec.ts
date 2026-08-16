@@ -92,20 +92,21 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('第一段已经到达，第二段稍后到达')
   })
 
-  it('routes the next message to PPT generation instead of chat when that mode is selected, then reverts to chat', async () => {
+  it('fires PPT generation straight from the composer without entering a mode', async () => {
     vi.mocked(pptApi.create).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
     // create() 现在只提交任务，本身没跑完（RENDER 不是终态）——runPpt 提交后会立即再轮询一次
     // pptApi.status()，让它原地停在同一个状态即可，这个用例不关心后续轮询本身。
     vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.mode-picker button')[1].trigger('click')
     await wrapper.find('textarea').setValue('生成战略汇报')
-    await wrapper.find('form').trigger('submit')
+    await wrapper.findAll('.task-actions button')[1].trigger('click')
     await flushPromises()
 
     expect(pptApi.create).toHaveBeenCalledWith(expect.any(String), '生成战略汇报')
     expect(wrapper.text()).toContain('正在渲染')
+    // 任务是动作不是模式：按钮没有选中态，点完也不该在界面上留下"下一条消息将使用 XX"这类残留
+    expect(wrapper.findAll('.task-actions button.active')).toHaveLength(0)
     expect(wrapper.find('.mode-hint').exists()).toBe(false)
 
     await wrapper.find('textarea').setValue('这条应该走普通对话')
@@ -144,6 +145,35 @@ describe('ChatView', () => {
       expect.anything())
   })
 
+  /**
+   * 三层分离的核心断言（issue #93）：任务层不碰 Agent 层。在数据分析会话里发起一个 PPT 任务，
+   * 会话仍然是数据分析——任务走的是自己的链路，不共享执行器也不共享工具集，没有理由改变会话状态。
+   * 曾经它们是同一排 chip，点 PPT 会把"数据分析"顶掉，那正是作用域被混为一谈的表现。
+   */
+  it('leaves the session agent untouched when a task is fired', async () => {
+    vi.mocked(pptApi.create).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
+    vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await wrapper.findAll('.agent-option')[1].trigger('click')
+    await wrapper.find('textarea').setValue('把刚才的结论做成 PPT')
+    await wrapper.findAll('.task-actions button')[1].trigger('click')
+    await flushPromises()
+
+    expect(pptApi.create).toHaveBeenCalled()
+    expect(useChatStore().agentKind).toBe('analytics')
+  })
+
+  /** 输入为空时点任务按钮什么都不发生——按钮本身就是"带着当前输入去做一件事"的语义。 */
+  it('ignores a task button pressed with an empty composer', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await wrapper.findAll('.task-actions button')[0].trigger('click')
+    await flushPromises()
+
+    expect(researchApi.run).not.toHaveBeenCalled()
+  })
+
   /** 首条消息发出即锁定：选择器消失、原地换成只读标识 + 「基于此会话新建」出口。 */
   it('locks the agent once the first message is sent', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
@@ -177,9 +207,8 @@ describe('ChatView', () => {
     })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.mode-picker button')[0].trigger('click')
     await wrapper.find('textarea').setValue('帮我研究 AI')
-    await wrapper.find('form').trigger('submit')
+    await wrapper.findAll('.task-actions button')[0].trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('你希望研究哪个行业？')
@@ -197,15 +226,14 @@ describe('ChatView', () => {
     vi.mocked(researchApi.status).mockReturnValue(new Promise(resolve => { resolveStatus = resolve }))
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.mode-picker button')[0].trigger('click')
     await wrapper.find('textarea').setValue('研究 Java 工程师就业趋势')
-    await wrapper.find('form').trigger('submit')
+    await wrapper.findAll('.task-actions button')[0].trigger('click')
     await flushPromises()
 
     expect(wrapper.get('.research-question').text()).toContain('研究 Java 工程师就业趋势')
     expect(wrapper.get('.research-loading').text()).toContain('深度研究进行中')
     // 提交已经完成（拿到了 taskId），不该继续锁住工具栏——报告还在后台轮询，界面不该跟着卡死。
-    expect(wrapper.findAll('.mode-picker button').every(button => button.attributes('disabled') === undefined)).toBe(true)
+    expect(wrapper.findAll('.task-actions button').every(button => button.attributes('disabled') === undefined)).toBe(true)
     expect(wrapper.find('.stop').exists()).toBe(false)
     expect(researchApi.run).toHaveBeenCalledWith(expect.any(String), '研究 Java 工程师就业趋势')
     expect(researchApi.status).toHaveBeenCalledWith(7)

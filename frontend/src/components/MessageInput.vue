@@ -15,6 +15,21 @@ function submit() {
     message.value = ''
   }
 }
+
+/**
+ * 取走当前输入并清空，取不到（空白/忙碌）返回 undefined。
+ *
+ * <p>任务按钮（生成 PPT / 深度研究）走这条路而不是 `send` 事件：它们是**动作**不是模式，
+ * 点一下就该带着当前输入直接发起任务，没有"先选中、再发送"这一步（issue #93）。
+ */
+function take(): string | undefined {
+  const value = message.value.trim()
+  if (!value || props.busy) return undefined
+  message.value = ''
+  return value
+}
+
+defineExpose({ take })
 </script>
 
 <template>
