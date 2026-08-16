@@ -36,6 +36,7 @@ import com.agenttrail.evaluation.GoldenCaseRepository;
 import com.agenttrail.evaluation.GoldenCaseService;
 import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.tools.FileContentTool;
+import com.agenttrail.loop.tools.ViewImageTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilyWebSearchResultParser;
@@ -320,6 +321,7 @@ public class AgentLoopExecutorConfig {
             ChartToolProvider chartToolProvider,
             TurnPersistenceHook turnPersistenceHook,
             ObjectProvider<FileContentTool> fileContentToolProvider,
+            ObjectProvider<ViewImageTool> viewImageToolProvider,
             ObjectProvider<FileStore> fileStoreProvider,
             ObjectProvider<AnalyticsToolProvider> analyticsToolProvider,
             PauseConfig pauseConfig,
@@ -341,7 +343,8 @@ public class AgentLoopExecutorConfig {
                 chartToolProvider, turnPersistenceHook, fileContentToolProvider.getIfAvailable(), fileStoreProvider.getIfAvailable(),
                 analyticsToolProvider.getIfAvailable(), pauseConfig, toolRiskRegistry, sessionBudgetTracker, traceStore,
                 meterRegistryProvider.getIfAvailable(), promptInjectionGuard, piiMasker, toolRateLimiter,
-                skillManagerProvider.getIfAvailable(), memoryStoreProvider.getIfAvailable());
+                skillManagerProvider.getIfAvailable(), memoryStoreProvider.getIfAvailable(),
+                viewImageToolProvider.getIfAvailable());
         log.info("agentLoopExecutorFactory configured: profile=chat-default model={} models={} "
                         + "tools=[web-search,chart] pause={} memory={} trace={} metrics={}",
                 "qwen-plus", models.stream().map(RegisteredModel::id).toList(), pauseConfig != null,

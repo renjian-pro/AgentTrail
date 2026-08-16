@@ -20,6 +20,7 @@ import com.agenttrail.loop.trace.TraceStore;
 import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.FileContentTool;
+import com.agenttrail.loop.tools.ViewImageTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
@@ -160,7 +161,16 @@ public class AgentLoopExecutorFactory {
         this.toolRateLimiter = toolRateLimiter;
         this.skillManager = skillManager;
         this.memoryStore = memoryStore;
-        this.baseTools = fileContentTool != null ? List.of(fileContentTool.toolCallback()) : List.of();
+        ViewImageTool viewImageTool = option(options, 17, ViewImageTool.class, null);
+        // 文件读取和看图都属于基线层：无条件挂载、不按开关、不换执行器（requirements §7.2）
+        List<ToolCallback> assembledBaseTools = new ArrayList<>();
+        if (fileContentTool != null) {
+            assembledBaseTools.add(fileContentTool.toolCallback());
+        }
+        if (viewImageTool != null) {
+            assembledBaseTools.add(viewImageTool.toolCallback());
+        }
+        this.baseTools = List.copyOf(assembledBaseTools);
         // baseTools 现在可能非空（文件工具无条件挂载），所以这里也必须经过
         // resolveToolCallingModel 那道 qwen-plus→deepseek-chat 的安全切换——之前这里直接
         // buildExecutor(model, ...) 用的是请求方自己的 ChatModel，跳过了这道开关，

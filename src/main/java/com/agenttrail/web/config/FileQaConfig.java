@@ -17,6 +17,7 @@ import com.agenttrail.capability.fileqa.port.FileStorePort;
 import com.agenttrail.capability.fileqa.port.RetrievalPort;
 import com.agenttrail.capability.file.multimodal.ImageDescriptionService;
 import com.agenttrail.loop.tools.FileContentTool;
+import com.agenttrail.loop.tools.ViewImageTool;
 import com.agenttrail.capability.rag.FileVectorizationService;
 import com.agenttrail.capability.rag.RagRetrievalService;
 import org.springframework.ai.chat.model.ChatModel;
@@ -122,5 +123,11 @@ public class FileQaConfig {
     @Bean
     public FileContentTool fileContentTool(FileQaService fileQaService) {
         return new FileContentTool(fileQaService);
+    }
+
+    /** 见 {@link ViewImageTool} 的类注释：视觉做成一次工具调用，不把主对话升级成多模态。 */
+    @Bean
+    public ViewImageTool viewImageTool(FileQaService fileQaService) {
+        return new ViewImageTool(fileQaService);
     }
 }

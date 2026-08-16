@@ -40,13 +40,36 @@ public class ImageDescriptionService {
         this.model = model;
     }
 
+    /**
+     * 带着用户的具体问题重新看原图（issue #105）。
+     *
+     * <p>和 {@link #describe} 的区别不是措辞，是**信息量**：describe 产出的是一次性的通用描述，
+     * 缓存下来之后主对话模型看到的永远是那段文字。用户追问"图里左下角那个数字是多少"时，
+     * 描述里没覆盖就答不出——而且模型不知道自己没看到原图，会编。这条路每次都重新看图。
+     *
+     * <p>和"大文件带着问题走 RAG 检索"是同一个模式：不预先把全部内容塞进上下文，
+     * 而是带着真实问题按需取。主对话模型因此不需要换成视觉模型——那会和 tool calling 冲突
+     * （带工具的请求已经被强制路由到不带视觉的 deepseek-chat，见踩坑点 #78a）。
+     */
+    public String answerAbout(byte[] imageBytes, String fileName, String question) {
+        if (question == null || question.isBlank()) {
+            return describe(imageBytes, fileName);
+        }
+        return callVisionModel(imageBytes, fileName,
+                "请只根据这张图片回答下面的问题，答不出就直说图中没有这个信息，不要推测：" + question.strip());
+    }
+
     public String describe(byte[] imageBytes, String fileName) {
+        return callVisionModel(imageBytes, fileName, DESCRIBE_PROMPT);
+    }
+
+    private String callVisionModel(byte[] imageBytes, String fileName, String instruction) {
         if (imageBytes == null || imageBytes.length == 0) {
             return EMPTY_IMAGE_NOTICE;
         }
 
         UserMessage message = UserMessage.builder()
-                .text(DESCRIBE_PROMPT)
+                .text(instruction)
                 .media(new Media(detectMimeType(fileName), new ByteArrayResource(imageBytes)))
                 .build();
         Prompt prompt = new Prompt(List.of(message), OpenAiChatOptions.builder().model(model).build());

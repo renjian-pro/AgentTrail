@@ -146,6 +146,21 @@ public class FileQaService {
     }
 
     /** HTTP 层在读取正文前调用；资源不存在与不属于当前用户统一按不可见处理。 */
+    /**
+     * 带着用户的具体问题重新看原图（issue #105）。和 {@link #contentFor} 走的缓存描述是两层：
+     * 泛泛的问题用缓存描述就够（便宜、可进 RAG），描述里没覆盖的细节才值得再看一次原图。
+     *
+     * <p>非图片文件返回明确说明而不是静默转去读文本——模型调错工具时要能立刻知道。
+     */
+    public String answerAboutImage(long fileId, String question) {
+        UploadedFile file = fileStore.findById(fileId)
+                .orElseThrow(() -> new NoSuchElementException("未知的文件标识: " + fileId));
+        if (file.kind() != FileKind.IMAGE) {
+            return "Error: 文件 " + fileId + " 不是图片，请改用 load_file_content 读取它的文本内容";
+        }
+        return imageDescriptionService.answerAbout(file.rawBytes(), file.fileName(), question);
+    }
+
     public boolean belongsToUser(long fileId, String userId) {
         return fileStore.findById(fileId).map(file -> userId != null && userId.equals(file.userId())).orElse(false);
     }
