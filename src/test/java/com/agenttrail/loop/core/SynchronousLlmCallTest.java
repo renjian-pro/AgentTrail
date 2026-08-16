@@ -61,7 +61,10 @@ class SynchronousLlmCallTest {
         assertThat(elapsedMillis)
                 .as("调用方必须在配置的超时附近拿回控制权，不能等模型自己的 30 秒 sleep 走完")
                 .isLessThan(2000);
-        assertThat(callInterruptedOrAbandoned)
+        // 轮询等这个标记，而不是超时一返回就立刻断言：中断是发给**另一条**线程（boundedElastic）的，
+        // 调用方拿回控制权和那条线程真的观察到中断之间没有先后保证，直接读会偶发地读到 false。
+        // 这正好也是这条断言想说明的事——应用层的超时不依赖被中断的线程做出任何反应。
+        assertThat(awaitTrue(callInterruptedOrAbandoned, Duration.ofSeconds(2)))
                 .as("Reactor 对 boundedElastic 上的任务取消是 Future.cancel(true)——确实会发一次线程中断，"
                         + "Thread.sleep() 这种可中断阻塞能响应它；但 OkHttp 的阻塞 socket 读取通常不是可中断的，"
                         + "所以生产事故里那条真实卡住的调用不会因为这个中断就真的解除阻塞，应用层拿回控制权靠的是"
@@ -77,6 +80,23 @@ class SynchronousLlmCallTest {
 
         assertThatThrownBy(() -> SynchronousLlmCall.call(failingFast, new Prompt(List.of()), Duration.ofSeconds(2)))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    /** 在给定时限内等一个由别的线程翻转的标记；到点仍未翻转就返回 false，交给断言去报错。 */
+    private static boolean awaitTrue(AtomicBoolean flag, Duration limit) {
+        long deadline = System.nanoTime() + limit.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (flag.get()) {
+                return true;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return flag.get();
+            }
+        }
+        return flag.get();
     }
 
     private static ChatModel callReturning(Supplier<ChatResponse> supplier) {

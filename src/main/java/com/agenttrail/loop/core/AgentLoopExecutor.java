@@ -160,32 +160,46 @@ public class AgentLoopExecutor {
      * Single construction seam. Optional collaborators are supplied in positional slots by the
      * builder and older integrations remain source-compatible without a telescoping constructor chain.
      */
-    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds, Object... options) {
-        AgentTaskManager taskManager = option(options, 0, AgentTaskManager.class, new AgentTaskManager());
-        ContextPolicy contextPolicy = option(options, 1, ContextPolicy.class, null);
-        ThinkingMode thinkingMode = option(options, 2, ThinkingMode.class, ThinkingMode.DISABLED);
-        TurnPersistenceHook persistenceHook = option(options, 3, TurnPersistenceHook.class, null);
-        ToolCatalog toolCatalog = option(options, 4, ToolCatalog.class, null);
-        PauseConfig pauseConfig = option(options, 5, PauseConfig.class, null);
-        StageOutputManager stageOutputManager = option(options, 6, StageOutputManager.class, null);
-        TraceStore traceStore = option(options, 7, TraceStore.class, null);
-        MemoryStore memoryStore = option(options, 8, MemoryStore.class, null);
-        FileStore fileStore = option(options, 9, FileStore.class, null);
-        int maxConsecutiveToolFailures = numberOption(options, 10, 0);
-        AgentHooks hooks = option(options, 11, AgentHooks.class, AgentHooks.EMPTY);
-        SessionBudgetTracker budgetTracker = option(options, 12, SessionBudgetTracker.class, null);
-        MeterRegistry meterRegistry = option(options, 13, MeterRegistry.class, null);
-        String modelName = option(options, 14, String.class, "unknown");
-        PromptInjectionGuard promptInjectionGuard = option(options, 15, PromptInjectionGuard.class, null);
-        PiiMasker piiMasker = option(options, 16, PiiMasker.class, null);
-        ToolRateLimiter toolRateLimiter = option(options, 17, ToolRateLimiter.class, null);
-        Duration roundTimeout = option(options, 18, Duration.class, DEFAULT_ROUND_TIMEOUT);
-        SkillManager skillManager = option(options, 19, SkillManager.class, null);
-        RuntimeProfile runtimeProfile = option(options, 20, RuntimeProfile.class, RuntimeProfile.defaults());
-        // 追加在末尾而不是插在中间——上面每一行的下标都是硬编码的位置槽，插队会静默顶掉后面所有参数
-        // （这正是 issue #99 要拆掉这套构造方式的原因）
-        DataProvenancePolicy dataProvenancePolicy =
-                option(options, 21, DataProvenancePolicy.class, DataProvenancePolicy.DISABLED);
+    /** 只给 {@code chatModel}/{@code tools}/{@code maxRounds}，其余机制全部关闭——等价于空 {@link Builder}。 */
+    public AgentLoopExecutor(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
+        this(builder(chatModel, tools, maxRounds));
+    }
+
+    /**
+     * 唯一的规范构造函数（issue #99）。
+     *
+     * <p>取 {@link Builder} 而不是二十几个形参：这里此前是 {@code Object... options} 位置槽，
+     * 每个可选协作者按硬编码下标取。它有两个编译器完全帮不上忙的失败模式——传错顺序在运行时
+     * 炸成 {@code ClassCastException}；**在中间插一个新参数会静默顶掉它后面的每一个**，加数据
+     * 来源门禁（issue #104）时差一点就把 {@code runtimeProfile} 顶没了。参数从位置变成名字之后，
+     * 这两类错误都成了编译错误。
+     */
+    private AgentLoopExecutor(Builder options) {
+        ChatModel chatModel = options.chatModel;
+        List<ToolCallback> tools = options.tools;
+        int maxRounds = options.maxRounds;
+        AgentTaskManager taskManager = options.taskManager == null ? new AgentTaskManager() : options.taskManager;
+        ContextPolicy contextPolicy = options.contextPolicy;
+        ThinkingMode thinkingMode = options.thinkingMode;
+        TurnPersistenceHook persistenceHook = options.persistenceHook;
+        ToolCatalog toolCatalog = options.toolCatalog;
+        PauseConfig pauseConfig = options.pauseConfig;
+        StageOutputManager stageOutputManager = options.stageOutputManager;
+        TraceStore traceStore = options.traceStore;
+        MemoryStore memoryStore = options.memoryStore;
+        FileStore fileStore = options.fileStore;
+        int maxConsecutiveToolFailures = options.maxConsecutiveToolFailures;
+        AgentHooks hooks = options.hooks;
+        SessionBudgetTracker budgetTracker = options.budgetTracker;
+        MeterRegistry meterRegistry = options.meterRegistry;
+        String modelName = options.modelName;
+        PromptInjectionGuard promptInjectionGuard = options.promptInjectionGuard;
+        PiiMasker piiMasker = options.piiMasker;
+        ToolRateLimiter toolRateLimiter = options.toolRateLimiter;
+        Duration roundTimeout = options.roundTimeout;
+        SkillManager skillManager = options.skillManager;
+        RuntimeProfile runtimeProfile = options.runtimeProfile;
+        DataProvenancePolicy dataProvenancePolicy = options.dataProvenancePolicy;
         RuntimeProfileValidator.validate(runtimeProfile);
 
         List<ToolCallback> baseTools = tools == null ? List.of() : tools;
@@ -225,25 +239,6 @@ public class AgentLoopExecutor {
                 (dataProvenancePolicy == null) ? DataProvenancePolicy.DISABLED : dataProvenancePolicy;
         this.runtimeProfile = runtimeProfile;
     }
-
-    private static int numberOption(Object[] options, int index, int fallback) {
-        return index < options.length && options[index] instanceof Number number ? number.intValue() : fallback;
-    }
-
-    private static <T> T option(Object[] options, int index, Class<T> type, T fallback) {
-        if (index >= options.length || options[index] == null) {
-            return fallback;
-        }
-        return type.cast(options[index]);
-    }
-
-    /**
-     * @param taskManager     任务管理器由外部传入并**共享**——停止接口要能找到正在跑的任务，
-     *                        每次请求各自 new 一个的话，停止请求永远找不到目标
-     * @param contextPolicy   上下文压缩策略；传 null 表示不压缩，循环行为与没有该机制时一致
-     * @param thinkingMode    当前所用模型交付思考过程的方式
-     * @param persistenceHook 会话持久化回调；传 null 表示不落库、不预加载历史（如子 Agent）
-     */
 
     /**
      * @param toolCatalog ToolSearch 延迟工具池；传 null 表示不启用该机制，行为与没有它时完全一致。
@@ -349,8 +344,9 @@ public class AgentLoopExecutor {
         private PromptInjectionGuard promptInjectionGuard;
         private PiiMasker piiMasker;
         private ToolRateLimiter toolRateLimiter;
+        private Duration roundTimeout = DEFAULT_ROUND_TIMEOUT;
         private SkillManager skillManager;
-        private DataProvenancePolicy dataProvenancePolicy;
+        private DataProvenancePolicy dataProvenancePolicy = DataProvenancePolicy.DISABLED;
         private RuntimeProfile runtimeProfile = RuntimeProfile.defaults();
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
@@ -468,12 +464,17 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        /**
+         * 整轮的绝对时钟上限，见 {@link #DEFAULT_ROUND_TIMEOUT}。生产不需要动它；
+         * 测试用它把"卡住之后会不会被兜底掐掉"压缩到几百毫秒验证，不用真等 8 分钟。
+         */
+        public Builder roundTimeout(Duration roundTimeout) {
+            this.roundTimeout = roundTimeout;
+            return this;
+        }
+
         public AgentLoopExecutor build() {
-            return new AgentLoopExecutor(chatModel, tools, maxRounds, taskManager, contextPolicy, thinkingMode,
-                    persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
-                    fileStore, maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
-                    promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT, skillManager,
-                    runtimeProfile, dataProvenancePolicy);
+            return new AgentLoopExecutor(this);
         }
     }
 
@@ -1096,10 +1097,13 @@ public class AgentLoopExecutor {
 
         fireSessionEnd(context, true);
         completionCoordinator.complete(context);
+        // 先释放单飞占位，再向下游宣告结束——顺序反过来会留下一道真实的竞态：调用方收到
+        // Complete 的那一刻这一轮在它看来已经结束，可以立刻发下一句，而占位要等本线程再往下
+        // 走一行才释放，于是"答案刚出来就追问"有概率被 CONCURRENT_EXECUTION 顶回去。
+        // 反过来则安全：占位释放之后、Complete 之前，调用方还在等信号，不会有人来抢。
+        taskManager.removeTask(context.conversationId());
         context.emit(new AgentStreamEvent.Complete(context.conversationId(), turnId));
         context.emitComplete();
-        // 释放单飞占位，让该会话能发起下一轮对话
-        taskManager.removeTask(context.conversationId());
     }
 
     /**
@@ -1124,9 +1128,11 @@ public class AgentLoopExecutor {
             // 收尾途中的二次失败只记日志：它顶多让这一轮少一条审计记录，而让它冒出去会让这一轮永远不结束
             log.error("[{}] 失败收尾过程中再次出错，本轮仍会正常结束", context.conversationId(), collateral);
         } finally {
+            // 和 completeRun 同样的顺序：先放单飞占位再宣告结束，否则调用方拿到 Error 立刻重试
+            // 有概率撞上还没释放的占位，得到一个与真实原因无关的 CONCURRENT_EXECUTION
+            taskManager.removeTask(context.conversationId());
             context.emit(new AgentStreamEvent.Error("LLM_CALL_FAILED", error.getMessage()));
             context.emitComplete();
-            taskManager.removeTask(context.conversationId());
         }
     }
 

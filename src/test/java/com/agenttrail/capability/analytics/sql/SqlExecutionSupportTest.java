@@ -21,6 +21,27 @@ class SqlExecutionSupportTest {
                 .contains("10.5", "不要从预览行手算总量", "ORDER BY");
     }
 
+    /**
+     * SQL NULL 必须能原样穿过 {@link SqlResult}。这里回归的是一条踩了很久的坑：行数据当初用
+     * {@code List.copyOf} 做不可变拷贝，而它对 null 元素直接抛 NPE。于是任何一条查出 NULL 的
+     * 结果——{@code LEFT JOIN} 没匹配上的那一侧、{@code SELECT *} 撞上可空列——都会让 execute_sql
+     * 整个返回"查询执行失败：NullPointerException"，模型只看得到一句无从下手的错误。
+     */
+    @Test
+    void keepsSqlNullsInsteadOfBlowingUpOnThem() {
+        SqlResult withNulls = new SqlResult(
+                List.of(new ColumnMeta("dept_name", "dept_name", "dim_dept"),
+                        new ColumnMeta("revenue", "amount", "payment")),
+                List.of(java.util.Arrays.asList(null, new BigDecimal("10.5")),
+                        java.util.Arrays.asList("销售一部", null)),
+                false, 3, "SELECT d.dept_name, SUM(p.amount) FROM payment p LEFT JOIN dim_dept d ...");
+
+        assertThat(withNulls.rows()).hasSize(2);
+        assertThat(withNulls.rows().get(0).get(0)).isNull();
+        assertThat(withNulls.rows().get(1).get(1)).isNull();
+        assertThat(SqlResultFormatter.format(withNulls, 20)).contains("销售一部");
+    }
+
     @Test
     void classifiesSchemaSyntaxPermissionAndTransientFailures() {
         assertThat(SqlErrorClassifier.classify(new SQLException("missing", "42S02")))

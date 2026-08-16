@@ -36,9 +36,11 @@ class AgentLoopExecutorRoundTimeoutTest {
         ChatModel neverCompletes = chatModelReturning(Flux.concat(
                 Mono.just(ChatResponses.text("我需要先查一下")),
                 Flux.interval(Duration.ofMillis(20)).map(tick -> ChatResponses.usage(1, 1))));
-        AgentLoopExecutor executor = new AgentLoopExecutor(neverCompletes, List.of(), 5,
-                taskManager, null, ThinkingMode.DISABLED, null, null, null, null, null,
-                null, null, 0, null, null, null, "test", null, null, null, Duration.ofMillis(200));
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(neverCompletes, List.of(), 5)
+                .taskManager(taskManager)
+                .modelName("test")
+                .roundTimeout(Duration.ofMillis(200))
+                .build();
 
         long startedAt = System.currentTimeMillis();
         assertThatThrownBy(() -> executor.call("请分析 film_actor 表", new RunnableParams("conv-1", "user-1")))
@@ -59,9 +61,10 @@ class AgentLoopExecutorRoundTimeoutTest {
     @Test
     void doesNotInterfereWithARoundThatFinishesWellBeforeTheAbsoluteTimeout() {
         ChatModel fast = chatModelReturning(Flux.just(ChatResponses.text("你好")));
-        AgentLoopExecutor executor = new AgentLoopExecutor(fast, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, null, null, null,
-                null, null, 0, null, null, null, "test", null, null, null, Duration.ofMillis(200));
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(fast, List.of(), 5)
+                .modelName("test")
+                .roundTimeout(Duration.ofMillis(200))
+                .build();
 
         String answer = executor.call("你好", new RunnableParams("conv-1", "user-1"));
 

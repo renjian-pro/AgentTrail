@@ -61,8 +61,9 @@ class AgentLoopExecutorHistoryMessageTest {
                 List.of(new ChatResponse(List.of(new Generation(toolCallWithReasoning)))),
                 List.of(ChatResponses.text("done"))
         );
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(echoTool), 5,
-                new AgentTaskManager(), null, ThinkingMode.REASONING_CONTENT, null);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(echoTool), 5)
+                .thinkingMode(ThinkingMode.REASONING_CONTENT)
+                .build();
 
         executor.stream("please echo ping", new RunnableParams("conv-1", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));

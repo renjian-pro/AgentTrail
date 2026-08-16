@@ -210,7 +210,8 @@ class AgentLoopExecutorPauseResumeTest {
     private static AgentLoopExecutor executorWith(ScriptedChatModel chatModel, InMemoryPauseStateStore store,
                                                   RecordingToolCallback tool, int maxRounds) {
         PauseConfig pauseConfig = new PauseConfig(Set.of(APPROVAL_REQUIRED_TOOL), store);
-        return new AgentLoopExecutor(chatModel, List.of(tool), maxRounds, new AgentTaskManager(), null,
-                ThinkingMode.DISABLED, null, null, pauseConfig);
+        return AgentLoopExecutor.builder(chatModel, List.of(tool), maxRounds)
+                .pauseConfig(pauseConfig)
+                .build();
     }
 }

@@ -49,7 +49,12 @@ public record GoldenTaskReport(List<GoldenObservation> observations) {
             actualSql = actualSql == null ? "" : actualSql;
             actualResult = actualResult == null ? "" : actualResult;
             toolCalls = toolCalls == null ? List.of() : List.copyOf(toolCalls);
-            metrics = metrics == null ? Map.of() : Map.copyOf(metrics);
+            // 不能用 Map.copyOf：它对 null 值抛 NPE，而指标里放得进 null——譬如
+            // `queryError` 存的是异常的 message，NPE 这类异常的 message 本身就是 null。
+            // 结果是"这条用例查询失败"被升级成"整条用例的观测丢失"，报告里只剩一句
+            // executor failed，真正的失败原因反而看不见了（repro-004/sql-005 就是这么消失的）。
+            metrics = metrics == null ? Map.of()
+                    : java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(metrics));
             question = question == null ? "" : question;
         }
 

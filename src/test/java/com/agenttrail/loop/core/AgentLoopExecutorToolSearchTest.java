@@ -25,8 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AgentLoopExecutorToolSearchTest {
 
     private static AgentLoopExecutor executorWith(ScriptedChatModel chatModel, ToolCatalog catalog) {
-        return new AgentLoopExecutor(chatModel, List.of(), 5, new AgentTaskManager(), null,
-                ThinkingMode.DISABLED, null, catalog);
+        return AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .toolCatalog(catalog)
+                .build();
     }
 
     @Test

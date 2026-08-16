@@ -72,8 +72,9 @@ class AgentLoopExecutorSyncCallTest {
     void throwsConcurrentExecutionWhenTheSameConversationIsAlreadyRunning() {
         AgentTaskManager sharedManager = new AgentTaskManager();
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("done")));
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                sharedManager, null, ThinkingMode.DISABLED, null);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .taskManager(sharedManager)
+                .build();
         sharedManager.registerTask("conv-1", Sinks.many().unicast().onBackpressureBuffer());
 
         assertThatThrownBy(() -> executor.call("hi", new RunnableParams("conv-1", "user-1")))
@@ -90,8 +91,9 @@ class AgentLoopExecutorSyncCallTest {
         ScriptedChatModel chatModel = new ScriptedChatModel(
                 List.of(toolCall("call-1", "chargeCard", "{\"amount\":100}")));
         PauseConfig pauseConfig = new PauseConfig(Set.of("chargeCard"), store);
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(chargeTool), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null, null, pauseConfig);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(chargeTool), 5)
+                .pauseConfig(pauseConfig)
+                .build();
 
         assertThatThrownBy(() -> executor.call("给我充值 100 元", new RunnableParams("conv-1", "user-1")))
                 .isInstanceOf(AgentCallException.class)

@@ -71,8 +71,8 @@ class AgentLoopExecutorFactoryTest {
     void fallsBackToTheDefaultModelWhenNoModelIdIsGiven() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null);
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(deepSeek, qwen), "qwen-plus").build();
 
         String answer = factory.forModel(null).call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -84,8 +84,8 @@ class AgentLoopExecutorFactoryTest {
     void blankModelIdAlsoFallsBackToTheDefault() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null);
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(deepSeek, qwen), "qwen-plus").build();
 
         String answer = factory.forModel("  ").call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -96,8 +96,8 @@ class AgentLoopExecutorFactoryTest {
     void routesToTheExplicitlyRequestedModel() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null);
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(deepSeek, qwen), "qwen-plus").build();
 
         String answer = factory.forModel("deepseek-chat").call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -107,9 +107,8 @@ class AgentLoopExecutorFactoryTest {
 
     @Test
     void rejectsAnUnknownModelId() {
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(new ScriptedChatModel(List.of()), new ScriptedChatModel(List.of())),
-                "qwen-plus", new AgentTaskManager(), null);
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(new ScriptedChatModel(List.of()), new ScriptedChatModel(List.of())), "qwen-plus").build();
 
         assertThatThrownBy(() -> factory.forModel("gpt-5"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -121,7 +120,7 @@ class AgentLoopExecutorFactoryTest {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", new ScriptedChatModel(List.of()), ThinkingMode.REASONING_CONTENT));
 
-        assertThatThrownBy(() -> new AgentLoopExecutorFactory(models, "qwen-plus", new AgentTaskManager(), null))
+        assertThatThrownBy(() -> AgentLoopExecutorFactory.builder(models, "qwen-plus").build())
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("qwen-plus");
     }
@@ -131,8 +130,9 @@ class AgentLoopExecutorFactoryTest {
         AgentTaskManager sharedTaskManager = new AgentTaskManager();
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", sharedTaskManager, null);
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(twoModels(deepSeek, qwen), "qwen-plus")
+                .taskManager(sharedTaskManager)
+                .build();
 
         AgentLoopExecutor deepSeekExecutor = factory.forModel("deepseek-chat");
         AgentLoopExecutor qwenExecutor = factory.forModel("qwen-plus");
@@ -147,9 +147,10 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void webSearchEnabledFalseNeverConsultsTheSearchProviderEvenIfOneIsConfigured() {
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(),
-                degradedSearchProvider());
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus")
+                .webSearch(degradedSearchProvider())
+                .build();
 
         AgentLoopExecutor plain = factory.forModel("qwen-plus", false);
 
@@ -159,8 +160,8 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void webSearchEnabledDegradesToThePlainExecutorWhenNoSearchProviderIsConfigured() {
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(), null);
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus").build();
 
         AgentLoopExecutor withSearch = factory.forModel("qwen-plus", true);
 
@@ -170,9 +171,10 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void webSearchEnabledDegradesGracefullyWhenTheProviderHasNoUsableKey() {
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(),
-                degradedSearchProvider());
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus")
+                .webSearch(degradedSearchProvider())
+                .build();
 
         String answer = factory.forModel("qwen-plus", true).call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -183,8 +185,9 @@ class AgentLoopExecutorFactoryTest {
     void routesQwenWebSearchThroughTheNativeCompatibleModelBeforeToolChunksReachOpenAiSdk() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), fakeSearchProvider("web_search"));
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(twoModels(deepSeek, qwen), "qwen-plus")
+                .webSearch(fakeSearchProvider("web_search"))
+                .build();
 
         String answer = factory.forModel("qwen-plus", true).call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -205,8 +208,9 @@ class AgentLoopExecutorFactoryTest {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         FileContentTool fileContentTool = new FileContentTool(mock(FileQaService.class));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null, null, null, fileContentTool);
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(twoModels(deepSeek, qwen), "qwen-plus")
+                .fileContentTool(fileContentTool)
+                .build();
 
         String answer = factory.forModel("qwen-plus").call("hi", new RunnableParams("conv-1", "user-1"));
 
@@ -217,8 +221,8 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void forModelWithChartsDegradesToThePlainExecutorWhenNoChartProviderIsConfigured() {
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(), null, null);
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus").build();
 
         AgentLoopExecutor withCharts = factory.forModelWithCharts("qwen-plus", false);
 
@@ -228,9 +232,10 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void forModelWithChartsDegradesGracefullyWhenMcpEchartsIsUnavailable() {
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(), null,
-                degradedChartProvider());
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus")
+                .charts(degradedChartProvider())
+                .build();
 
         String answer = factory.forModelWithCharts("qwen-plus", false)
                 .call("hi", new RunnableParams("conv-1", "user-1"));
@@ -241,9 +246,10 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void forModelWithChartsMountsTheChartToolAndCachesTheResult() {
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus", new AgentTaskManager(), null,
-                fakeChartProvider("generate_bar_chart"));
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(new ScriptedChatModel(List.of()), qwen), "qwen-plus")
+                .charts(fakeChartProvider("generate_bar_chart"))
+                .build();
 
         AgentLoopExecutor withCharts = factory.forModelWithCharts("qwen-plus", false);
 
@@ -257,8 +263,9 @@ class AgentLoopExecutorFactoryTest {
     void routesQwenChartConversationsThroughTheNativeCompatibleModelToo() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, qwen), "qwen-plus", new AgentTaskManager(), null, fakeChartProvider("chart"));
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(twoModels(deepSeek, qwen), "qwen-plus")
+                .charts(fakeChartProvider("chart"))
+                .build();
 
         String answer = factory.forModelWithCharts("qwen-plus", false)
                 .call("hi", new RunnableParams("conv-1", "user-1"));
@@ -291,9 +298,10 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void mountsEveryAnalyticsToolUpFrontInsteadOfBehindToolSearch() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("done")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat",
-                new AgentTaskManager(), null, null, null, null, null, fakeAnalyticsProvider());
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat")
+                .analytics(fakeAnalyticsProvider())
+                .build();
 
         factory.forAnalytics(null).call("上个月的订单量", new RunnableParams("conv-1", "user-1"));
 
@@ -312,11 +320,11 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void givesTheAnalyticsExecutorItsOwnSkillTool() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("done")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat",
-                new AgentTaskManager(), null, null, null, null, null, fakeAnalyticsProvider(),
-                null, null, null, null, null, null, null, null,
-                skillManagerWith(new RecordingToolCallback("Skill", "加载技能", "SOP 正文")));
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat")
+                .analytics(fakeAnalyticsProvider())
+                .skills(skillManagerWith(new RecordingToolCallback("Skill", "加载技能", "SOP 正文")))
+                .build();
 
         factory.forAnalytics(null).call("上个月的订单量", new RunnableParams("conv-1", "user-1"));
 
@@ -327,10 +335,11 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void keepsTheAnalyticsExecutorWorkingWhenNoSkillIsEnabled() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("done")));
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat",
-                new AgentTaskManager(), null, null, null, null, null, fakeAnalyticsProvider(),
-                null, null, null, null, null, null, null, null, skillManagerWith(null));
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat")
+                .analytics(fakeAnalyticsProvider())
+                .skills(skillManagerWith(null))
+                .build();
 
         String answer = factory.forAnalytics(null).call("上个月的订单量", new RunnableParams("conv-1", "user-1"));
 
@@ -346,9 +355,11 @@ class AgentLoopExecutorFactoryTest {
     @Test
     void refusesToCacheAnAnalyticsExecutorBuiltWhileChartsWereDown() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(), List.of());
-        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
-                twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat",
-                new AgentTaskManager(), null, degradedChartProvider(), null, null, null, fakeAnalyticsProvider());
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat")
+                .charts(degradedChartProvider())
+                .analytics(fakeAnalyticsProvider())
+                .build();
 
         assertThat(factory.forAnalytics(null))
                 .as("图表降级时构造的执行器不该被缓存，否则 mcp-echarts 恢复后也换不回来")

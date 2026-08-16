@@ -174,12 +174,8 @@ public class AgentLoopExecutorFactory {
         public Builder memory(MemoryStore value) { this.memoryStore = value; return this; }
         public Builder viewImageTool(ViewImageTool value) { this.viewImageTool = value; return this; }
 
-        @SuppressWarnings("deprecation")
         public AgentLoopExecutorFactory build() {
-            return new AgentLoopExecutorFactory(models, defaultModelId, taskManager, webSearchToolProvider,
-                    chartToolProvider, persistenceHook, fileContentTool, fileStore, analyticsToolProvider,
-                    pauseConfig, toolRiskRegistry, sessionBudgetTracker, traceStore, meterRegistry,
-                    promptInjectionGuard, piiMasker, toolRateLimiter, skillManager, memoryStore, viewImageTool);
+            return new AgentLoopExecutorFactory(this);
         }
     }
 
@@ -188,28 +184,32 @@ public class AgentLoopExecutorFactory {
     }
 
     /**
-     * @deprecated 位置槽没有编译期检查，且中间插参数会静默顶掉后续下标。生产装配走
-     *             {@link #builder(List, String)}；这个重载只为已有测试保留。
+     * 唯一的构造入口（issue #99）——参数从位置槽变成 {@link Builder} 上的名字。
+     *
+     * <p>位置槽版本编译期零检查：传错顺序在运行时炸成 {@code ClassCastException}，而**中间插一个
+     * 新参数会静默顶掉它后面的每一个**。分析执行器缺 {@code skillManager}、DataAgent 因此拿不到
+     * 自己的 SOP（issue #95），就是这种"漏传编译器不管"的产物。
      */
-    @Deprecated
-    public AgentLoopExecutorFactory(List<RegisteredModel> models, String defaultModelId, Object... options) {
-        AgentTaskManager taskManager = option(options, 0, AgentTaskManager.class, new AgentTaskManager());
-        TavilySearchToolProvider webSearchToolProvider = option(options, 1, TavilySearchToolProvider.class, null);
-        ChartToolProvider chartToolProvider = option(options, 2, ChartToolProvider.class, null);
-        TurnPersistenceHook persistenceHook = option(options, 3, TurnPersistenceHook.class, null);
-        FileContentTool fileContentTool = option(options, 4, FileContentTool.class, null);
-        FileStore fileStore = option(options, 5, FileStore.class, null);
-        AnalyticsToolProvider analyticsToolProvider = option(options, 6, AnalyticsToolProvider.class, null);
-        PauseConfig pauseConfig = option(options, 7, PauseConfig.class, null);
-        ToolRiskRegistry toolRiskRegistry = option(options, 8, ToolRiskRegistry.class, ToolRiskRegistry.defaults());
-        SessionBudgetTracker sessionBudgetTracker = option(options, 9, SessionBudgetTracker.class, null);
-        TraceStore traceStore = option(options, 10, TraceStore.class, null);
-        MeterRegistry meterRegistry = option(options, 11, MeterRegistry.class, null);
-        PromptInjectionGuard promptInjectionGuard = option(options, 12, PromptInjectionGuard.class, null);
-        PiiMasker piiMasker = option(options, 13, PiiMasker.class, null);
-        ToolRateLimiter toolRateLimiter = option(options, 14, ToolRateLimiter.class, null);
-        SkillManager skillManager = option(options, 15, SkillManager.class, null);
-        MemoryStore memoryStore = option(options, 16, MemoryStore.class, null);
+    private AgentLoopExecutorFactory(Builder options) {
+        List<RegisteredModel> models = options.models;
+        String defaultModelId = options.defaultModelId;
+        AgentTaskManager taskManager = options.taskManager == null ? new AgentTaskManager() : options.taskManager;
+        TavilySearchToolProvider webSearchToolProvider = options.webSearchToolProvider;
+        ChartToolProvider chartToolProvider = options.chartToolProvider;
+        TurnPersistenceHook persistenceHook = options.persistenceHook;
+        FileContentTool fileContentTool = options.fileContentTool;
+        FileStore fileStore = options.fileStore;
+        AnalyticsToolProvider analyticsToolProvider = options.analyticsToolProvider;
+        PauseConfig pauseConfig = options.pauseConfig;
+        ToolRiskRegistry toolRiskRegistry = options.toolRiskRegistry;
+        SessionBudgetTracker sessionBudgetTracker = options.sessionBudgetTracker;
+        TraceStore traceStore = options.traceStore;
+        MeterRegistry meterRegistry = options.meterRegistry;
+        PromptInjectionGuard promptInjectionGuard = options.promptInjectionGuard;
+        PiiMasker piiMasker = options.piiMasker;
+        ToolRateLimiter toolRateLimiter = options.toolRateLimiter;
+        SkillManager skillManager = options.skillManager;
+        MemoryStore memoryStore = options.memoryStore;
         this.sharedHooks = new AgentHooks(List.of(),
                 List.of(new com.agenttrail.loop.hook.ToolPolicyPreToolUseHook(toolRiskRegistry)),
                 List.of(), List.of(), List.of(), List.of());
@@ -237,7 +237,7 @@ public class AgentLoopExecutorFactory {
         this.toolRateLimiter = toolRateLimiter;
         this.skillManager = skillManager;
         this.memoryStore = memoryStore;
-        ViewImageTool viewImageTool = option(options, 17, ViewImageTool.class, null);
+        ViewImageTool viewImageTool = options.viewImageTool;
         // 文件读取和看图都属于基线层：无条件挂载、不按开关、不换执行器（requirements §7.2）
         List<ToolCallback> assembledBaseTools = new ArrayList<>();
         if (fileContentTool != null) {
@@ -260,13 +260,6 @@ public class AgentLoopExecutorFactory {
                     RegisteredModel effectiveModel = modelsById.get(effectiveId);
                     return buildExecutor(effectiveModel, baseTools, null, true);
                 }));
-    }
-
-    private static <T> T option(Object[] options, int index, Class<T> type, T fallback) {
-        if (index >= options.length || options[index] == null) {
-            return fallback;
-        }
-        return type.cast(options[index]);
     }
 
     /**

@@ -54,8 +54,7 @@ class AgentLoopExecutorStructuredOutputTest {
     void repairsMalformedJsonInCallWhenOutputTypeIsDeclared() {
         // 尾部多了一个逗号——模型很常见的小错误
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("{\"title\":\"a\",\"priority\":1,}")));
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5).build();
         RunnableParams params = new RunnableParams("conv-2", "user-1", Map.of(), OutputType.of(Plan.class));
 
         String result = executor.call("plan my day", params);
@@ -66,8 +65,7 @@ class AgentLoopExecutorStructuredOutputTest {
     @Test
     void degradesToAWrappedJsonWhenTheAnswerIsNotRepairable() {
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("sorry, I cannot help with that")));
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5).build();
         RunnableParams params = new RunnableParams("conv-3", "user-1", Map.of(), OutputType.of(Plan.class));
 
         String result = executor.call("plan my day", params);
@@ -79,8 +77,7 @@ class AgentLoopExecutorStructuredOutputTest {
     @Test
     void doesNotRepairTheAnswerInCallWhenNoOutputTypeIsDeclared() {
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("not json at all,")));
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, null);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5).build();
 
         String result = executor.call("hi", new RunnableParams("conv-4", "user-1"));
 

@@ -54,15 +54,17 @@ class AgentLoopExecutorRestartRecoveryIT {
 
         // "实例 A"：独立的 AgentLoopExecutor + AgentTaskManager，处理第一轮，落库后这个对象就没用了
         ScriptedChatModel firstInstanceModel = new ScriptedChatModel(List.of(text("你好，我记住你了")));
-        AgentLoopExecutor instanceA = new AgentLoopExecutor(firstInstanceModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, sharedStore);
+        AgentLoopExecutor instanceA = AgentLoopExecutor.builder(firstInstanceModel, List.of(), 5)
+                .persistenceHook(sharedStore)
+                .build();
         instanceA.stream("你好", new RunnableParams(conversationId, "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
         // "重启/换实例"：全新对象，内存状态和 A 完全无关，只共享同一个 MySQL 表
         ScriptedChatModel secondInstanceModel = new ScriptedChatModel(List.of(text("还记得，你好呀")));
-        AgentLoopExecutor instanceB = new AgentLoopExecutor(secondInstanceModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, sharedStore);
+        AgentLoopExecutor instanceB = AgentLoopExecutor.builder(secondInstanceModel, List.of(), 5)
+                .persistenceHook(sharedStore)
+                .build();
         instanceB.stream("还记得我吗", new RunnableParams(conversationId, "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
@@ -77,8 +79,9 @@ class AgentLoopExecutorRestartRecoveryIT {
     void aConversationNeverSeenBeforeStartsWithEmptyHistoryRatherThanFailing() {
         JdbcSessionStore sharedStore = new JdbcSessionStore(dataSource);
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("你好")));
-        AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(), 5,
-                new AgentTaskManager(), null, ThinkingMode.DISABLED, sharedStore);
+        AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
+                .persistenceHook(sharedStore)
+                .build();
 
         executor.stream("你好", new RunnableParams("conv-never-seen", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
