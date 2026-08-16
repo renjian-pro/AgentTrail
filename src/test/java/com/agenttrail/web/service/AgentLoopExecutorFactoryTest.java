@@ -1,7 +1,9 @@
 package com.agenttrail.web.service;
 
+import com.agenttrail.capability.analytics.AnalyticsToolProvider;
 import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.loop.core.support.RecordingToolCallback;
+import com.agenttrail.loop.skills.SkillManager;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
 import com.agenttrail.capability.file.FileQaService;
 import com.agenttrail.loop.model.RunnableParams;
@@ -17,11 +19,13 @@ import org.springframework.ai.tool.ToolCallback;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 
 import static com.agenttrail.loop.core.support.ChatResponses.text;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AgentLoopExecutorFactoryTest {
 
@@ -261,6 +265,94 @@ class AgentLoopExecutorFactoryTest {
 
         assertThat(answer).isEqualTo("from deepseek");
         assertThat(qwen.roundCount()).isZero();
+    }
+
+    private static final List<String> ANALYTICS_TOOLS = List.of(
+            "list_tables", "describe_tables", "lookup_glossary", "validate_sql", "execute_sql", "calculate");
+
+    private static AnalyticsToolProvider fakeAnalyticsProvider() {
+        return new AnalyticsToolProvider(ANALYTICS_TOOLS.stream()
+                .map(name -> (ToolCallback) new RecordingToolCallback(name, "fake " + name, "result"))
+                .toList());
+    }
+
+    private static SkillManager skillManagerWith(ToolCallback skillTool) {
+        SkillManager skillManager = mock(SkillManager.class);
+        when(skillManager.buildSkillsTool()).thenReturn(Optional.ofNullable(skillTool));
+        return skillManager;
+    }
+
+    /**
+     * issue #95 的核心断言。这六个工具曾经全在 ToolSearch 的延迟池里，模型第一轮只看得到
+     * {@code search_tools}——2026-08-05 的评测里多轮失败案例的 toolCalls 只有它，模型反复
+     * 回答"没找到能查询数据的工具"。断言必须落在**第一轮**的工具清单上：延迟发现即便召回成功，
+     * 工具也要到下一轮才出现，"第一轮就能看见"正是常驻和延迟的分界。
+     */
+    @Test
+    void mountsEveryAnalyticsToolUpFrontInsteadOfBehindToolSearch() {
+        ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("done")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat",
+                new AgentTaskManager(), null, null, null, null, null, fakeAnalyticsProvider());
+
+        factory.forAnalytics(null).call("上个月的订单量", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(deepSeek.toolNamesAtRound(0))
+                .as("六个分析工具必须在第一轮就对模型可见")
+                .containsAll(ANALYTICS_TOOLS)
+                .as("ToolSearch 不再挂在分析路径上——它是为工具多到撑爆上下文设计的，六个工具用它是错配")
+                .doesNotContain("search_tools");
+    }
+
+    /**
+     * DataAgent 的 SOP 是 {@code skills/data-analysis/SKILL.md}，只能通过 Skill 元工具加载。
+     * 之前分析执行器的 builder 链上没有 skillManager，系统提示词实际只有日期区块——模型
+     * 既不知道自己是数据分析 Agent，也不知道工具调用顺序（实测把"空结果不是错误"当成编程题回答）。
+     */
+    @Test
+    void givesTheAnalyticsExecutorItsOwnSkillTool() {
+        ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("done")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat",
+                new AgentTaskManager(), null, null, null, null, null, fakeAnalyticsProvider(),
+                null, null, null, null, null, null, null, null,
+                skillManagerWith(new RecordingToolCallback("Skill", "加载技能", "SOP 正文")));
+
+        factory.forAnalytics(null).call("上个月的订单量", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(deepSeek.toolNamesAtRound(0)).contains("Skill");
+    }
+
+    /** 没有技能启用时 buildSkillsTool 返回 empty，分析执行器照常工作——"这一轮没有技能"是正常状态。 */
+    @Test
+    void keepsTheAnalyticsExecutorWorkingWhenNoSkillIsEnabled() {
+        ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("done")));
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat",
+                new AgentTaskManager(), null, null, null, null, null, fakeAnalyticsProvider(),
+                null, null, null, null, null, null, null, null, skillManagerWith(null));
+
+        String answer = factory.forAnalytics(null).call("上个月的订单量", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(answer).isEqualTo("done");
+        assertThat(deepSeek.toolNamesAtRound(0)).containsAll(ANALYTICS_TOOLS).doesNotContain("Skill");
+    }
+
+    /**
+     * 缓存判据是"图表工具真的挂上了"，不能用 residentTools——它现在恒非空（六个分析工具常驻），
+     * 拿它判断会把 mcp-echarts 不可用时的降级执行器也缓存下来，服务恢复后所有新分析会话
+     * 仍然一个绘图工具都没有，直到应用重启。
+     */
+    @Test
+    void refusesToCacheAnAnalyticsExecutorBuiltWhileChartsWereDown() {
+        ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(), List.of());
+        AgentLoopExecutorFactory factory = new AgentLoopExecutorFactory(
+                twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat",
+                new AgentTaskManager(), null, degradedChartProvider(), null, null, null, fakeAnalyticsProvider());
+
+        assertThat(factory.forAnalytics(null))
+                .as("图表降级时构造的执行器不该被缓存，否则 mcp-echarts 恢复后也换不回来")
+                .isNotSameAs(factory.forAnalytics(null));
     }
 
 }

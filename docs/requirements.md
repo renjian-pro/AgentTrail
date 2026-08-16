@@ -41,10 +41,10 @@ roadmap 的账面记录是 Phase 0–7 全部关闭。真实状态要打折，�
 
 2026-08-05 首次真实跑 Golden（[报告](golden-task-report-2026-08-05.md)、[失败详情](golden-task-report-2026-08-05-failures.md)）暴露的不是 SQL 生成质量问题，而是**模型压根没看见自己的工具和自己的身份**。三条根因：
 
-**① 六个分析工具全在延迟池，靠 `search_tools` 召回，而召回不稳定。**
+**① 六个分析工具全在延迟池，靠 `search_tools` 召回，而召回不稳定。**（✅ 已修复，issue #95）
 `AnalyticsToolConfig` 把 `list_tables`/`describe_tables`/`lookup_glossary`/`validate_sql`/`execute_sql`/`calculate` 六个全部注册为延迟工具，`forAnalytics` 的常驻工具只有图表工具。模型第一轮只看得到 `search_tools`，而且"搜到"和"能调用"之间还隔一轮（`AgentLoopExecutor.withDiscoveredTools`）。实测多轮里失败案例的 toolCalls 只有 `search_tools`，模型回答"没找到能查询数据的工具"。根因已用真实查询词跑生产代码验证：关键词打分对这类分析查询全部 0 分，100% 落进 LLM 语义兜底，而那次兜底调用本身不稳定（踩坑点 #85）。
 
-**② DataAgent 拿不到自己的 SOP。**
+**② DataAgent 拿不到自己的 SOP。**（✅ 已修复，issue #95）
 `skills/data-analysis/SKILL.md` 在磁盘上，但它只能通过 `Skill` 元工具加载，而 `Skill` 元工具只挂在普通对话执行器上 —— `forAnalytics` 的 builder 链里没有 `.skillManager()`。分析执行器的系统提示词实际只有日期区块。后果直观可见：`empty-003` 里模型把"empty result is not an error"当成一道编程题在答。
 
 **③ 评测集本身失真。**

@@ -130,9 +130,11 @@ public class AgentLoopExecutor {
      * 传 null 表示这套装配完全不提供 Skill 工具，行为与没有这个机制时一致。非 null 时，
      * 第一次调度这一轮时通过 {@link SkillManager#buildSkillsTool()} 装配，随后
      * 和 {@link #toolCatalog} 驱动的 {@link com.agenttrail.loop.tools.search.ToolSearchSession}
-     * 共用同一个"这次对话请求专属工具"的解析槽位（见 {@link #finishRound}）。两者在当前生产装配下
-     * 互斥（{@code toolCatalog} 只在 {@code forAnalytics} 启用，{@code skillManager} 只在普通对话
-     * 执行器启用），复用同一个槽位不会撞车。
+     * 共用同一个"这次对话请求专属工具"的解析槽位（见 {@link #finishRound}）。
+     *
+     * <p>两者不会撞车：issue #95 之后 {@code toolCatalog} **在所有生产装配里都是 null**
+     * （DataAgent 的六个工具改成了常驻），而 {@code skillManager} 在普通对话和分析执行器上都接。
+     * 槽位的二选一逻辑保留着，因为 {@code toolCatalog} 仍是 Builder 上的合法选项，只是暂时没人用。
      */
     private final SkillManager skillManager;
     private final RuntimeProfile runtimeProfile;

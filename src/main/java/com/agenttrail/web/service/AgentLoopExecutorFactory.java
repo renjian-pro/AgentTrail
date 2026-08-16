@@ -21,7 +21,6 @@ import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.FileContentTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.search.ToolCatalog;
-import com.agenttrail.loop.tools.search.ToolSearchConfig;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
 import com.agenttrail.loop.profile.RuntimeModule;
 import com.agenttrail.loop.profile.RuntimeProfile;
@@ -183,6 +182,12 @@ public class AgentLoopExecutorFactory {
         return type.cast(options[index]);
     }
 
+    /**
+     * @param catalog ToolSearch 延迟工具池。**当前所有生产装配都传 null**——issue #95 之后
+     *                DataAgent 的六个工具改为常驻，ToolSearch 就不在任何生产路径上了。机制
+     *                本身按 `requirements.md` §9 的决定保留（"实现了它、又用评测证明了它在这个
+     *                场景不适用"本身是完整的工程判断），参数留着，等真有工具多到需要它的场景。
+     */
     private RuntimeProfile runtimeProfile(ContextPolicy contextPolicy, ToolCatalog catalog) {
         return new RuntimeProfile(
                 RuntimeModule.contextCompaction(contextPolicy == null ? ContextPolicy.defaults() : contextPolicy),
@@ -233,7 +238,13 @@ public class AgentLoopExecutorFactory {
         return forModel(modelId, false);
     }
 
-    /** DataAgent 专用执行器：只挂载分析白名单和图表工具，不复用文件/Shell 工具。 */
+    /**
+     * DataAgent 专用执行器：只挂载分析白名单和图表工具，不复用文件/Shell 工具。
+     *
+     * <p>和普通对话执行器的三处实质差别：六个分析工具常驻（不走 ToolSearch）、轮次上限 20
+     * 而不是 10、同一工具连续失败 3 次提前止损。{@code skillManager} 两边都接，DataAgent 的
+     * SOP 走和普通对话一样的 {@code Skill} 元工具通道。
+     */
     public AgentLoopExecutor forAnalytics(String modelId) {
         if (analyticsToolProvider == null) {
             throw new IllegalStateException("分析能力未启用，请联系管理员配置分析数据源");
@@ -243,24 +254,35 @@ public class AgentLoopExecutorFactory {
         if (cached != null) {
             return cached;
         }
-        List<ToolCallback> residentTools = chartToolProvider == null
+        List<ToolCallback> chartTools = chartToolProvider == null
                 ? List.of() : chartToolProvider.toolCallbacks();
+        // 六个分析工具全部常驻（issue #95）。它们曾经全在 ToolSearch 的延迟池里，模型第一轮
+        // 只看得到 search_tools，而"搜到"和"能调用"之间还隔一轮——2026-08-05 的评测实测里，
+        // 多轮失败案例的 toolCalls 只有 search_tools，模型回答"没找到能查询数据的工具"。
+        // 根因不是打分算法误伤：真实中文查询词对这批工具的关键词得分全是 0，100% 落进 LLM
+        // 语义兜底，而那次兜底调用本身不稳定（踩坑点 #85）。延迟发现是为"工具多到撑爆上下文"
+        // 设计的机制，六个工具用它是错配，不是调参能解决的问题。
+        List<ToolCallback> residentTools = new ArrayList<>(analyticsToolProvider.tools());
+        residentTools.addAll(chartTools);
         String effectiveId = resolveToolCallingModel(resolvedId, true);
         RegisteredModel model = modelsById.get(effectiveId);
         if (model == null) {
             throw new IllegalArgumentException("未知的模型标识: " + effectiveId);
         }
-        ToolCatalog catalog = ToolCatalog.of(ToolSearchConfig.defaults(),
-                analyticsToolProvider.deferredTools(), model.chatModel());
-        ContextPolicy contextPolicy = residentTools.isEmpty() ? null : ContextPolicy.builder()
-                .protectedTools(residentTools.stream()
+        // 图表工具的产出是一段 URL，被压掉就再也拿不回来；分析工具的结果是可以重查的，
+        // 不进保护名单。Skill 正文由 ContextPolicy 的内置名单按工具名保护，不用在这里列。
+        ContextPolicy contextPolicy = chartTools.isEmpty() ? null : ContextPolicy.builder()
+                .protectedTools(chartTools.stream()
                         .map(tool -> tool.getToolDefinition().name()).toArray(String[]::new))
                 .build();
         AgentLoopExecutor executor = AgentLoopExecutor.builder(model.chatModel(), residentTools, 20)
                 .taskManager(taskManager)
                 .thinkingMode(model.thinkingMode())
                 .persistenceHook(persistenceHook)
-                .toolCatalog(catalog)
+                // DataAgent 的 SOP 是 skills/data-analysis/SKILL.md（issue #95）。之前这条链上
+                // 没有 skillManager，分析执行器的系统提示词实际只有日期区块——模型既不知道
+                // 自己是个数据分析 Agent，也不知道该按什么顺序调工具。
+                .skillManager(skillManager)
                 .contextPolicy(contextPolicy)
                 .hooks(sharedHooks)
                 .pauseConfig(pauseConfig)
@@ -275,15 +297,17 @@ public class AgentLoopExecutorFactory {
                 // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
                 // 不再指望它在 maxRounds=20 撞顶之前自己收敛。
                 .maxConsecutiveToolFailures(3)
-                .runtimeProfile(runtimeProfile(contextPolicy, catalog))
+                .runtimeProfile(runtimeProfile(contextPolicy, null))
                 .build();
         // 只缓存"图表工具真的挂上了"的结果，和下面 forModel(webSearchEnabled) 是同一条规则：
         // mcp-echarts 本次连不上时构造出来的是个没有图表工具的降级执行器，把它缓存下来会让
         // mcp-echarts 恢复之后的所有分析会话继续用这个残缺执行器，直到应用重启为止——
         // 真实踩过：mcp-echarts 起不来期间点了一次"数据分析"，之后修好了服务，新会话里
-        // search_tools 依然搜不到任何绘图工具。chartToolProvider 为 null 是"压根没配图表能力"，
+        // 依然一个绘图工具都没有。chartToolProvider 为 null 是"压根没配图表能力"，
         // 那是稳定状态，正常缓存，否则会变成每次请求都重建执行器。
-        if (chartToolProvider == null || !residentTools.isEmpty()) {
+        // 判据用 chartTools 而不是 residentTools——后者现在恒非空（六个分析工具常驻），
+        // 拿它判断等于把降级结果也缓存下来，那正是这段注释要防的事。
+        if (chartToolProvider == null || !chartTools.isEmpty()) {
             analyticsExecutorsByModelId.put(resolvedId, executor);
         }
         return executor;
