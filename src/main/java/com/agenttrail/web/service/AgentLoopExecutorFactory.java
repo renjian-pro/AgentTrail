@@ -313,9 +313,15 @@ public class AgentLoopExecutorFactory {
                 .maxConsecutiveToolFailures(spec.maxConsecutiveToolFailures())
                 .contextPolicy(contextPolicy)
                 .runtimeProfile(runtimeProfile(contextPolicy, null));
-        // Skill/记忆/文件只对"这个用户的一次对话"有意义；内部编排子调用不属于这个语义
-        if (spec.userFacing()) {
-            builder.skillManager(skillManager).memoryStore(memoryStore).fileStore(fileStore);
+        // 三个机制各自的接入范围不同，不能合成一个开关——分析执行器要 Skill 但不要记忆和文件
+        if (spec.skills()) {
+            builder.skillManager(skillManager);
+        }
+        if (spec.memory()) {
+            builder.memoryStore(memoryStore);
+        }
+        if (spec.files()) {
+            builder.fileStore(fileStore);
         }
         return builder.build();
     }
@@ -358,7 +364,7 @@ public class AgentLoopExecutorFactory {
             boolean persist, DataProvenancePolicy dataProvenancePolicy) {
         return assemble(model, new CapabilitySpec(tools, 10, 0,
                 contextPolicy == null ? List.of() : toolNames(tools),
-                dataProvenancePolicy, persist, persist));
+                dataProvenancePolicy, persist, persist, persist, persist));
     }
 
     /** @param modelId 为 null 或空串时使用默认模型；未注册的标识直接抛异常，不做静默兜底 */

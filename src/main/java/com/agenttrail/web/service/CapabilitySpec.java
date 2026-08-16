@@ -25,7 +25,9 @@ import java.util.List;
  * @param protectedToolNames        上下文压缩的保护名单——产出不可重建的工具（如图表 URL）要进
  * @param dataProvenancePolicy      消费型工具的数据来源门禁
  * @param persist                   是否落库为用户可见的一轮对话
- * @param userFacing                是否接入 Skill/记忆/文件这些"面向这个用户的一次对话"才有意义的机制
+ * @param skills                    是否挂 Skill 元工具
+ * @param memory                    是否挂分层记忆（每轮结束会多发一次同步 LLM 调用做记忆提取）
+ * @param files                     是否挂会话文件区块
  */
 public record CapabilitySpec(
         List<ToolCallback> tools,
@@ -34,7 +36,9 @@ public record CapabilitySpec(
         List<String> protectedToolNames,
         DataProvenancePolicy dataProvenancePolicy,
         boolean persist,
-        boolean userFacing) {
+        boolean skills,
+        boolean memory,
+        boolean files) {
 
     private static final int DEFAULT_MAX_ROUNDS = 10;
 
@@ -47,7 +51,8 @@ public record CapabilitySpec(
     /** 普通对话：文件/搜索/图表这些通用工具，挂 Skill 和记忆，落库。 */
     public static CapabilitySpec chat(List<ToolCallback> tools, List<String> protectedToolNames,
                                       DataProvenancePolicy provenance) {
-        return new CapabilitySpec(tools, DEFAULT_MAX_ROUNDS, 0, protectedToolNames, provenance, true, true);
+        return new CapabilitySpec(tools, DEFAULT_MAX_ROUNDS, 0, protectedToolNames, provenance,
+                true, true, true, true);
     }
 
     /**
@@ -57,7 +62,11 @@ public record CapabilitySpec(
      */
     public static CapabilitySpec analytics(List<ToolCallback> tools, List<String> protectedToolNames,
                                            DataProvenancePolicy provenance) {
-        return new CapabilitySpec(tools, 20, 3, protectedToolNames, provenance, true, true);
+        // **只挂 Skill，不挂记忆和文件**：DataAgent 不复用文件问答那套工具，而记忆提取会在每轮结束
+        // 多发一次同步 LLM 调用——2026-08-16 统一 builder 链时把这三个压成一个开关，等于给分析
+        // 执行器顺手打开了记忆，整个流因此完不成，跑批每条卡满 3 分钟超时上限。
+        // 工厂里 memoryStore/skillManager 两个字段的注释原本就写明了各自的接入范围，是我改宽了。
+        return new CapabilitySpec(tools, 20, 3, protectedToolNames, provenance, true, true, false, false);
     }
 
     /**
@@ -67,6 +76,6 @@ public record CapabilitySpec(
      */
     public static CapabilitySpec internalOrchestration(List<ToolCallback> tools) {
         return new CapabilitySpec(tools, DEFAULT_MAX_ROUNDS, 0, List.of(),
-                DataProvenancePolicy.DISABLED, false, false);
+                DataProvenancePolicy.DISABLED, false, false, false, false);
     }
 }
