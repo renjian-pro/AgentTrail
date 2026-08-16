@@ -24,6 +24,7 @@ import com.agenttrail.loop.pause.ResumeInstruction;
 import com.agenttrail.loop.pause.SafePoint;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;
+import com.agenttrail.loop.security.DataProvenancePolicy;
 import com.agenttrail.loop.security.PiiMasker;
 import com.agenttrail.loop.security.PromptInjectionGuard;
 import com.agenttrail.loop.security.ToolRateLimiter;
@@ -137,6 +138,8 @@ public class AgentLoopExecutor {
      * 槽位的二选一逻辑保留着，因为 {@code toolCatalog} 仍是 Builder 上的合法选项，只是暂时没人用。
      */
     private final SkillManager skillManager;
+    /** 见 {@link DataProvenancePolicy}；{@link DataProvenancePolicy#DISABLED} 表示不启用，行为与没有这个机制时一致。 */
+    private final DataProvenancePolicy dataProvenancePolicy;
     private final RuntimeProfile runtimeProfile;
     private final ContextAssembler contextAssembler;
     private final RoundDriver roundDriver;
@@ -170,6 +173,10 @@ public class AgentLoopExecutor {
         Duration roundTimeout = option(options, 18, Duration.class, DEFAULT_ROUND_TIMEOUT);
         SkillManager skillManager = option(options, 19, SkillManager.class, null);
         RuntimeProfile runtimeProfile = option(options, 20, RuntimeProfile.class, RuntimeProfile.defaults());
+        // 追加在末尾而不是插在中间——上面每一行的下标都是硬编码的位置槽，插队会静默顶掉后面所有参数
+        // （这正是 issue #99 要拆掉这套构造方式的原因）
+        DataProvenancePolicy dataProvenancePolicy =
+                option(options, 21, DataProvenancePolicy.class, DataProvenancePolicy.DISABLED);
         RuntimeProfileValidator.validate(runtimeProfile);
 
         List<ToolCallback> baseTools = tools == null ? List.of() : tools;
@@ -205,6 +212,8 @@ public class AgentLoopExecutor {
         this.toolRateLimiter = toolRateLimiter;
         this.roundTimeout = (roundTimeout == null) ? DEFAULT_ROUND_TIMEOUT : roundTimeout;
         this.skillManager = skillManager;
+        this.dataProvenancePolicy =
+                (dataProvenancePolicy == null) ? DataProvenancePolicy.DISABLED : dataProvenancePolicy;
         this.runtimeProfile = runtimeProfile;
     }
 
@@ -332,6 +341,7 @@ public class AgentLoopExecutor {
         private PiiMasker piiMasker;
         private ToolRateLimiter toolRateLimiter;
         private SkillManager skillManager;
+        private DataProvenancePolicy dataProvenancePolicy;
         private RuntimeProfile runtimeProfile = RuntimeProfile.defaults();
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
@@ -438,6 +448,12 @@ public class AgentLoopExecutor {
             return this;
         }
 
+        /** 传 null 等价于 {@link DataProvenancePolicy#DISABLED}。 */
+        public Builder dataProvenancePolicy(DataProvenancePolicy dataProvenancePolicy) {
+            this.dataProvenancePolicy = dataProvenancePolicy;
+            return this;
+        }
+
         public Builder runtimeProfile(RuntimeProfile runtimeProfile) {
             this.runtimeProfile = runtimeProfile;
             return this;
@@ -448,7 +464,7 @@ public class AgentLoopExecutor {
                     persistenceHook, toolCatalog, pauseConfig, stageOutputManager, traceStore, memoryStore,
                     fileStore, maxConsecutiveToolFailures, hooks, budgetTracker, meterRegistry, modelName,
                     promptInjectionGuard, piiMasker, toolRateLimiter, DEFAULT_ROUND_TIMEOUT, skillManager,
-                    runtimeProfile);
+                    runtimeProfile, dataProvenancePolicy);
         }
     }
 
@@ -1121,17 +1137,37 @@ public class AgentLoopExecutor {
      * {@link ToolResponseMessage.ToolResponse} 喂回模型——跟业务工具约定失败结果的形状一致，
      * 也会被 {@link #checkConsecutiveToolFailures} 当作一次失败计入连续失败熔断。
      */
+    /**
+     * 两道拒绝在同一处产出合成的 {@code Error:} 工具响应，而不是抛异常——模型拿到具体原因才能
+     * 自洽改写（先去查数据、或放慢节奏），抛异常只会打断整轮对话。
+     *
+     * <p>数据来源检查排在限速之前：一个本来就该被拒的调用没有理由先占掉一个限速额度。
+     */
     private List<ToolResponseMessage.ToolResponse> executeWithRateLimit(
             List<AssistantMessage.ToolCall> toolCalls, RunContext context,
             ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
+        List<AssistantMessage.ToolCall> sourced = new ArrayList<>();
+        List<ToolResponseMessage.ToolResponse> responses = new ArrayList<>();
+        boolean hasDataSource = dataProvenancePolicy.satisfiedBy(context.messages());
+        for (AssistantMessage.ToolCall call : toolCalls) {
+            if (dataProvenancePolicy.guards(call.name()) && !hasDataSource) {
+                responses.add(new ToolResponseMessage.ToolResponse(call.id(), call.name(),
+                        dataProvenancePolicy.rejectionReason(call.name())));
+            } else {
+                sourced.add(call);
+            }
+        }
+        if (sourced.isEmpty()) {
+            return responses;
+        }
         if (toolRateLimiter == null) {
-            return toolCallExecutor.execute(
-                    toolCalls, context::emit, paramInjector, sessionScopedTool, context.mdcSnapshot());
+            responses.addAll(toolCallExecutor.execute(
+                    sourced, context::emit, paramInjector, sessionScopedTool, context.mdcSnapshot()));
+            return responses;
         }
 
         List<AssistantMessage.ToolCall> allowed = new ArrayList<>();
-        List<ToolResponseMessage.ToolResponse> responses = new ArrayList<>();
-        for (AssistantMessage.ToolCall call : toolCalls) {
+        for (AssistantMessage.ToolCall call : sourced) {
             if (toolRateLimiter.allow(context.conversationId())) {
                 allowed.add(call);
             } else {

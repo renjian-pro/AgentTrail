@@ -11,6 +11,7 @@ import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.memory.MemoryStore;
 import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
+import com.agenttrail.loop.security.DataProvenancePolicy;
 import com.agenttrail.loop.security.PiiMasker;
 import com.agenttrail.loop.security.PromptInjectionGuard;
 import com.agenttrail.loop.security.ToolRateLimiter;
@@ -210,6 +211,24 @@ public class AgentLoopExecutorFactory {
      */
     private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy,
             boolean persist) {
+        return buildExecutor(model, tools, contextPolicy, persist, DataProvenancePolicy.DISABLED);
+    }
+
+    /**
+     * 认可的数据产出工具：SQL 查询结果、上传文件内容。{@code calculate} 不算——它是纯函数求值，
+     * 喂给它的数字本身可能就是编的，把它当来源等于给伪造开一个后门。
+     */
+    private static DataProvenancePolicy chartProvenancePolicy(List<ToolCallback> chartTools) {
+        if (chartTools.isEmpty()) {
+            return DataProvenancePolicy.DISABLED;
+        }
+        return new DataProvenancePolicy(
+                chartTools.stream().map(tool -> tool.getToolDefinition().name()).collect(Collectors.toSet()),
+                java.util.Set.of("execute_sql", "load_file_content"));
+    }
+
+    private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy,
+            boolean persist, DataProvenancePolicy dataProvenancePolicy) {
         AgentLoopExecutor.Builder builder = AgentLoopExecutor.builder(model.chatModel(), tools, 10)
                 .taskManager(taskManager)
                 .thinkingMode(model.thinkingMode())
@@ -226,6 +245,7 @@ public class AgentLoopExecutorFactory {
                 .toolRateLimiter(toolRateLimiter)
                 .skillManager(skillManager)
                 .memoryStore(memoryStore)
+                .dataProvenancePolicy(dataProvenancePolicy)
                 .runtimeProfile(runtimeProfile(contextPolicy, null));
         if (contextPolicy != null) {
             builder.contextPolicy(contextPolicy);
@@ -297,6 +317,7 @@ public class AgentLoopExecutorFactory {
                 // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
                 // 不再指望它在 maxRounds=20 撞顶之前自己收敛。
                 .maxConsecutiveToolFailures(3)
+                .dataProvenancePolicy(chartProvenancePolicy(chartTools))
                 .runtimeProfile(runtimeProfile(contextPolicy, null))
                 .build();
         // 只缓存"图表工具真的挂上了"的结果，和下面 forModel(webSearchEnabled) 是同一条规则：
@@ -386,7 +407,7 @@ public class AgentLoopExecutorFactory {
         ContextPolicy contextPolicy = ContextPolicy.builder()
                 .protectedTools(chartTools.stream().map(tool -> tool.getToolDefinition().name()).toArray(String[]::new))
                 .build();
-        AgentLoopExecutor executor = buildExecutor(model, tools, contextPolicy);
+        AgentLoopExecutor executor = buildExecutor(model, tools, contextPolicy, true, chartProvenancePolicy(chartTools));
         // 图表工具非空才缓存——理由和上面 webSearch 分支一致：一次降级不该锁死后续所有请求
         chartExecutorsByKey.put(cacheKey, executor);
         return executor;
