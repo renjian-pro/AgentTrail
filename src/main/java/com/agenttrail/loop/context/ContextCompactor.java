@@ -1,5 +1,6 @@
 package com.agenttrail.loop.context;
 
+import com.agenttrail.loop.prompt.PromptRegistry;
 import com.agenttrail.loop.core.SynchronousLlmCall;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,17 +31,17 @@ import java.util.List;
  * <p>直接原地修改传入的消息列表，因为循环持有的就是这一个列表。
  */
 public class ContextCompactor {
+    /** 提示词正文外置在 {@code resources/prompts/}（issue #100）：改一句不用动代码，
+     *  且每一版都有可写进 trace 的 {@code id@version#hash} 标识，Golden 分数变化才归因得了。 */
+    private static final PromptRegistry PROMPTS = PromptRegistry.loadFromClasspath();
+
 
     private static final Logger log = LoggerFactory.getLogger(ContextCompactor.class);
 
     /** 摘要失败时保底保留的最近消息条数。 */
     private static final int FALLBACK_KEEP_MESSAGES = 10;
 
-    private static final String SUMMARY_SYSTEM_PROMPT = """
-            你是对话历史压缩助手。把给定的对话记录（含用户提问、模型回答、工具调用与工具结果）
-            压缩成一段简明摘要，保留后续任务需要的关键事实、结论和进行中的状态，去掉过程性细节。
-            直接输出摘要正文，不要任何额外解释。
-            """;
+    private static final String SUMMARY_SYSTEM_PROMPT = PROMPTS.text("runtime.context_compaction");
 
     private final ContextPolicy policy;
     private final ChatModel chatModel;

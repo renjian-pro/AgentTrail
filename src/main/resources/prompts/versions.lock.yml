@@ -1,0 +1,19 @@
+# 提示词版本锁（issue #100）。
+#
+# 改了正文就把对应文件 front matter 里的 version 往上加一档，并同步这里的 hash。
+# 不改版本号只改正文时，PromptRegistry 会在启动时 WARN，PromptRegistryLockTest 会失败——
+# 因为那会让 Golden 分数变化归因到错误的版本，是评测体系里最难查的一类错。
+prompts:
+  deepresearch.clarification: v1#f05a7bfc
+  deepresearch.critique: v1#f38b5e93
+  deepresearch.execute: v1#1f309300
+  deepresearch.plan: v1#812901f2
+  deepresearch.summarize: v1#990f07e9
+  deepresearch.topic_generation: v1#a0edeb9e
+  ppt.outline: v1#70543a32
+  ppt.requirement: v1#77d23709
+  ppt.schema: v1#f86537b8
+  ppt.search: v1#2a2ce7f6
+  runtime.context_compaction: v1#d35f7ee8
+  runtime.llm_judge: v1#59c537a8
+  runtime.memory_extraction: v1#733cf30a

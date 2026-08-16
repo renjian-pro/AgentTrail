@@ -1,5 +1,6 @@
 package com.agenttrail.evaluation;
 
+import com.agenttrail.loop.prompt.PromptRegistry;
 import com.agenttrail.loop.core.SynchronousLlmCall;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -18,6 +19,10 @@ import java.util.function.Function;
  * {@link #RESPONSE_SCHEMA}; free-form prose is rejected instead of being heuristically scored.
  */
 public final class LlmJudge {
+    /** 提示词正文外置在 {@code resources/prompts/}（issue #100）：改一句不用动代码，
+     *  且每一版都有可写进 trace 的 {@code id@version#hash} 标识，Golden 分数变化才归因得了。 */
+    private static final PromptRegistry PROMPTS = PromptRegistry.loadFromClasspath();
+
     public static final String RESPONSE_SCHEMA = """
             {"type":"object","additionalProperties":false,"required":["accuracy","completeness","compliance"],"properties":{
               "accuracy":{"type":"integer","minimum":0,"maximum":5},
@@ -27,12 +32,7 @@ public final class LlmJudge {
             }}
             """;
 
-    private static final String SYSTEM_PROMPT = """
-            You are an evaluation judge. Return JSON only and follow this JSON Schema exactly:
-            %s
-            Score accuracy, completeness, and compliance from 0 to 5. Do not treat an actual
-            production trace as a human-confirmed expected answer. Keep reason concise.
-            """.formatted(RESPONSE_SCHEMA);
+    private static final String SYSTEM_PROMPT = PROMPTS.text("runtime.llm_judge").formatted(RESPONSE_SCHEMA);
 
     private final Function<String, String> structuredInvoker;
     private final ObjectMapper objectMapper;

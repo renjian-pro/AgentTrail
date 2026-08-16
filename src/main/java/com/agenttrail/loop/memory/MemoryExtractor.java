@@ -1,5 +1,6 @@
 package com.agenttrail.loop.memory;
 
+import com.agenttrail.loop.prompt.PromptRegistry;
 import com.agenttrail.loop.core.SynchronousLlmCall;
 import com.agenttrail.loop.structured.JsonRepair;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -26,29 +27,15 @@ import java.util.Locale;
  * 让整轮对话崩掉"的处理方式，记忆本来就是锦上添花，不能反过来拖累主流程。
  */
 public class MemoryExtractor {
+    /** 提示词正文外置在 {@code resources/prompts/}（issue #100）：改一句不用动代码，
+     *  且每一版都有可写进 trace 的 {@code id@version#hash} 标识，Golden 分数变化才归因得了。 */
+    private static final PromptRegistry PROMPTS = PromptRegistry.loadFromClasspath();
+
 
     private static final Logger log = LoggerFactory.getLogger(MemoryExtractor.class);
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    private static final String EXTRACTION_SYSTEM_PROMPT = """
-            你是一个记忆提取助手。从用户和助手的对话中，提取值得长期记住的用户信息。
-
-            ## 记忆类型
-            - PROFILE: 用户的身份、角色、背景（如：职业、技能、职责）
-            - PREFERENCE: 用户的偏好、习惯（如：语言偏好、代码风格）
-            - INSTRUCTION: 用户要求的回答方式或行为规则（如：纠正、要求、禁令）
-            - FACT: 用户明确提到的关于自身或环境的客观事实（如：使用的工具版本）
-
-            ## 严格规则（必须遵守）
-            1. 只提取【用户明确说出】的信息，禁止推测、推断或延伸
-            2. 不要提取助手回答中的内容，只关注用户自己说的信息
-            3. 不要从对话主题推测用户属性（讨论 Spring 不代表用户用 Spring）
-            4. 每条记忆必须是原文或忠实概括，禁止添加对话中未出现的细节
-            5. 没有明确信息时返回空数组 []，宁可漏记不可错记
-
-            ## 输出格式
-            [{"type": "PROFILE", "content": "..."}]
-            只返回 JSON 数组，不要包含其他内容。""";
+    private static final String EXTRACTION_SYSTEM_PROMPT = PROMPTS.text("runtime.memory_extraction");
 
     private record ExtractionItem(String type, String content) {
     }
