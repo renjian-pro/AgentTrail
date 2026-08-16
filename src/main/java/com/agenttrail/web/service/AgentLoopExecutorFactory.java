@@ -209,19 +209,60 @@ public class AgentLoopExecutorFactory {
                 RuntimeModule.toolSearch(catalog));
     }
 
+
+    /**
+     * **唯一的 builder 链**（issue #99）。此前 forModel/forModelWithCharts/forAnalytics/
+     * forInternalOrchestration 各自复制一份，差异只在几个参数上——而每份复制都可能漏传一个协作者，
+     * 编译器不报错，只在运行时表现为某个机制静默失效（DataAgent 拿不到 SOP 就是这么来的，issue #95）。
+     * 现在差异全部由 {@link CapabilitySpec} 承载，装配只有这一条路径。
+     */
+    private AgentLoopExecutor assemble(RegisteredModel model, CapabilitySpec spec) {
+        ContextPolicy contextPolicy = spec.protectedToolNames().isEmpty() ? null : ContextPolicy.builder()
+                .protectedTools(spec.protectedToolNames().toArray(String[]::new))
+                .build();
+        AgentLoopExecutor.Builder builder = AgentLoopExecutor.builder(model.chatModel(), spec.tools(), spec.maxRounds())
+                .taskManager(taskManager)
+                .thinkingMode(model.thinkingMode())
+                .persistenceHook(spec.persist() ? persistenceHook : null)
+                .hooks(sharedHooks)
+                .pauseConfig(pauseConfig)
+                .budgetTracker(sessionBudgetTracker)
+                .traceStore(traceStore)
+                .meterRegistry(meterRegistry)
+                .modelName(model.id())
+                .promptInjectionGuard(promptInjectionGuard)
+                .piiMasker(piiMasker)
+                .toolRateLimiter(toolRateLimiter)
+                .dataProvenancePolicy(spec.dataProvenancePolicy())
+                .maxConsecutiveToolFailures(spec.maxConsecutiveToolFailures())
+                .contextPolicy(contextPolicy)
+                .runtimeProfile(runtimeProfile(contextPolicy, null));
+        // Skill/记忆/文件只对"这个用户的一次对话"有意义；内部编排子调用不属于这个语义
+        if (spec.userFacing()) {
+            builder.skillManager(skillManager).memoryStore(memoryStore).fileStore(fileStore);
+        }
+        return builder.build();
+    }
+
+    private static List<String> toolNames(List<ToolCallback> tools) {
+        return tools.stream().map(tool -> tool.getToolDefinition().name()).toList();
+    }
+
     private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy) {
-        return buildExecutor(model, tools, contextPolicy, true);
+        return assemble(model, CapabilitySpec.chat(tools,
+                contextPolicy == null ? List.of() : toolNames(tools), DataProvenancePolicy.DISABLED));
     }
 
     /**
-     * @param persist 是否挂 {@link #persistenceHook}——{@code false} 用于 DeepResearch 这类内部编排
-     *                （critique/plan/summarize 等子调用）：它们不是用户在应用层面发起的一轮对话，
-     *                落进 {@code agent_session} 只会把会话历史侧栏污染成一堆内部子提示词
-     *                （见 {@link #forInternalOrchestration}）。
+     * @param persist 是否落库为用户可见的一轮对话——{@code false} 用于 DeepResearch 这类内部编排
+     *                （critique/plan/summarize 等子调用），它们落进 {@code agent_session} 只会把
+     *                会话历史侧栏污染成一堆内部子提示词。
      */
     private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy,
             boolean persist) {
-        return buildExecutor(model, tools, contextPolicy, persist, DataProvenancePolicy.DISABLED);
+        return persist
+                ? buildExecutor(model, tools, contextPolicy)
+                : assemble(model, CapabilitySpec.internalOrchestration(tools));
     }
 
     /**
@@ -239,28 +280,9 @@ public class AgentLoopExecutorFactory {
 
     private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy,
             boolean persist, DataProvenancePolicy dataProvenancePolicy) {
-        AgentLoopExecutor.Builder builder = AgentLoopExecutor.builder(model.chatModel(), tools, 10)
-                .taskManager(taskManager)
-                .thinkingMode(model.thinkingMode())
-                .persistenceHook(persist ? persistenceHook : null)
-                .fileStore(fileStore)
-                .hooks(sharedHooks)
-                .pauseConfig(pauseConfig)
-                .budgetTracker(sessionBudgetTracker)
-                .traceStore(traceStore)
-                .meterRegistry(meterRegistry)
-                .modelName(model.id())
-                .promptInjectionGuard(promptInjectionGuard)
-                .piiMasker(piiMasker)
-                .toolRateLimiter(toolRateLimiter)
-                .skillManager(skillManager)
-                .memoryStore(memoryStore)
-                .dataProvenancePolicy(dataProvenancePolicy)
-                .runtimeProfile(runtimeProfile(contextPolicy, null));
-        if (contextPolicy != null) {
-            builder.contextPolicy(contextPolicy);
-        }
-        return builder.build();
+        return assemble(model, new CapabilitySpec(tools, 10, 0,
+                contextPolicy == null ? List.of() : toolNames(tools),
+                dataProvenancePolicy, persist, persist));
     }
 
     /** @param modelId 为 null 或空串时使用默认模型；未注册的标识直接抛异常，不做静默兜底 */
@@ -299,37 +321,10 @@ public class AgentLoopExecutorFactory {
         if (model == null) {
             throw new IllegalArgumentException("未知的模型标识: " + effectiveId);
         }
-        // 图表工具的产出是一段 URL，被压掉就再也拿不回来；分析工具的结果是可以重查的，
-        // 不进保护名单。Skill 正文由 ContextPolicy 的内置名单按工具名保护，不用在这里列。
-        ContextPolicy contextPolicy = chartTools.isEmpty() ? null : ContextPolicy.builder()
-                .protectedTools(chartTools.stream()
-                        .map(tool -> tool.getToolDefinition().name()).toArray(String[]::new))
-                .build();
-        AgentLoopExecutor executor = AgentLoopExecutor.builder(model.chatModel(), residentTools, 20)
-                .taskManager(taskManager)
-                .thinkingMode(model.thinkingMode())
-                .persistenceHook(persistenceHook)
-                // DataAgent 的 SOP 是 skills/data-analysis/SKILL.md（issue #95）。之前这条链上
-                // 没有 skillManager，分析执行器的系统提示词实际只有日期区块——模型既不知道
-                // 自己是个数据分析 Agent，也不知道该按什么顺序调工具。
-                .skillManager(skillManager)
-                .contextPolicy(contextPolicy)
-                .hooks(sharedHooks)
-                .pauseConfig(pauseConfig)
-                .budgetTracker(sessionBudgetTracker)
-                .traceStore(traceStore)
-                .meterRegistry(meterRegistry)
-                .modelName(model.id())
-                .promptInjectionGuard(promptInjectionGuard)
-                .piiMasker(piiMasker)
-                .toolRateLimiter(toolRateLimiter)
-                // ReAct+Skill 的自我修正没有 DataAgent 那种 Gate+maxRetries 的图结构上限，SKILL.md
-                // 写的重试预算只是给模型的指导，不是强制——同一个工具连续失败 3 次就提前止损，
-                // 不再指望它在 maxRounds=20 撞顶之前自己收敛。
-                .maxConsecutiveToolFailures(3)
-                .dataProvenancePolicy(chartProvenancePolicy(chartTools))
-                .runtimeProfile(runtimeProfile(contextPolicy, null))
-                .build();
+        // 图表工具的产出是一段 URL，被压掉就再也拿不回来；分析工具的结果可以重查，不进保护名单。
+        // Skill 正文由 ContextPolicy 的内置名单按工具名保护，不用在这里列。
+        AgentLoopExecutor executor = assemble(model,
+                CapabilitySpec.analytics(residentTools, toolNames(chartTools), chartProvenancePolicy(chartTools)));
         // 只缓存"图表工具真的挂上了"的结果，和下面 forModel(webSearchEnabled) 是同一条规则：
         // mcp-echarts 本次连不上时构造出来的是个没有图表工具的降级执行器，把它缓存下来会让
         // mcp-echarts 恢复之后的所有分析会话继续用这个残缺执行器，直到应用重启为止——
@@ -414,10 +409,9 @@ public class AgentLoopExecutorFactory {
             throw new IllegalArgumentException("未知的模型标识: " + effectiveModelId);
         }
 
-        ContextPolicy contextPolicy = ContextPolicy.builder()
-                .protectedTools(chartTools.stream().map(tool -> tool.getToolDefinition().name()).toArray(String[]::new))
-                .build();
-        AgentLoopExecutor executor = buildExecutor(model, tools, contextPolicy, true, chartProvenancePolicy(chartTools));
+        // 只保护图表工具：它的产出是一段 URL，压掉就再也拿不回来；其它工具的结果可以重查
+        AgentLoopExecutor executor = assemble(model,
+                CapabilitySpec.chat(tools, toolNames(chartTools), chartProvenancePolicy(chartTools)));
         // 图表工具非空才缓存——理由和上面 webSearch 分支一致：一次降级不该锁死后续所有请求
         chartExecutorsByKey.put(cacheKey, executor);
         return executor;
