@@ -7,6 +7,7 @@ import com.agenttrail.capability.analytics.permission.NoPermissionRule;
 import com.agenttrail.capability.analytics.permission.PermissionRuleRegistry;
 import com.agenttrail.capability.analytics.sql.ExplainPrecheckService;
 import com.agenttrail.capability.analytics.sql.ReadOnlyQueryRunner;
+import com.agenttrail.capability.analytics.sql.RewrittenSqlRecorder;
 import com.agenttrail.capability.analytics.sql.SqlSafetyGuard;
 import com.agenttrail.capability.analytics.tools.ExecuteSqlTool;
 import com.agenttrail.sys.datascope.DataScopeResolver;
@@ -62,6 +63,12 @@ public class AnalyticsExecutionConfig {
         return new SensitiveFilter(properties.getMaskFields());
     }
 
+    /** 见 {@link RewrittenSqlRecorder} 的类注释：生产装配里挂着但没人读，评测靠它拿到改写后的 SQL。 */
+    @Bean
+    RewrittenSqlRecorder rewrittenSqlRecorder() {
+        return new RewrittenSqlRecorder();
+    }
+
     @Bean
     ExecuteSqlTool executeSqlTool(SqlSafetyGuard safetyGuard,
                                   DataScopeResolver scopeResolver,
@@ -69,9 +76,10 @@ public class AnalyticsExecutionConfig {
                                   ExplainPrecheckService explain,
                                   ReadOnlyQueryRunner runner,
                                   SensitiveFilter sensitiveFilter,
-                                  AnalyticsExecutionProperties properties) {
+                                  AnalyticsExecutionProperties properties,
+                                  RewrittenSqlRecorder rewrittenSqlRecorder) {
         return new ExecuteSqlTool(safetyGuard, scopeResolver, scopeRewriter, explain,
-                runner, sensitiveFilter, properties);
+                runner, sensitiveFilter, properties, rewrittenSqlRecorder);
     }
 
     @Bean

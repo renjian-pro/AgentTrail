@@ -3,6 +3,7 @@ package com.agenttrail.analytics.golden;
 import com.agenttrail.capability.analytics.permission.DataScopeRewriter;
 import com.agenttrail.capability.analytics.sql.ColumnMeta;
 import com.agenttrail.capability.analytics.sql.ReadOnlyQueryRunner;
+import com.agenttrail.capability.analytics.sql.RewrittenSqlRecorder;
 import com.agenttrail.capability.analytics.sql.SqlResult;
 import com.agenttrail.capability.analytics.sql.SqlSafetyGuard;
 import com.agenttrail.capability.analytics.sql.ValidationResult;
@@ -66,6 +67,8 @@ class GoldenTaskLiveIT {
     @Autowired
     private ReadOnlyQueryRunner queryRunner;
     @Autowired
+    private RewrittenSqlRecorder rewrittenSqlRecorder;
+    @Autowired
     @Qualifier("dataSource")
     private DataSource appDataSource;
 
@@ -128,12 +131,19 @@ class GoldenTaskLiveIT {
         }
 
         Map<String, Object> metrics = new HashMap<>();
-        String actualSql = "";
+        // 模型自己写的那份 SQL 单独留档：`model_sql_not_contains` 用它钉住"权限条件不是模型写的"。
         if (rawSql != null && !rawSql.isBlank()) {
+            metrics.put("modelSql", rawSql);
+        }
+        // 优先用生产路径**真实**改写出来的那条（RewrittenSqlRecorder），拿不到才退回在测试侧
+        // 重跑一遍改写。两者的区别不是文本，是断言强度：前者证明"生产确实注入了"，后者只证明
+        // "改写器如果被调用会注入"——后者漏得掉"这条链路压根没走改写"这类 bug（issue #97）。
+        String actualSql = rewrittenSqlRecorder.takeLast().orElse("");
+        if (actualSql.isBlank() && rawSql != null && !rawSql.isBlank()) {
             actualSql = rewriteAsProductionWould(rawSql, userId);
-            if (!actualSql.isBlank()) {
-                populateMetrics(metrics, actualSql, testCase.referenceSql());
-            }
+        }
+        if (!actualSql.isBlank()) {
+            populateMetrics(metrics, actualSql, testCase.referenceSql());
         }
 
         // 粗粒度近似：手写 loop 没有对外暴露显式的"第几轮"计数器，工具调用数是一个安全的
