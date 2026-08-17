@@ -58,7 +58,19 @@ public sealed interface AgentStreamEvent {
      * 循环暂停，等待外部处理（HITL 审批或用户中断）后再通过单独的 resume 入口恢复。
      * 流随即关闭——这不是错误，也不是正常完成，是第三种终局。
      */
-    record Paused(String conversationId, PauseReason reason) implements AgentStreamEvent {
+    record Paused(String conversationId, PauseReason reason, List<PendingTool> pendingTools) implements AgentStreamEvent {
+
+        public Paused {
+            pendingTools = pendingTools == null ? List.of() : List.copyOf(pendingTools);
+        }
+
+        public Paused(String conversationId, PauseReason reason) {
+            this(conversationId, reason, List.of());
+        }
+    }
+
+    /** 只含可展示的脱敏参数；真正执行使用的原始参数只存在服务端暂停快照中。 */
+    record PendingTool(String toolCallId, String toolName, String arguments, String riskLevel) {
     }
 
     /** 可恢复或不可恢复的错误。{@code code} 供前端做分类处理，不是给人看的。 */

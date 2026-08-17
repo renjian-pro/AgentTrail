@@ -10,6 +10,7 @@ import com.agenttrail.web.dto.AgentChatRequest;
 import com.agenttrail.web.dto.ConversationHistoryResponse;
 import com.agenttrail.web.dto.ConversationPageResponse;
 import com.agenttrail.web.dto.StopChatResponse;
+import com.agenttrail.web.dto.PendingApprovalResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -56,6 +57,15 @@ public class AgentLoopController {
             throw new ResponseStatusException(NOT_FOUND, failure.getMessage(), failure);
         } catch (IllegalStateException failure) {
             throw new ResponseStatusException(BAD_REQUEST, failure.getMessage(), failure);
+        }
+    }
+
+    @GetMapping("/agent/v1/chat/{conversationId}/pause")
+    public PendingApprovalResponse pendingApproval(@PathVariable String conversationId) {
+        try {
+            return PendingApprovalResponse.from(chatService.pendingApproval(principal(), conversationId));
+        } catch (IllegalArgumentException failure) {
+            throw new ResponseStatusException(NOT_FOUND, failure.getMessage(), failure);
         }
     }
 

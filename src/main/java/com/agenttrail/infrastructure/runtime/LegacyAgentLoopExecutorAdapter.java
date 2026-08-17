@@ -92,7 +92,11 @@ public class LegacyAgentLoopExecutorAdapter implements AgentRuntimePort {
             case AgentStreamEvent.ToolEnd end ->
                     new AgentEvent.ToolCompleted(runId, end.toolName(), end.toolCallId(), end.result());
             case AgentStreamEvent.Paused paused ->
-                    new AgentEvent.Paused(runId, conversationId, paused.reason().name());
+                    new AgentEvent.Paused(runId, conversationId, paused.reason().name(),
+                            paused.pendingTools().stream()
+                                    .map(tool -> new AgentEvent.PendingTool(tool.toolCallId(), tool.toolName(),
+                                            tool.arguments(), tool.riskLevel()))
+                                    .toList());
             case AgentStreamEvent.Error error ->
                     new AgentEvent.Failed(runId, mapErrorCode(error.code()), error.message());
             case AgentStreamEvent.Complete complete ->

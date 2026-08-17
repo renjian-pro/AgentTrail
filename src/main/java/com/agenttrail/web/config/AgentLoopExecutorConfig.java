@@ -291,11 +291,19 @@ public class AgentLoopExecutorConfig {
     }
 
     @Bean
+    public com.agenttrail.capability.chat.application.PausedRunPort pausedRunPort(
+            PauseStateStore pauseStateStore, ToolRiskRegistry toolRiskRegistry) {
+        return new com.agenttrail.infrastructure.runtime.PauseStatePausedRunAdapter(
+                pauseStateStore, toolRiskRegistry);
+    }
+
+    @Bean
     public com.agenttrail.capability.chat.application.ChatApplicationService chatApplicationService(
             com.agenttrail.capability.chat.application.RuntimeProfileRegistry runtimeProfileRegistry,
-            com.agenttrail.conversation.application.ConversationPort conversationPort) {
+            com.agenttrail.conversation.application.ConversationPort conversationPort,
+            com.agenttrail.capability.chat.application.PausedRunPort pausedRunPort) {
         return new com.agenttrail.capability.chat.application.ChatApplicationService(runtimeProfileRegistry,
-                conversationPort);
+                conversationPort, pausedRunPort);
     }
 
     /**

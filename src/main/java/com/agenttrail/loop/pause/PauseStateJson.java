@@ -44,6 +44,7 @@ final class PauseStateJson {
         root.put("safePoint", state.safePoint().name());
         root.put("question", state.question());
         root.put("params", toParamsMap(state.params()));
+        root.put("modelId", state.modelId());
         root.put("roundAtPause", state.roundAtPause());
         root.put("pausedAtMillis", state.pausedAtMillis());
         try {
@@ -72,6 +73,7 @@ final class PauseStateJson {
                     SafePoint.valueOf((String) root.get("safePoint")),
                     (String) root.get("question"),
                     params,
+                    (String) root.get("modelId"),
                     ((Number) root.get("roundAtPause")).intValue(),
                     ((Number) root.get("pausedAtMillis")).longValue());
         } catch (Exception deserializationFailed) {

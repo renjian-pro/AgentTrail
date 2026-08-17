@@ -22,6 +22,7 @@ import com.agenttrail.loop.pause.PauseState;
 import com.agenttrail.loop.pause.PendingToolCall;
 import com.agenttrail.loop.pause.ResumeInstruction;
 import com.agenttrail.loop.pause.SafePoint;
+import com.agenttrail.loop.pause.ToolArgumentSanitizer;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;
 import com.agenttrail.loop.security.DataProvenancePolicy;
@@ -934,10 +935,16 @@ public class AgentLoopExecutor {
                 .toList();
         PauseState pauseState = new PauseState(context.conversationId(), context.messages(), pending,
                 PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION, context.question(),
-                context.params(), context.roundCounter().get(), System.currentTimeMillis());
+                context.params(), modelName, context.roundCounter().get(), System.currentTimeMillis());
         pauseConfig.store().save(pauseState);
 
-        context.emit(new AgentStreamEvent.Paused(context.conversationId(), PauseReason.HITL_APPROVAL));
+        List<AgentStreamEvent.PendingTool> publicPending = toolCalls.stream()
+                .map(call -> new AgentStreamEvent.PendingTool(call.id(), call.name(),
+                        ToolArgumentSanitizer.sanitize(call.arguments()),
+                        pauseConfig.requiresApproval(call.name()) ? "HIGH_RISK" : "READ_ONLY"))
+                .toList();
+        context.emit(new AgentStreamEvent.Paused(
+                context.conversationId(), PauseReason.HITL_APPROVAL, publicPending));
         context.emitComplete();
         // 暂停期间不算"在跑"——占着单飞位只会挡住 resume 走自己的注册流程
         taskManager.removeTask(context.conversationId());

@@ -40,7 +40,8 @@ class AgentLoopExecutorPauseResumeTest {
         InMemoryPauseStateStore store = new InMemoryPauseStateStore();
         RecordingToolCallback chargeTool = new RecordingToolCallback(APPROVAL_REQUIRED_TOOL, "charges a card", "charged");
         ScriptedChatModel chatModel = new ScriptedChatModel(
-                List.of(toolCall("call-1", APPROVAL_REQUIRED_TOOL, "{\"amount\":100}"))
+                List.of(toolCall("call-1", APPROVAL_REQUIRED_TOOL,
+                        "{\"amount\":100,\"api_token\":\"server-secret\"}"))
         );
         AgentLoopExecutor executor = executorWith(chatModel, store, chargeTool);
 
@@ -50,15 +51,19 @@ class AgentLoopExecutorPauseResumeTest {
 
         // 工具从未被执行——审批之前不能有任何副作用
         assertThat(chargeTool.recordedArguments()).isEmpty();
-        assertThat(events).contains(new AgentStreamEvent.Paused("conv-1", PauseReason.HITL_APPROVAL));
+        assertThat(events).contains(new AgentStreamEvent.Paused("conv-1", PauseReason.HITL_APPROVAL,
+                List.of(new AgentStreamEvent.PendingTool("call-1", APPROVAL_REQUIRED_TOOL,
+                        "{\"amount\":100,\"api_token\":\"***\"}", "HIGH_RISK"))));
 
         PauseState snapshot = store.find("conv-1").orElseThrow();
         assertThat(snapshot.reason()).isEqualTo(PauseReason.HITL_APPROVAL);
         assertThat(snapshot.safePoint()).isEqualTo(SafePoint.BEFORE_TOOL_EXECUTION);
         assertThat(snapshot.pendingToolCalls())
-                .containsExactly(new PendingToolCall("call-1", APPROVAL_REQUIRED_TOOL, "{\"amount\":100}"));
+                .containsExactly(new PendingToolCall("call-1", APPROVAL_REQUIRED_TOOL,
+                        "{\"amount\":100,\"api_token\":\"server-secret\"}"));
         assertThat(snapshot.messages()).extracting(Message::getText).contains("给我充值 100 元");
         assertThat(snapshot.question()).isEqualTo("给我充值 100 元");
+        assertThat(snapshot.modelId()).isEqualTo("qwen-plus");
     }
 
     /** 没有命中审批名单的工具照常执行，不该被误伤成暂停。 */
@@ -212,6 +217,7 @@ class AgentLoopExecutorPauseResumeTest {
         PauseConfig pauseConfig = new PauseConfig(Set.of(APPROVAL_REQUIRED_TOOL), store);
         return AgentLoopExecutor.builder(chatModel, List.of(tool), maxRounds)
                 .pauseConfig(pauseConfig)
+                .modelName("qwen-plus")
                 .build();
     }
 }

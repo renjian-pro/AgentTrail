@@ -40,6 +40,7 @@ class PauseStateJsonTest {
                 SafePoint.BEFORE_TOOL_EXECUTION,
                 "question",
                 new RunnableParams("conv-1", "user-1", Map.of("tenantId", "tenant-7"), OutputType.of(Plan.class)),
+                "deepseek-chat",
                 4,
                 1_700_000_000_123L);
 
@@ -49,6 +50,7 @@ class PauseStateJsonTest {
         assertThat(restored.reason()).isEqualTo(PauseReason.HITL_APPROVAL);
         assertThat(restored.safePoint()).isEqualTo(SafePoint.BEFORE_TOOL_EXECUTION);
         assertThat(restored.question()).isEqualTo("question");
+        assertThat(restored.modelId()).isEqualTo("deepseek-chat");
         assertThat(restored.roundAtPause()).isEqualTo(4);
         assertThat(restored.pausedAtMillis()).isEqualTo(1_700_000_000_123L);
         assertThat(restored.pendingToolCalls()).containsExactly(
@@ -99,6 +101,7 @@ class PauseStateJsonTest {
         PauseState restored = PauseStateJson.fromJson(json);
 
         assertThat(restored.pendingToolCalls()).isEmpty();
+        assertThat(restored.modelId()).isNull();
         assertThat(restored.params().toolParams()).isEmpty();
         assertThat(restored.params().outputType()).isNull();
         assertThat(restored.messages()).extracting(message -> message.getClass(), message -> message.getText())
