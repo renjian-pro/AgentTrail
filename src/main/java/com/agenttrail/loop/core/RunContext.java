@@ -87,18 +87,34 @@ record RunContext(
         return roundCounter.incrementAndGet();
     }
 
+    /**
+     * 事件出口，顺带原地维护 {@link #toolTimeline}。
+     *
+     * <p><b>整个方法体在 {@code sink} 这把锁里。</b>{@code ToolCallExecutor} 用
+     * {@code flatMapSequential} + {@code subscribeOn} 并发执行同一轮的多个工具，每个工具线程
+     * 都会拿着 {@code context::emit} 调进来（见 {@link EventSinks#emit} 的同一段说明）——而
+     * {@code toolTimeline} 是普通 {@link LinkedHashMap}：并发 {@code put} 会丢条目，让
+     * {@code agent_session.timeline} 少记工具调用，还可能破坏它为保序维护的那条双向链表，
+     * 使后续 {@link #toolTimelineJson()} 的迭代卡死。此前只有下面的事件投递被 {@code EventSinks}
+     * 保护，上面的 timeline 维护漏在锁外，同一个并发前提只防住了一半。
+     *
+     * <p>锁对象和 {@link EventSinks#emit} 是同一个（{@code synchronized} 可重入，不会自锁），
+     * 沿用那边的取舍：只串行化极短的入队动作，真正耗时的工具调用在锁外面，不受影响。
+     */
     void emit(AgentStreamEvent event) {
-        switch (event) {
-            case AgentStreamEvent.ToolStart start ->
-                    toolTimeline.put(start.toolCallId(),
-                            new ToolTimelineEntry(start.toolName(), start.toolCallId(), start.arguments()));
-            case AgentStreamEvent.ToolEnd end -> {
-                ToolTimelineEntry entry = toolTimeline.get(end.toolCallId());
-                if (entry != null) entry.result = end.result();
+        synchronized (sink) {
+            switch (event) {
+                case AgentStreamEvent.ToolStart start ->
+                        toolTimeline.put(start.toolCallId(),
+                                new ToolTimelineEntry(start.toolName(), start.toolCallId(), start.arguments()));
+                case AgentStreamEvent.ToolEnd end -> {
+                    ToolTimelineEntry entry = toolTimeline.get(end.toolCallId());
+                    if (entry != null) entry.result = end.result();
+                }
+                default -> { }
             }
-            default -> { }
+            EventSinks.emit(sink, event);
         }
-        EventSinks.emit(sink, event);
     }
 
     void emitComplete() {
@@ -106,16 +122,21 @@ record RunContext(
     }
 
     /** 序列化本轮工具调用轨迹给 {@code agent_session.timeline} 落库；没有工具调用时返回 null，
-     * 和"这轮没有 timeline"的既有语义保持一致，不写一个没意义的空数组。 */
+     * 和"这轮没有 timeline"的既有语义保持一致，不写一个没意义的空数组。
+     *
+     * <p>迭代 {@code values()} 要和 {@link #emit} 用同一把锁：收尾发生在主流程线程上，而写入
+     * 来自工具执行线程，无保护的迭代可能撞上并发结构调整。 */
     String toolTimelineJson() {
-        if (toolTimeline.isEmpty()) {
-            return null;
-        }
-        try {
-            return JSON.writeValueAsString(toolTimeline.values());
-        } catch (JsonProcessingException serializationFailure) {
-            log.warn("工具调用时间线序列化失败，本轮 timeline 落库将为空", serializationFailure);
-            return null;
+        synchronized (sink) {
+            if (toolTimeline.isEmpty()) {
+                return null;
+            }
+            try {
+                return JSON.writeValueAsString(toolTimeline.values());
+            } catch (JsonProcessingException serializationFailure) {
+                log.warn("工具调用时间线序列化失败，本轮 timeline 落库将为空", serializationFailure);
+                return null;
+            }
         }
     }
 }
