@@ -1,8 +1,13 @@
 package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.core.support.ScriptedChatModel;
+import com.agenttrail.loop.core.support.RecordingToolCallback;
+import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.model.RunnableParams;
-import com.agenttrail.loop.model.ThinkingMode;
+import com.agenttrail.loop.pause.JdbcPauseStateStore;
+import com.agenttrail.loop.pause.PauseConfig;
+import com.agenttrail.loop.pause.ResumeInstruction;
+import com.agenttrail.loop.pause.SafePoint;
 import com.agenttrail.loop.persistence.JdbcSessionStore;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.support.SharedMySql;
@@ -20,6 +25,7 @@ import java.time.Duration;
 import java.util.List;
 
 import static com.agenttrail.loop.core.support.ChatResponses.text;
+import static com.agenttrail.loop.core.support.ChatResponses.toolCall;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -45,6 +51,7 @@ class AgentLoopExecutorRestartRecoveryIT {
     @BeforeEach
     void resetTable() {
         JdbcClient.create(dataSource).sql("TRUNCATE TABLE agent_session").update();
+        JdbcClient.create(dataSource).sql("TRUNCATE TABLE agent_pause_state").update();
     }
 
     @Test
@@ -90,5 +97,46 @@ class AgentLoopExecutorRestartRecoveryIT {
         List<Message> withoutDateSection = chatModel.messagesAtRound(0);
         assertThat(withoutDateSection.subList(1, withoutDateSection.size()))
                 .extracting(Message::getText).containsExactly("你好");
+    }
+
+    @Test
+    void aFreshInstanceResumesARealMySqlPauseSnapshotAndDeletesItOnlyAfterCompletion() {
+        String conversationId = "conv-pause-restart-1";
+        String highRiskTool = "chargeCard";
+        JdbcPauseStateStore firstStoreInstance = new JdbcPauseStateStore(dataSource);
+        RecordingToolCallback chargeTool = new RecordingToolCallback(highRiskTool, "charges a card", "charged");
+        AgentLoopExecutor instanceA = AgentLoopExecutor.builder(
+                        new ScriptedChatModel(List.of(toolCall("call-1", highRiskTool, "{\"amount\":100}"))),
+                        List.of(chargeTool), 5)
+                .pauseConfig(new PauseConfig(java.util.Set.of(highRiskTool), firstStoreInstance))
+                .modelName("qwen-plus")
+                .build();
+
+        List<AgentStreamEvent> pausedEvents = instanceA
+                .stream("充值 100 元", new RunnableParams(conversationId, "user-1"))
+                .collectList().block(Duration.ofSeconds(5));
+
+        assertThat(pausedEvents).anyMatch(AgentStreamEvent.Paused.class::isInstance);
+        assertThat(chargeTool.recordedArguments()).isEmpty();
+        assertThat(firstStoreInstance.find(conversationId)).get()
+                .extracting(state -> state.safePoint()).isEqualTo(SafePoint.BEFORE_TOOL_EXECUTION);
+
+        // 模拟进程重启：执行器、任务管理器和 JDBC Store 对象全部重建，只共享 MySQL 中的快照。
+        JdbcPauseStateStore restartedStoreInstance = new JdbcPauseStateStore(dataSource);
+        AgentLoopExecutor instanceB = AgentLoopExecutor.builder(
+                        new ScriptedChatModel(List.of(text("充值成功"))), List.of(chargeTool), 5)
+                .pauseConfig(new PauseConfig(java.util.Set.of(highRiskTool), restartedStoreInstance))
+                .modelName("qwen-plus")
+                .build();
+
+        List<AgentStreamEvent> resumedEvents = instanceB
+                .resume(conversationId, ResumeInstruction.ApprovalDecision.approve())
+                .collectList().block(Duration.ofSeconds(5));
+
+        assertThat(resumedEvents).anyMatch(AgentStreamEvent.Complete.class::isInstance);
+        assertThat(chargeTool.recordedArguments()).containsExactly("{\"amount\":100}");
+        assertThat(restartedStoreInstance.find(conversationId))
+                .as("完整恢复成功后才删除真实 MySQL 中的检查点")
+                .isEmpty();
     }
 }
