@@ -56,6 +56,7 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
@@ -111,6 +112,25 @@ public class AgentLoopExecutor {
      * 已经是 5 分钟，这里是它之上、覆盖整轮（含 LLM 流式阶段）的最后一道防线）。
      */
     static final Duration DEFAULT_ROUND_TIMEOUT = Duration.ofMinutes(8);
+
+    /**
+     * 轮次收尾专用的调度器，和 {@link ToolCallExecutor} 的 {@code agent-tool-exec} 池、以及
+     * Reactor 全局的 {@code Schedulers.boundedElastic()} 都是相互独立的实例。
+     *
+     * <p>这里此前直接用全局 {@code boundedElastic()}，只解决了一半问题：工具执行本身早就挪进了
+     * 独立池（issue #10 / 踩坑点 #62），但**等待**它的那个 {@code .block()} 跑在本调度器的线程上——
+     * 也就是说每个正处于工具执行阶段的会话，都会阻塞占住一个全局 {@code boundedElastic} 线程。
+     * 全局池默认容量只有 {@code 10 × CPU 核数}，且是整个 JVM 里所有"随手 subscribeOn 一下"的
+     * 阻塞代码共用的；并发会话数上到这个量级时，应用里任何用到默认池的地方都会跟着一起排队。
+     * 队列深度有十万，所以症状不是报错而是延迟悄悄升高，正是踩坑点 #62 想避免、却只躲掉一半的
+     * 那个故障模式。
+     *
+     * <p>容量和默认值保持一致（够用且和历史行为对齐），只是不再和别人共享。
+     */
+    private static final Scheduler ROUND_SCHEDULER = Schedulers.newBoundedElastic(
+            Schedulers.DEFAULT_BOUNDED_ELASTIC_SIZE,
+            Schedulers.DEFAULT_BOUNDED_ELASTIC_QUEUESIZE,
+            "agent-loop-round");
 
     private final LlmInvoker llmInvoker;
     private final ToolCallExecutor toolCallExecutor;
@@ -642,7 +662,9 @@ public class AgentLoopExecutor {
                 // 真实的 HTTP ChatModel（Reactor Netty 实现）在自己的 I/O 线程上信号 onComplete——
                 // finishRound 出现工具调用时会走到 ToolCallExecutor.execute() 内部的 .block()，
                 // 直接卡在 I/O 线程上会被 Reactor 的非阻塞线程检查拒绝；统一切换到弹性线程。
-                .publishOn(Schedulers.boundedElastic())
+                // 用专属的 ROUND_SCHEDULER 而不是全局 boundedElastic()：那个 .block() 会一直占着
+                // 本线程直到整轮工具跑完，占的是全局池就会拖累 JVM 里其它所有用默认池的代码。
+                .publishOn(ROUND_SCHEDULER)
                 .doOnNext(chunk -> {
                     if (firstChunkSeen.compareAndSet(false, true)) {
                         stopTimer(ttftSample, ttftTimer);
