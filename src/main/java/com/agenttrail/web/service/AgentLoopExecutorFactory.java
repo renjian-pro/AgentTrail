@@ -7,7 +7,6 @@ import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.loop.hook.AgentHooks;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
-import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.memory.MemoryStore;
 import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
@@ -86,7 +85,6 @@ public class AgentLoopExecutorFactory {
     private final AnalyticsToolProvider analyticsToolProvider;
     private final AgentHooks sharedHooks;
     private final PauseConfig pauseConfig;
-    private final ToolRiskRegistry toolRiskRegistry;
     private final SessionBudgetTracker sessionBudgetTracker;
     private final TraceStore traceStore;
     private final MeterRegistry meterRegistry;
@@ -136,7 +134,6 @@ public class AgentLoopExecutorFactory {
         private FileStore fileStore;
         private AnalyticsToolProvider analyticsToolProvider;
         private PauseConfig pauseConfig;
-        private ToolRiskRegistry toolRiskRegistry = ToolRiskRegistry.defaults();
         private SessionBudgetTracker sessionBudgetTracker;
         private TraceStore traceStore;
         private MeterRegistry meterRegistry;
@@ -160,10 +157,6 @@ public class AgentLoopExecutorFactory {
         public Builder fileStore(FileStore value) { this.fileStore = value; return this; }
         public Builder analytics(AnalyticsToolProvider value) { this.analyticsToolProvider = value; return this; }
         public Builder pause(PauseConfig value) { this.pauseConfig = value; return this; }
-        public Builder toolRisk(ToolRiskRegistry value) {
-            this.toolRiskRegistry = value == null ? ToolRiskRegistry.defaults() : value;
-            return this;
-        }
         public Builder budget(SessionBudgetTracker value) { this.sessionBudgetTracker = value; return this; }
         public Builder trace(TraceStore value) { this.traceStore = value; return this; }
         public Builder metrics(MeterRegistry value) { this.meterRegistry = value; return this; }
@@ -201,7 +194,6 @@ public class AgentLoopExecutorFactory {
         FileStore fileStore = options.fileStore;
         AnalyticsToolProvider analyticsToolProvider = options.analyticsToolProvider;
         PauseConfig pauseConfig = options.pauseConfig;
-        ToolRiskRegistry toolRiskRegistry = options.toolRiskRegistry;
         SessionBudgetTracker sessionBudgetTracker = options.sessionBudgetTracker;
         TraceStore traceStore = options.traceStore;
         MeterRegistry meterRegistry = options.meterRegistry;
@@ -210,9 +202,18 @@ public class AgentLoopExecutorFactory {
         ToolRateLimiter toolRateLimiter = options.toolRateLimiter;
         SkillManager skillManager = options.skillManager;
         MemoryStore memoryStore = options.memoryStore;
-        this.sharedHooks = new AgentHooks(List.of(),
-                List.of(new com.agenttrail.loop.hook.ToolPolicyPreToolUseHook(toolRiskRegistry)),
-                List.of(), List.of(), List.of(), List.of());
+        // 六个点位一个都不挂。Hook 全系是纯观察型 void 契约，而真正要改变行为的治理机制——审批
+        // （PauseConfig）、限速（ToolRateLimiter）、来源门禁（DataProvenancePolicy）、预算
+        // （SessionBudgetTracker）——都各自成一个直接参与决策的组件，没有一个走得通 Hook。
+        //
+        // 这里原先挂着一个 ToolPolicyPreToolUseHook，但它查完风险等级就把返回值丢了，净效果只剩
+        // "工具名为空则抛异常"。类名和构造参数都像是接上了工具风险管控，实际什么都没做——这比一个
+        // 空列表更糟，它会让人误判治理现状，所以整个删掉。ToolRiskRegistry 本身仍在用，由
+        // AgentLoopExecutorConfig 直接拿 toolsWithLevel() 生成 PauseConfig 的审批名单。
+        //
+        // 接口体系保留：等真要接可观测性（工具调用打点、按用户用量统计）时，postToolUse/budget
+        // 就是现成的挂载点，不用再回去改 AgentLoopExecutor。
+        this.sharedHooks = AgentHooks.EMPTY;
         if (models.stream().noneMatch(model -> model.id().equals(defaultModelId))) {
             throw new IllegalArgumentException("默认模型 " + defaultModelId + " 不在注册的模型列表里");
         }
@@ -228,7 +229,6 @@ public class AgentLoopExecutorFactory {
         this.fileStore = fileStore;
         this.analyticsToolProvider = analyticsToolProvider;
         this.pauseConfig = pauseConfig;
-        this.toolRiskRegistry = toolRiskRegistry;
         this.sessionBudgetTracker = sessionBudgetTracker;
         this.traceStore = traceStore;
         this.meterRegistry = meterRegistry;

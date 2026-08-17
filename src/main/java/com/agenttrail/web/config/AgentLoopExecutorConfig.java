@@ -154,10 +154,16 @@ public class AgentLoopExecutorConfig {
         return new PauseConfig(toolRiskRegistry.toolsWithLevel(ToolRiskLevel.HIGH_RISK), pauseStateStore);
     }
 
+    /**
+     * 和 {@link #agentTaskManager} 同样的降级方式：配了 Redis 就跨实例累加，没配就退回纯进程内，
+     * 行为与历史一致。单飞注册早就跨实例了，预算却一直是进程内的——多实例部署下同一会话在每个
+     * 实例上各算各的，{@code per-session-tokens} 实际被放大成实例个数倍。
+     */
     @Bean
     public SessionBudgetTracker sessionBudgetTracker(
+            ObjectProvider<RedissonClient> redissonProvider,
             @Value("${agenttrail.budget.per-session-tokens:200000}") long perSessionTokens) {
-        return new SessionBudgetTracker(perSessionTokens);
+        return new SessionBudgetTracker(redissonProvider.getIfAvailable(), perSessionTokens);
     }
 
     @Bean
@@ -336,7 +342,6 @@ public class AgentLoopExecutorConfig {
             ObjectProvider<FileStore> fileStoreProvider,
             ObjectProvider<AnalyticsToolProvider> analyticsToolProvider,
             PauseConfig pauseConfig,
-            ToolRiskRegistry toolRiskRegistry,
             SessionBudgetTracker sessionBudgetTracker,
             TraceStore traceStore,
             ObjectProvider<MeterRegistry> meterRegistryProvider,
@@ -360,7 +365,6 @@ public class AgentLoopExecutorConfig {
                 .fileStore(fileStoreProvider.getIfAvailable())
                 .analytics(analyticsToolProvider.getIfAvailable())
                 .pause(pauseConfig)
-                .toolRisk(toolRiskRegistry)
                 .budget(sessionBudgetTracker)
                 .trace(traceStore)
                 .metrics(meterRegistryProvider.getIfAvailable())
