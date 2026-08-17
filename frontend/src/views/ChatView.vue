@@ -40,7 +40,7 @@ import { useChatStore, type AgentKind, type ChatTurn, type PptEntry, type Resear
  */
 
 const chat = useChatStore()
-const { conversationId, messages, todos, navigationSeq, agentKind, agentLocked } = storeToRefs(chat)
+const { conversationId, messages, todos, navigationSeq, agentKind, agentLocked, hasPendingApproval } = storeToRefs(chat)
 const busy = ref(false)
 const error = ref('')
 const webSearch = ref(false)
@@ -85,8 +85,10 @@ watch(navigationSeq, () => {
 // cannot be cancelled by the chat stop endpoint, so showing that control there
 // would promise an action the backend cannot perform.
 const canStop = computed(() => busy.value && aborter !== undefined)
+/** 暂停中的同一会话必须先做出审批决定，不能并行塞入一条新的普通消息破坏恢复快照。 */
+const interactionBusy = computed(() => busy.value || hasPendingApproval.value)
 /** 数据分析执行器明确不挂联网搜索工具（DataAgent 不复用通用工具），开着只是摆设。 */
-const webSearchDisabled = computed(() => busy.value || agentKind.value === 'analytics')
+const webSearchDisabled = computed(() => interactionBusy.value || agentKind.value === 'analytics')
 const webSearchHint = computed(() =>
   agentKind.value === 'analytics' ? '数据分析不挂载联网搜索工具，这个开关对它不生效' : '')
 
@@ -139,6 +141,7 @@ const TOOL_LABELS: Record<string, string> = {
 const toolLabel = (name: string) => TOOL_LABELS[name] ?? name
 
 async function send(message: string) {
+  if (hasPendingApproval.value) return
   // Agent 是会话级的，不在这里读取后复位——曾经这一行是 `pendingMode.value = undefined`，
   // 导致用户追问时静默掉回普通对话（issue #92）。
   const mode = agentKind.value === 'analytics' ? 'analytics' : undefined
@@ -344,8 +347,8 @@ async function removeFile(fileId: number) {
               :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         </div>
         <div class="composer-tasks">
-          <button type="button" :disabled="busy" @click="runTask('research')">⌕ 深度研究</button>
-          <button type="button" :disabled="busy" @click="runTask('ppt')">▣ 生成 PPT</button>
+          <button type="button" :disabled="interactionBusy" @click="runTask('research')">⌕ 深度研究</button>
+          <button type="button" :disabled="interactionBusy" @click="runTask('ppt')">▣ 生成 PPT</button>
         </div>
         <!-- 灰字说明统一放到这一排的末尾，不夹在按钮中间——那一排的意思就是"这些是同一类东西"，
              中间插一句说明会把它从视觉上切成两段。 -->
@@ -357,7 +360,7 @@ async function removeFile(fileId: number) {
         </span>
       </div>
       <p v-if="taskHint" class="task-hint">{{ taskHint }}</p>
-      <MessageInput ref="composer" :busy="busy" :initial-value="initialMessage" @send="send" />
+      <MessageInput ref="composer" :busy="interactionBusy" :initial-value="initialMessage" @send="send" />
       <div class="controls">
         <span>当前模型</span>
         <select v-model="modelId" aria-label="当前模型"><option>qwen-plus</option><option>deepseek-chat</option></select>

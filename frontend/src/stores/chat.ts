@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { chatApi, type ConversationSummary, type HistoryTurn } from '../api/chat-api'
+import { chatApi, streamApproval, type ConversationSummary, type HistoryTurn, type PendingApprovalResponse } from '../api/chat-api'
+import { toErrorMessage } from '../api/http'
 import type { PptTask } from '../api/ppt-api'
 import type { DeepResearchReport, ResearchStep } from '../api/research-api'
 import type { StreamEvent, TodoItem } from '../types/stream-event'
@@ -30,6 +31,13 @@ export type SwitchHintEntry = { kind: 'switch-hint' }
 export type ChatMessage = ChatTurn | PptEntry | ResearchEntry | SwitchHintEntry
 
 export type ChatSession = { id: string; title: string }
+export type ApprovalStatus = 'pending' | 'submitting' | 'approved' | 'rejected' | 'failed'
+export type ApprovalState = PendingApprovalResponse & {
+  status: ApprovalStatus
+  decision?: 'approved' | 'rejected'
+  error?: string
+  assistant: ChatTurn
+}
 
 /**
  * 会话绑定的 Agent（issue #92）。**是会话级的，不是消息级的**——工具集在一个会话里必须稳定，
@@ -90,6 +98,8 @@ export const useChatStore = defineStore('chat', () => {
   const navigationSeq = ref(0)
   const agentKind = ref<AgentKind>('chat')
   const agentKinds = ref<Record<string, AgentKind>>(readAgentKinds())
+  const pendingApproval = ref<ApprovalState>()
+  const hasPendingApproval = computed(() => pendingApproval.value !== undefined)
 
   /**
    * 锁定点就是"会话已经有 id 了"——`conversationId` 在首条消息发出前是 undefined
@@ -138,6 +148,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
     todos.value = []
     agentKind.value = kind
+    pendingApproval.value = undefined
     navigationSeq.value++
   }
 
@@ -148,6 +159,10 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 把聊天 SSE 的语义收敛在 store 里，ChatView 只负责驱动流式迭代和忙碌/错误态 UI。 */
   function applyStreamEvent(event: StreamEvent, assistant: ChatTurn, seedTitle: string): string | undefined {
+    if (pendingApproval.value?.status === 'submitting'
+        && event.type !== 'Paused' && event.type !== 'RunFailed' && event.type !== 'RunCompleted') {
+      pendingApproval.value.status = pendingApproval.value.decision === 'approved' ? 'approved' : 'rejected'
+    }
     switch (event.type) {
       case 'RunStarted':
         acceptConversation(event.conversationId, seedTitle)
@@ -170,11 +185,64 @@ export const useChatStore = defineStore('chat', () => {
         return undefined
       }
       case 'RunFailed':
+        if (pendingApproval.value) {
+          pendingApproval.value.status = 'failed'
+          pendingApproval.value.error = event.message
+        }
         return event.message
       case 'Paused':
+        restorePendingApproval({
+          conversationId: event.conversationId,
+          reason: event.reason,
+          pausedAtMillis: Date.now(),
+          pendingTools: event.pendingTools
+        }, assistant)
+        return undefined
       case 'RunCompleted':
+        pendingApproval.value = undefined
         return undefined
     }
+  }
+
+  function restorePendingApproval(snapshot: PendingApprovalResponse, assistant: ChatTurn) {
+    pendingApproval.value = { ...snapshot, status: 'pending', assistant }
+  }
+
+  /** 返回 false 表示请求已经在提交，调用方必须据此抑制重复点击。 */
+  function beginApproval(approved: boolean): boolean {
+    if (!pendingApproval.value || pendingApproval.value.status === 'submitting'
+        || pendingApproval.value.status === 'approved' || pendingApproval.value.status === 'rejected') return false
+    pendingApproval.value.status = 'submitting'
+    pendingApproval.value.decision = approved ? 'approved' : 'rejected'
+    pendingApproval.value.error = undefined
+    return true
+  }
+
+  function failApproval(message: string) {
+    if (!pendingApproval.value) return
+    pendingApproval.value.status = 'failed'
+    pendingApproval.value.error = message
+  }
+
+  /**
+   * 审批恢复仍是同一轮 assistant 输出：这里持有暂停时的 assistant 引用，并把恢复 SSE 继续
+   * 归并进去。组件不自行拼事件，避免普通发送和审批恢复形成两套逐渐漂移的协议实现。
+   */
+  async function submitApproval(approved: boolean, rejectionReason?: string,
+      signal?: AbortSignal): Promise<string | undefined> {
+    if (!beginApproval(approved)) return undefined
+    const approval = pendingApproval.value!
+    let failureMessage: string | undefined
+    try {
+      for await (const event of streamApproval(approval.conversationId, { approved, rejectionReason }, signal)) {
+        failureMessage = applyStreamEvent(event, approval.assistant, '') ?? failureMessage
+      }
+    } catch (failure) {
+      if ((failure as Error).name === 'AbortError') throw failure
+      failureMessage = toErrorMessage(failure)
+      failApproval(failureMessage)
+    }
+    return failureMessage
   }
 
   function turnToMessages(turns: HistoryTurn[]): ChatMessage[] {
@@ -249,6 +317,7 @@ export const useChatStore = defineStore('chat', () => {
     agentKind.value = agentKindFor(id)
     messages.value = turnToMessages(page.turns)
     todos.value = []
+    pendingApproval.value = undefined
     navigationSeq.value++
     if (!sessions.value.some(session => session.id === id)) {
       acceptConversation(id, page.turns.at(0)?.question ?? '新对话')
@@ -291,7 +360,9 @@ export const useChatStore = defineStore('chat', () => {
   return {
     conversationId, messages, todos, sessions, sessionsHasMore, navigationSeq,
     agentKind, agentKinds, agentLocked,
+    pendingApproval, hasPendingApproval,
     acceptConversation, ensureConversation, applyStreamEvent, setAgentKind, agentKindFor,
+    restorePendingApproval, beginApproval, failApproval, submitApproval,
     startNewConversation, openSession, hydrateSessions, loadMoreSessions
   }
 })
