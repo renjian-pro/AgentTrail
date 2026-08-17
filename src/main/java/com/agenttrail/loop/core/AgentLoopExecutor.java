@@ -976,19 +976,26 @@ public class AgentLoopExecutor {
         }
 
         List<Message> messages = new ArrayList<>(paused.messages());
-        List<ToolResponseMessage.ToolResponse> responses = resolvePendingToolResponses(paused, instruction, sink);
-        if (!responses.isEmpty()) {
-            messages.add(ToolResponseMessage.builder().responses(responses).build());
+        if (paused.safePoint() == SafePoint.BEFORE_TOOL_EXECUTION) {
+            List<ToolResponseMessage.ToolResponse> responses = resolvePendingToolResponses(paused, instruction, sink);
+            if (!responses.isEmpty()) {
+                messages.add(ToolResponseMessage.builder().responses(responses).build());
+            }
+            if (instruction instanceof ResumeInstruction.NewInstruction newInstruction) {
+                messages.add(new UserMessage(newInstruction.message()));
+            }
+
+            // 工具可能已经产生不可逆副作用。必须先把结果推进到“工具执行后”检查点，再调用模型；
+            // 后续即使 provider 失败或进程重启，重试也只会消费已落盘的结果，不会再次执行工具。
+            pauseConfig.store().save(new PauseState(paused.conversationId(), messages, List.of(),
+                    paused.reason(), SafePoint.AFTER_TOOL_EXECUTION, paused.question(), paused.params(),
+                    paused.modelId(), paused.roundAtPause(), paused.pausedAtMillis()));
         }
-        if (instruction instanceof ResumeInstruction.NewInstruction newInstruction) {
-            messages.add(new UserMessage(newInstruction.message()));
-        }
-        // 快照已经消费完毕，不删的话一次异常重复恢复会用一份过期的历史覆盖掉新产生的对话
-        pauseConfig.store().delete(conversationId);
 
         // 从暂停时的轮次续数，而不是从 0 重开一整份 maxRounds 预算——否则反复暂停/恢复能绕开轮次上限
         RunContext context = new RunContext(paused.question(), paused.params(), messages, sink,
-                new AtomicInteger(paused.roundAtPause()), System.currentTimeMillis(), null, MDC.getCopyOfContextMap());
+                new AtomicInteger(paused.roundAtPause()), System.currentTimeMillis(), null, MDC.getCopyOfContextMap(),
+                true);
         scheduleRound(context);
         return sink.asFlux();
     }
@@ -1126,6 +1133,10 @@ public class AgentLoopExecutor {
 
         fireSessionEnd(context, true);
         completionCoordinator.complete(context);
+        if (context.resumedFromPause() && pauseConfig != null) {
+            // 只有整条恢复链路成功收尾后才能消费检查点；失败路径故意保留它供安全重试。
+            pauseConfig.store().delete(context.conversationId());
+        }
         // 先释放单飞占位，再向下游宣告结束——顺序反过来会留下一道真实的竞态：调用方收到
         // Complete 的那一刻这一轮在它看来已经结束，可以立刻发下一句，而占位要等本线程再往下
         // 走一行才释放，于是"答案刚出来就追问"有概率被 CONCURRENT_EXECUTION 顶回去。

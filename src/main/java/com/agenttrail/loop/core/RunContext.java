@@ -61,7 +61,8 @@ record RunContext(
          * 明确豁免于提示词纳管。真正会往里写的是上下文压缩、记忆提取这类走 PromptRegistry
          * 的轮内内部调用，所以这个集合非空本身就说明"这一轮触发过压缩/提取"。
          */
-        Set<String> usedPromptStamps) {
+        Set<String> usedPromptStamps,
+        boolean resumedFromPause) {
 
     private static final Logger log = LoggerFactory.getLogger(RunContext.class);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -71,7 +72,15 @@ record RunContext(
                Map<String, String> mdcSnapshot) {
         this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
                 new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>(),
-                java.util.concurrent.ConcurrentHashMap.newKeySet());
+                java.util.concurrent.ConcurrentHashMap.newKeySet(), false);
+    }
+
+    RunContext(String question, RunnableParams params, List<Message> messages, Sinks.Many<AgentStreamEvent> sink,
+               AtomicInteger roundCounter, long startTimeMillis, ToolSearchSession toolSearchSession,
+               Map<String, String> mdcSnapshot, boolean resumedFromPause) {
+        this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
+                new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>(),
+                java.util.concurrent.ConcurrentHashMap.newKeySet(), resumedFromPause);
     }
 
     String conversationId() {

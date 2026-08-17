@@ -16,6 +16,7 @@ import com.agenttrail.loop.task.AgentTaskManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
+import reactor.core.publisher.Flux;
 
 import java.time.Duration;
 import java.util.List;
@@ -107,6 +108,48 @@ class AgentLoopExecutorPauseResumeTest {
         assertThat(chargeTool.recordedArguments()).containsExactly("{\"amount\":100}");
         assertThat(events).contains(new AgentStreamEvent.Text("充值成功"));
         // 恢复消费掉了快照，同一个会话不能被重复恢复
+        assertThat(store.find("conv-1")).isEmpty();
+    }
+
+    @Test
+    void retryingResumeAfterModelFailureDoesNotExecuteTheApprovedToolTwice() {
+        InMemoryPauseStateStore store = new InMemoryPauseStateStore();
+        RecordingToolCallback chargeTool = new RecordingToolCallback(APPROVAL_REQUIRED_TOOL, "charges a card", "charged");
+        ScriptedChatModel pauseModel = new ScriptedChatModel(
+                List.of(toolCall("call-1", APPROVAL_REQUIRED_TOOL, "{\"amount\":100}")));
+        executorWith(pauseModel, store, chargeTool)
+                .stream("给我充值 100 元", new RunnableParams("conv-1", "user-1"))
+                .collectList().block(Duration.ofSeconds(5));
+
+        ScriptedChatModel failingModel = new ScriptedChatModel(List.of()) {
+            @Override
+            public Flux<org.springframework.ai.chat.model.ChatResponse> stream(
+                    org.springframework.ai.chat.prompt.Prompt prompt) {
+                return Flux.error(new IllegalStateException("provider unavailable"));
+            }
+        };
+        List<AgentStreamEvent> failed = executorWith(failingModel, store, chargeTool)
+                .resume("conv-1", ResumeInstruction.ApprovalDecision.approve())
+                .collectList().block(Duration.ofSeconds(5));
+
+        assertThat(failed).contains(new AgentStreamEvent.Error("LLM_CALL_FAILED", "provider unavailable"));
+        assertThat(chargeTool.recordedArguments()).containsExactly("{\"amount\":100}");
+        PauseState recoveryCheckpoint = store.find("conv-1").orElseThrow();
+        assertThat(recoveryCheckpoint.safePoint()).isEqualTo(SafePoint.AFTER_TOOL_EXECUTION);
+        assertThat(recoveryCheckpoint.pendingToolCalls()).isEmpty();
+        assertThat(recoveryCheckpoint.messages())
+                .filteredOn(ToolResponseMessage.class::isInstance)
+                .isNotEmpty();
+
+        ScriptedChatModel recoveredModel = new ScriptedChatModel(List.of(text("充值成功")));
+        List<AgentStreamEvent> recovered = executorWith(recoveredModel, store, chargeTool)
+                .resume("conv-1", ResumeInstruction.ApprovalDecision.approve())
+                .collectList().block(Duration.ofSeconds(5));
+
+        assertThat(recovered).contains(new AgentStreamEvent.Text("充值成功"));
+        assertThat(chargeTool.recordedArguments())
+                .as("恢复检查点之后只能继续调用模型，不能再次执行已产生副作用的工具")
+                .containsExactly("{\"amount\":100}");
         assertThat(store.find("conv-1")).isEmpty();
     }
 
