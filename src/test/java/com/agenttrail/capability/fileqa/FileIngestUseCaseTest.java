@@ -42,7 +42,7 @@ class FileIngestUseCaseTest {
         @Override public List<Attachment> findByConversationId(String conversationId) { return List.of(); }
         @Override public void updateParsedText(long id, String parsedText) { }
         @Override public void markReady(long id, String parsedText, byte[] rawBytes) { readyIds.add(id); }
-        @Override public void linkFilesToTurn(String conversationId, long turnId) { }
+        @Override public void linkFilesToTurn(String conversationId, java.util.List<Long> fileIds, long turnId) { }
         @Override public void delete(long id) { }
     }
 

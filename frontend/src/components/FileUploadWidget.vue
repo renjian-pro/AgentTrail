@@ -20,8 +20,9 @@ function selected(event: Event) {
        下面那个大输入框拖，那里毫无反应，体感上就是"拖放根本不能用"。这里只保留点击选择文件。 -->
   <!-- "也可拖放文件"那句提示不在这里，在 ChatView 的按钮排末尾：夹在按钮中间会把一排按钮
        从视觉上切成两段，而那一排的意义恰恰是"这些是同一类东西"。 -->
-  <div class="file-upload">
-    <input ref="input" type="file" hidden @change="selected">
-    <button type="button" @click="pick">＋ 添加文件</button>
-  </div>
+  <!-- 不再包一层 .file-upload：那层曾经是为了排住按钮和"也可拖放文件"那句提示，提示搬走之后
+       它只剩一个 hidden input（display:none，不占布局）和一颗按钮。去掉之后按钮就是
+       .capability-bar 的直接 flex 子元素，和同排另外三颗按同一套规则对齐。 -->
+  <input ref="input" type="file" hidden @change="selected">
+  <button type="button" @click="pick">＋ 添加文件</button>
 </template>

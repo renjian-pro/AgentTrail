@@ -40,8 +40,12 @@ public class AgentLoopController {
         try {
             return asSse(chatService.send(principal(), request.conversationId(), request.modelId(),
                     request.message(), new ToolScope(request.webSearchEnabled(), true, java.util.Set.of()),
-                    request.mode()));
-        } catch (IllegalStateException failure) {
+                    request.mode(), request.fileIds()));
+        } catch (IllegalStateException | IllegalArgumentException failure) {
+            // IllegalArgumentException 这一支是 issue #106：未知的 mode 取值必须 400 出去。
+            // 此前它连异常都不抛——`"analytics".equals(mode)` 让任何拼错都静默降级成普通聊天，
+            // 接口 200、日志干净，而模型少了整套数据库工具。这里和 approve() 不同，
+            // 那边的 IllegalArgumentException 语义是"会话不存在"（404），本端点没有那条路径。
             throw new ResponseStatusException(BAD_REQUEST, failure.getMessage(), failure);
         }
     }

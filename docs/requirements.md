@@ -22,16 +22,51 @@
 
 ## 2. 现状基线（诚实版）
 
-roadmap 的账面记录是 Phase 0–7 全部关闭。真实状态要打折，差额如下：
+> **本节于 2026-08-17 对着代码逐条重核。** B1–B11 / F6–F8 全部已 closed 上线，下表和 §2.1 反映的是**核对后的实际状态**，不是票的开闭状态。
 
-| 领域 | 账面 | 实际 |
+| 领域 | 2026-08-16 记录 | 2026-08-17 实测 |
 |---|---|---|
-| DataAgent | Phase 2 已完成（issue #52-#61） | 工具链代码齐全（40 个类 2148 行），但**端到端经常跑不通**，见 §3 |
-| Golden 评测 | Phase 3 已完成 | 28 条 fixture 里多条提问是"把断言意图当成提问"，且整套英文；`GoldenEvaluationService` 从没算过 `rowCount`/`scalar.*` 这几个 metrics，页面上跑永远失败（踩坑点 #91） |
-| 架构 | — | ~~三代并存 + 包循环~~ → **2026-08-16 已收敛**：`runtime/` 62 类降到 25 类、包循环消除、V0 入口下线。剩下的是 `Object... options` 位置槽和 `forXxx` 分支（§5 第 3 步）；见 [`refactor-blueprint.md`](refactor-blueprint.md) |
-| 部署运维 | Phase 11 未开工 | `docker-compose.yml` 起了 Prometheus/Grafana/Langfuse，K8s/CI/性能基线仍空白 |
+| DataAgent | 端到端经常跑不通 | **Golden 36/42**（[报告](golden-task-report-2026-08-16.md)）。R1/R2 已修，八场景相关维度（permission/masking/empty_result/chart/cost）全绿；**剩余失败集中在 `file_qa`** —— `file-001`/`file-002` 报 `tool_called failed: read_file`，而生产工具名是 `load_file_content`，**看起来是 fixture 写错了工具名，不是能力缺陷**（待确认） |
+| Golden 评测 | 英文 fixture + metrics 从没算过 | ✅ 已修：`core.yml` 33 条中文提问按 S1–S8 分组（#97）；`GoldenEvaluationService` 已算 `rowCount`/`scalar.*`/`resultMatchesReference`（#98）；`GoldenTaskRunner` 已记堆栈 |
+| 架构 | 步骤 1/2 完成，剩位置槽 + `forXxx` 分支 | 步骤 3 **部分完成**：B5（#99）交付了 `CapabilitySpec` + 类型安全 `Builder`，消除了四份复制的 builder 链；但**`AgentDefinition` 驱动装配没做** —— `AgentDefinition`/`AgentRegistry` 只被注释引用，`forModel`/`forAnalytics`/`forInternalOrchestration` 分支仍在，`Object...` 构造保留为 deprecated 给测试用 |
+| 部署运维 | K8s/CI/性能基线仍空白 | CI 已有（`.github/workflows/ci.yml`）；`deploy/` 已有生产 compose + Caddyfile + Prometheus/Grafana。**K8s 和性能基线仍空白** |
 
-**结论：现在缺的不是新能力，是把已有的东西做到真的立得住。**
+**结论仍然成立：现在缺的不是新能力，是把已有的东西做到真的立得住。** 但缺口位置变了——从"DataAgent 跑不通"变成了"会话模型和文件绑定这两处的语义没定死"。
+
+### 2.1 需求交付状态（2026-08-17 逐条核对代码）
+
+| 编号 | 需求 | 状态 | 证据 / 缺口 |
+|---|---|---|---|
+| R1 | 六个分析工具常驻 | ✅ | `AgentLoopExecutorFactory.forAnalytics` 的 `residentTools` |
+| R2 | `forAnalytics` 接 `skillManager` | ✅ | `CapabilitySpec.analytics(skills=true)` → `assemble` |
+| R2-risk | 评测断言"必须调过 Skill" | ✅ | `core.yml` `sql-006`：`{type: tool_called, name: Skill}` |
+| R3 | 恢复不改变能力集 | ✅ | `ChatToolScopeRuntimeAdapter.resume` 从 `pausedParams` 取变体 |
+| R4 | 评测集中文重写、对齐八场景 | ✅ | `core.yml` 33 条，按 S1–S8 分节 |
+| R5 | 数据问题提示切换 | ✅ | `utils/dataQuestionHint.ts` + `ChatView` `looksLikeDataQuestion` |
+| R6 | 可重复性测得出**结果内容**不一致 | ⚠️ **部分** | `repro-001/002` 加了 `result_matches_reference`；`repro-003/004` 仍只有 `rounds_at_most` + `sql_contains_scope_filter`。断言类型里**没有跨运行比对**，一致性靠"每次都要匹配同一个 reference"间接达成 |
+| R7 | `executor failed: null` 补堆栈 | ✅ | `GoldenTaskRunner.java:90` `failure.getStackTrace()` |
+| R8 | 补齐 metrics | ✅ | `GoldenEvaluationService.java:188-198` |
+| R9 | 提示词一次性彻底清理，无未分类项 | ⚠️ **部分** | `LlmJudge`/`ContextCompactor`/`MemoryExtractor` 三处已走 `PROMPTS.text(...)`；`ToolSearchCallback` 属 §6.2 已登记豁免。**但 `ImageDescriptionService.DESCRIBE_PROMPT`（B11 新增）既没外置、也不在豁免清单**——B11 在 B6 之后上线，正是 R9 要防的那种漂移 |
+| R10 | `PromptRegistry` + 哈希漂移 WARN | ✅ | `PromptRegistry.warnOnDrift` / `verifyAgainst` + `versions.lock.yml` |
+| R11 | `prompt_stamps` 落 trace，非空才入链 | ✅ | `agent_trace.prompt_stamps` + 幂等 ALTER + `JdbcTraceStore.computeHash` |
+| R12 | Golden 变体目录 A/B 对照 | ✅ | `GoldenComparisonReport`，`-Dagenttrail.prompts.dir=prompts-variants/exp-a` |
+| R13 | 模式互斥逐轮可切 + `mode` 落库 | ⚠️ **部分且口径已变** | F6 交付的是**会话级** `agentKind` 存 **localStorage**（`chat.ts:91-118`）。`agent_session` 无 `mode` 列；锁定语义（`agentLocked`）与新模型冲突，需回退 |
+| R13a | `mode` 枚举化 + 未知值 400 | ❌ | `ChatApplicationService.java:54` 仍是 `"analytics".equals(mode)`，其余静默降级 |
+| R14 | 当前模式常驻可见标识 | ✅ | `AgentHeader.vue` |
+| R14a | 搜索开关只在普通对话出现 | ⚠️ **部分** | 数据分析下已禁用 + tooltip（`ChatView.vue:102-104`）；DR/PPT 下的形态待改 |
+| R15 | `ConversationDigest` | ✅ | `conversation/digest/ConversationDigest.java` + `Service` |
+| R16 | 图表要求数据有工具产出来源 | ✅ | `DataProvenancePolicy` + `chartProvenancePolicy` |
+| R17 | 钉住"跨轮历史不回放 `timeline`" | ❌ | `JdbcSessionStore.java:98` 行为本身正确，但**没有注释说明、没有回归断言**——契约仍是隐式的 |
+| R18 | `view_image` 视觉工具 | ✅ | `ViewImageTool`，`baseTools` 无条件挂载 |
+| R19 | DR/PPT 任务占 `agent_session` 一行 | ✅ | **已交付，机制与本文早先的设想不同**：不是 `mode` + `task_ref` 两列，而是 `CapabilityConversationService.record()` 写成一行——`question` + `answer` + `timeline` 里一条 `StageOutput{stage:"research"/"ppt", payload:<完整产物>}`。`ConversationHistoryService` 读 `timeline`，前端 `chat.ts:222-240` 据此重建 `ResearchReportCard`/`PptTaskCard`。`stage` 就是任务模式的按轮标记 |
+| R20 | 进行中的 DR 任务跨重启不再 404（**已收窄**，原判断有误） | ✅ | 原判断错在"报告不落库"——完成的报告本来就随 R19 那条 `timeline` 落进 `agent_session`。真正的口子是 `DeepResearchController` 的 `handles`/`publicIds` 全在内存里。已交付（#108）：`research_task` 表只存元信息（**不存正文，同一产物不存两处**），自增主键即 taskId 所以重启后不复用编号；`DeepResearchConfig` 的 `ApplicationRunner` 启动扫描把残留 RUNNING 标成"服务重启，任务已中断"；查不到内存句柄时回落查库，返回真实终态而不是 404。**明确不做续跑**——那要先把单体的 `research()` 拆成状态机 |
+| R21 | 文件绑定改显式 `fileIds` | ✅ | 已交付（#110）：`AgentChatRequest.fileIds` 走 `toolParams` 这条模型不可见通道；`buildFileSection` 口径收敛为「已绑定的 + 本轮传入的」；`linkFilesToTurn` 按 id 精确绑，SQL 带 `AND conversation_id = ? AND turn_id IS NULL`；新增 `TurnCommitter` 接缝把轮次落库与附件绑定包进同一事务（失去 sweep 的自愈后必需）。回滚行为已在**真实 MySQL** 上验证（`TransactionalTurnCommitterIT`） |
+| R22 | 模式级系统提示词 | ✅ | 已交付（#111）：`prompts/chat/system.md` + `prompts/analytics/system.md`，`CapabilitySpec.systemPromptId` → `Builder.systemPrompt(PromptDefinition)` → `assemble(text, …)`，**且 `stamp()` 计入 `agent_trace.prompt_stamps`**（验收后半句，端到端断言在 `AgentLoopExecutorPromptStampTest`）。内部编排子调用不挂（各自带任务提示词）。`CapabilitySystemPromptTest` 钉住"不编数字/没数据不画图/SOP 留给 Skill" |
+
+**汇总（2026-08-17 收工）**：✅ 20 条 · ⚠️ 部分 3 条（R6 / R9 / R14a）· ❌ 未做 0 条。
+
+> 当天新交付：R13a（#106）、R17（#107）、R20 收窄版（#108）、R21（#110）、R22（#111）；R19（#109）核实为早已交付、issue 已关。
+> 后端 730 通过、前端 70 通过；`JdbcSessionStoreIT` / `JdbcResearchTaskRecordStoreIT` / `TransactionalTurnCommitterIT` 均已在**真实 MySQL** 上实跑（`mvn test -Dtest=<IT名> -Dsurefire.failIfNoSpecifiedTests=false`）。
 
 ---
 
@@ -101,7 +136,7 @@ S2 是这套里技术含量最高、也最难被质疑成"提示词干的"的一
 |---|---|---|
 | 1. 删 `runtime/{task,outbox,coordinator,repository}`、`capability/fileqa`、`legacy/V0` + `agent_run*` 四张表 | ✅ **已完成**（2026-08-16） | `runtime/` 62 类 → 25 类，只剩端口契约和两个真实在用的存储；V0 的 HTTP 入口和 Spring 装配已删，`legacy/V0.java` 保留为不装配的参考实现；四张空表 DDL 从 `schema.sql` 和 `V1__init.sql` 同时移除 |
 | 2. 打破 `loop ↔ runtime` 包循环 | ✅ **已完成**（2026-08-16） | 方向单向化为 `loop → runtime`（实测 `loop → runtime` 8 处、`runtime → loop` 零），由 ArchUnit 钉死 |
-| 3. `Object... options` 位置槽 → `AgentDefinition` 驱动装配 | ✅ **做** | 分析执行器"装配残缺"（缺 skillManager/memoryStore/fileStore）正是位置槽 + `forXxx` 分支手工拼装的直接产物。能力包变成数据之后，R1/R2 这类问题从"某个分支忘了传"变成"配置里写没写" |
+| 3. `Object... options` 位置槽 → `AgentDefinition` 驱动装配 | ⚠️ **部分完成** | 分析执行器"装配残缺"（缺 skillManager/memoryStore/fileStore）正是位置槽 + `forXxx` 分支手工拼装的直接产物。**B5（#99）交付了前半段**：`CapabilitySpec` + 类型安全 `Builder`，四份复制的 builder 链合成一条。**后半段没做**：`AgentDefinition`/`AgentRegistry` 仍只被注释引用，`forModel`/`forAnalytics`/`forInternalOrchestration` 三个分支还在，`Object...` 构造留着 deprecated 给测试。"能力包变成数据"这个目标尚未达成 |
 | 4. 拆开 `runId` / `conversationId` | ⏸ 挂起 | 当前 `RunId.of(conversationId)`，一个会话只能有一个 run。DataAgent 单轮问答场景撞不到 |
 | 5. 提示词外置到 `resources/prompts/` 带版本号写进 trace | ✅ **做** | 直接服务 R4/R6 —— 没有提示词版本号，Golden 分数变化就回答不了"是改提示词变好还是变坏"。展开见 §6 |
 
@@ -125,7 +160,8 @@ Golden 评测要能回答"这次分数变化是提示词改动引起的吗"。�
 |---|---|---|
 | `prompts/ppt/` | `PptPrompts` 的 8 段 | 84 行 |
 | `prompts/deepresearch/` | `DeepResearchPrompts` 的 12 段 | 140 行 |
-| `prompts/analytics/` | **空** —— DataAgent 的业务提示词是 `skills/data-analysis/SKILL.md`，已经外置，走 Skill 通道 | — |
+| `prompts/analytics/` | `analytics.system` —— DataAgent 的**角色与边界**（数字只能来自工具、不自己写权限条件、只读、口径要说清）。**业务 SOP 不在这里**，仍是 `skills/data-analysis/SKILL.md` 走 Skill 通道（R2）| 1 段 |
+| `prompts/chat/` | `chat.system` —— 普通对话的角色与边界（没有数据库工具、不许编数字、引导切数据分析） | 1 段 |
 | `prompts/runtime/` | 跨能力的内部小模型调用，逐个点名：`ContextCompactor.SUMMARY_SYSTEM_PROMPT`（上下文压缩摘要）、`MemoryExtractor.EXTRACTION_SYSTEM_PROMPT`（记忆抽取）、`LlmJudge.SYSTEM_PROMPT`（评测判分） | 3 处 |
 
 **边界声明：`prompts/` 和 `skills/` 不合并。** Skill 是运行时可装卸、可由运营开关启停的能力单元（有 `agent_skill` 表、有 `Skill` 元工具、有渐进式披露语义）；prompt 是代码级资源，跟随构建产物。两者机制不同，强行统一会把 Skill 的运营能力拖进 prompt，或者把 prompt 的确定性拖进 Skill。
@@ -186,58 +222,125 @@ version: v3
 
 ### 7.1 三条设计原则
 
-1. **先分类再决策** —— 性质不同的能力不能共用一种交互语义。当前四个并排的模式按钮里，一个是独立 Agent、两个是异步任务、一个是工具开关，把它们做成同类可切换项是所有混乱的源头。
+1. **先分类再决策，但分类的落点是后端而不是交互层** —— 四个能力的执行协议确实不同（换执行器 / 异步任务 / 叠加工具），这个差异必须在后端如实建模。但它不该外化成用户要理解的层级：用户认知里"我要做什么"只有一个维度，所以交互层统一为一排互斥模式，协议差异下沉，由后端按 `mode` 分派。**入口统一 ≠ 协议统一。**
 2. **代码是硬边界，提示词是软约束** —— 两者都要有，但永远不用前者代替后者。已有实证：模型在没有数据库工具时**编造演示数据画成图表，画完才补一句"这是模拟数据"**，而提示词里明确写了"不要凭空推断"。
 3. **判定依据是会话状态，不是自然语言语义** —— 沿用 `PptIntentRecognizer` 和 DeepResearch 需求澄清已经踩过的坑（踩坑点 #52）：固定标记/状态优先，不做语义解析，判定成本低、行为可预测、能讲清楚依据。
 
-### 7.2 三层能力模型
+### 7.2 能力模型：交互一层，协议两类
 
-| 层 | 成员 | 本质 | 交互语义 |
-|---|---|---|---|
-| **Agent 层** | 普通对话、数据分析 | 换一套执行器：工具集不相交、轮次预算不同、安全边界不同 | **会话级绑定**，创建时确定，整个会话不可变 |
-| **任务层** | PPT 生成、深度研究 | 异步任务：提交即返回、后台状态机、产出 artifact | 任何会话、任何时刻可发起，**不影响当前会话的工具集** |
-| **开关层** | 联网搜索 | 往同一份工具列表里叠加工具 | 随时开关 |
-| （基线） | 文件读取 | 无条件挂载，不是模式 | 无需交互 |
+**交互层（用户看到的）**：一排互斥模式，同一时刻只能选一个，在同一个会话里随时可切。
+
+| 模式 | 执行协议 | 后端落点 |
+|---|---|---|
+| 普通对话 | SSE 单次流 | `/agent/v1/chat`，Runtime 基线执行器 |
+| 数据分析 | SSE 单次流 | `/agent/v1/chat` + `mode`，切 `forAnalytics` 执行器（工具集不相交、20 轮、失败止损） |
+| 深度研究 | **异步任务**：提交即返回、后台状态机、产出 artifact | `/agent/v1/deepresearch`，create + SSE + cancel |
+| PPT 生成 | **异步任务**，且可断点续跑、产物可下载 | `/agent/v1/ppt/*`，create + poll + cancel + resume + download |
+
+**选中语义**：模式一旦选中就保持，直到用户**手动取消或切到另一个模式**——不会因为发送了一条消息就复位（那正是 §7.5 第一条静默失败）。"取消"等价于切回普通对话。
+
+后端枚举里普通对话是一个**显式取值**（`chat`），不是 `null`：`null`（前端没传）和"未知值"（前端传错）必须能区分开，否则 R13a 的 400 判定无从下手。
+
+不属于模式的两样：
+
+| | 成员 | 说明 |
+|---|---|---|
+| **开关层** | 联网搜索 | **只在普通对话下是可切换的开关**，见下表 |
+| **基线** | 文件读取、看图 | 无条件挂载，无需交互 |
+
+**联网搜索与模式不正交**——四个模式各有各的关系，不是一个统一的叠加开关：
+
+| 模式 | 联网搜索 | 依据 |
+|---|---|---|
+| 普通对话 | **用户可开关** | 有隐私 / 成本上的权衡要留给用户决定 |
+| 数据分析 | **禁用** | `forAnalytics(String modelId)` 根本不接 `webSearchEnabled` 参数；DataAgent 明确"不复用文件/Shell 等其它工具"。前端已做禁用 + tooltip |
+| 深度研究 | **内建，非开关** | 整个 workflow 就是检索驱动的 |
+| PPT 生成 | **内建，非开关** | `capability/ppt/strategy/SearchStrategy` 固定两个互补角度收集素材喂给 `OUTLINE` 状态，关掉就没有素材 |
+
+所以搜索开关**只在普通对话下出现**。在 DR/PPT 下把它渲染成"已开启的开关"是错的——那暗示用户可以关掉，而关掉这两个模式压根跑不起来。
 
 ```mermaid
 flowchart TB
   subgraph S["一个会话（conversationId）"]
-    A["Agent 层：普通对话 | 数据分析<br/>创建时确定，不可变"]
-    B["开关层：联网搜索<br/>随时切"]
+    direction TB
+    M["互斥模式（逐轮可切，随 mode 落库）<br/>普通对话 | 数据分析 | 深度研究 | PPT"]
+    B["开关层：联网搜索（与模式正交）"]
   end
-  T1["PPT 任务"]
-  T2["深度研究任务"]
-  S -- "ConversationDigest（纯文本摘要）" --> T1
-  S -- "ConversationDigest（纯文本摘要）" --> T2
-  T1 -- "结果卡片" --> S
-  T2 -- "结果卡片" --> S
+  M -- "SSE 单次流" --> R["Runtime 执行器<br/>（普通对话 / 数据分析）"]
+  M -- "create + poll/SSE" --> T["异步任务链路<br/>（深度研究 / PPT）"]
+  T -- "task_ref 回写 agent_session" --> S
 ```
 
-**需要"换会话"的只有 Agent 层，且当前只有数据分析一个。** PPT 和深度研究本来就不共享执行器和消息历史，给它们加会话绑定是多余约束。
+**协议不统一是刻意的。** SSE 单次流承载不了"刷新页面还能看到进度""断点续跑""产物下载"，PPT 已有的 `ppt_generation_task` checkpoint 机制不能为了入口统一而丢掉。用户看到的是一排模式，后端按 `mode` 分派到两类协议——这一层映射由前端的 `mode → api` 表承担，**不引入统一调度层**（见 §5 减法原则）。
 
-### 7.3 为什么 Agent 层必须会话级绑定
+**切换模式要重新装载三样东西，其中两样已经是了，一样还不存在**：
 
-这不是产品偏好，是安全边界的下游推论，推导链条如下：
+| | 现状 | 结论 |
+|---|---|---|
+| 工具集 | ✅ 每轮按 `mode` 选执行器变体（`forModel` / `forAnalytics` / 任务链路各自的装配），选择动作每轮都发生 | 不用改 |
+| 上下文 | ✅ 每轮 `loadHistory(conversationId, budget)` 从 DB 重建，内存不跨轮保留；且天然只有 `question`/`answer`（§7.3） | 不用改 |
+| 系统提示词 | ❌ **模式级的那一层压根不存在** | 见下，R22 |
+
+**系统提示词的现状**：`AgentLoopExecutor` 每轮只拼三条 SystemMessage——`buildDateSection()`（当天日期）、`buildMemorySection(userId)`（按用户）、`buildFileSection(conversationId)`（按会话）。**三条都与 `mode` 无关**。随后 `contextAssembler.assemble(null, messages, ...)` 的 `systemPrompt` 参数**传的是 `null`**（`ContextAssembler.java:12`）。
+
+也就是说，四个模式共用同一套空的系统提示词骨架，唯一区别是工具列表和几个数值参数。**没有任何"你是什么 Agent、你的边界是什么、该怎么用这些工具"的角色提示词。**
+
+**后果不是理论上的**：DataAgent 的行为指导全部寄托在 Skill 的 SOP 上，而 Skill 由模型自己决定调不调（R2-risk 的"调用率待实测"就是这个）。模型不调 Skill，数据分析模式下就只剩一组工具、零行为约束。§7.5 那条实测到的失败——**有图表工具、没有 SQL 结果，就编数据画图**——正是这个缺口：工具集这道硬边界防住了"调不到 SQL"，防不住"拿图表工具画假数据"，后者要提示词层，而提示词层是空的。R16 是在用代码一个洞一个洞地补。
+
+**补的时候要分两层，别混，否则会不小心推翻 R2**：
+
+- **模式级**——角色定位、能力边界、可用工具说明。**新增**，随执行器装载，走 §6 的外置提示词 Registry，标识进 `prompt_stamps`
+- **任务级 SOP**——"这类任务按什么套路做"，**保持现状**，仍走 `Skill` 元工具按需加载（R2）
+
+R2 选 Skill 通道是带取舍记录的决策，留了退回常驻的退路。`mode` 带来的是模式级这一层，**不是对 R2 的推翻**——真要把 SOP 退回常驻，依据得是 R2-risk 那个实测指标，不是这次的入口改动。
+
+### 7.3 跨轮历史本来就不带 `tool_calls`——要做的是把这条隐式契约钉死
+
+安全边界不变，推导链的前三步仍然成立：
 
 1. DataAgent **绝不能挂 Bash** —— 实测过模型会绕开 SQL 安全校验、权限改写、脱敏整套工具栈，直接用 Bash 连库跑探测查询（踩坑点 #29，真实教训）
 2. 这条边界成立 → 基线工具集不可能是全集
 3. 基线不是全集 → "模式"就等于换一套执行器，而不是额外激活一条子链路
-4. 换执行器 → 工具集在会话内变化 → 消息历史里的 `tool_calls` 会指向当前不存在的工具
-5. ∴ 工具集必须在会话内稳定
 
-对照：ChatGPT 那类单会话动态挂载能成立，是因为它的基线是全集、工具彼此同质轻量，"模式"只是额外激活。**约束不同，结论不同。**
+第 4 步是原方案（会话级绑定）要防的故障：
+
+4. 换执行器 → 工具集在会话内逐轮变化 → 若历史按原结构回放，**`tool_calls` 会指向当前这一轮不存在的工具**
+
+**但这个故障在当前实现里不存在。** `JdbcSessionStore.loadHistory`（`JdbcSessionStore.java:98`）只 SELECT 两列：
+
+```java
+.query((rs, rowNum) -> new TurnSummary(rs.getString("question"), rs.getString("answer")))
+```
+
+`timeline` 列（工具调用时间线 JSON）落库了，但**从来不读回来**。跨轮历史重建出的就是纯粹的 UserMessage / AssistantMessage 对，压根没有 `tool_calls` 结构。`tool_call` / tool result 消息只存在于**单轮 ReAct 循环内部**，那一轮结束就随之消失（暂停恢复用的 `PauseState` 也只在轮内）。
+
+∴ **工具集的稳定作用域天然就是"一轮"**，不需要会话级绑定，也不需要新造压平机制。
+
+**真正的风险是这条契约没有被声明。** 现在没有任何地方写着"`loadHistory` 不读 `timeline` 是安全前提"，而"让模型看到自己上一轮查了什么"是个非常自然的优化想法。谁哪天顺手把 `timeline` 读回来，第 4 步立刻成真，且只在切过模式的会话里复现——典型的静默失败形状。
+
+**所以 R17 是钉住，不是新建**：在 `loadHistory` 上写明这条约束和理由，加一条回归断言。成本是几行，不是一套机制。
+
+| | 保住了 | 付出了 |
+|---|---|---|
+| 安全边界 | DataAgent 仍然不挂 Bash；每一轮的工具集仍严格由 `mode` 确定 | 无 |
+| 协议正确性 | 任一轮发给模型的历史里，不存在指向当前工具集之外的 `tool_call_id` | 模型看不到历史轮次的工具调用细节（现状即如此） |
+| 体验 | 切模式不用新建会话，上下文天然延续 | 无 |
+
+对照：ChatGPT 那类单会话动态挂载能成立，是因为它的基线是全集、工具彼此同质轻量。本项目基线不是全集，但因为历史本来就只回放问答文本，同样不需要给用户加"换模式要开新会话"的约束。**约束不同，路径不同，结论可以一样。**
+
+> **修订说明（2026-08-17）**：本节初稿沿用了原 §7 的推导，直接把第 4 步当成既成事实，并据此设计了一套"跨模式历史压平"机制。核实 `loadHistory` 实现后发现该故障当前并不存在，机制随之取消，R17 改为钉住现有行为。原推导之所以站不住，是因为它从"消息历史里有 `tool_calls`"这个一般性认知出发，没有核对本项目的落库与回放口径。
 
 ### 7.4 ConversationDigest：跨边界的唯一通道
 
-跨越 Agent 边界或进入任务链路时，传递的是**压缩后的纯文本摘要**，不是消息历史。
+跨越模式边界或进入任务链路时，传递的是**压缩后的纯文本摘要**，不是消息历史。
 
-理由：摘要是**数据**，消息历史是**可执行的调用记录**。历史里带 `tool_calls` 结构，跨到工具集不同的一侧就会失效；纯文本没有这个问题。这让 7.2 的"任务不影响会话工具集"和"任务能读到上下文"同时成立——任务消费的是会话的**内容**，不是会话的**执行状态**。
+理由：摘要是**数据**，消息历史是**可执行的调用记录**。历史里带 `tool_calls` 结构，跨到工具集不同的一侧就会失效；纯文本没有这个问题。这让"每一轮的工具集严格由 `mode` 确定"和"跨模式仍能读到上下文"同时成立——消费的是会话的**内容**，不是会话的**执行状态**。§7.3 的跨模式历史压平就是这条规则在轮次级的应用。
 
 一个机制，三个消费方：
 
 | 消费方 | 解决什么 |
 |---|---|
-| 换 Agent 时"基于当前会话新建" | 会话级绑定的体验代价 |
+| 换模式时"基于当前会话新建"（若用户主动选择） | 可选路径。同会话内切模式已由 §7.3 覆盖（历史本就只回放问答文本），这条只服务"我想开一个干净的会话但带上前情"的场景 |
 | 发起 PPT / 深度研究任务 | 「根据前面的会话帮我生成 PPT」现在拿不到任何上下文——`PptGenerationContext.initial(conversationId, userMessage)` 只收到那一句话，`conversationId` 仅作分组键 |
 | 恢复被中断的会话 | 与 R3 同源 |
 
@@ -253,7 +356,8 @@ flowchart TB
 
 | 缺口 | 现状 | 堵法 |
 |---|---|---|
-| 模式一次性复位 | `ChatView.vue` 发送后 `pendingMode = undefined`，用户追问必然掉出模式且毫不知情 | Agent 层改为会话级绑定后自然消失；当前 Agent 做成**常驻可见标识**，不是"下一条消息将使用 XX"这种一次性提示 |
+| ~~模式一次性复位~~ | ~~`ChatView.vue` 发送后 `pendingMode = undefined`~~ | **已由 F6（#92）修复并上线**：`chat` store 持有会话级 `agentKind`，`ChatView.vue:153` 不再复位，`AgentHeader` 常驻标识。**遗留**：`agentKind` 存在 localStorage（`readAgentKinds`/`persistAgentKind`），换浏览器就丢，历史回放也读不到——R13 要求的 `agent_session.mode` 落库仍未做 |
+| `mode` 未知值静默降级 | `ChatApplicationService.java:54` 是 `"analytics".equals(mode)`，其余取值（含 null、含拼错的 `"Analytics"`）一律按普通聊天跑完，不报错 | `mode` 改枚举，未知值直接 400。取值从 1 个扩到 4 个之后，静默降级会变成很难查的线上问题 |
 | 没有数据源就编数据 | 模型编造演示数据画图，事后才坦白 | 图表工具要求数据有**工具产出来源**（SQL 结果 / 上传文件 / 用户粘贴），拿不到来源就拒绝并说明。提示词同时写，但硬约束在代码 |
 | 开关摆设 | 数据分析模式下联网搜索开关被后端静默忽略 | 前端已做禁用 + tooltip，保持 |
 
@@ -261,8 +365,9 @@ flowchart TB
 
 | 决策 | 防住的故障 | 接受的代价 |
 |---|---|---|
-| Agent 层会话级绑定 | 历史里的 `tool_calls` 指向不存在的工具；用户在不知情的模式下提问 | 换 Agent 要开新会话 |
-| 任务层不绑定会话 | 给异步任务加多余约束 | 无 |
+| 模式互斥、逐轮可切、随轮落库 | 用户在不知情的模式下提问（模式静默复位） | 历史回放要按 `mode` 渲染卡片 |
+| 钉住"跨轮历史只回放 question/answer" | 将来有人把 `timeline` 读回历史，导致 `tool_calls` 指向当前轮不存在的工具 | 模型看不到历史轮次的工具调用细节（现状即如此） |
+| 交互统一、协议分两类 | 为统一入口而丢掉 PPT 的 checkpoint / 续跑 / 下载 | 前端要维护一张 `mode → api` 映射表 |
 | 跨边界只传摘要 | 调用记录跨执行器失效 | 摘要有信息损失 |
 | 触发按会话状态 | 语义解析判错且用户无从纠正 | 表达能力弱于自然语言理解 |
 | 图表需数据来源 | 编造数据当真实结果输出 | 用户手动粘贴数据的路径要显式支持 |
@@ -272,9 +377,13 @@ flowchart TB
 
 **30 秒版：**
 
-> 我一开始是四个模式平铺，跑起来发现用户会在一个会话里来回切，模型看到历史里有当前不存在的工具。回头分析才意识到这四个东西性质根本不同：一个是独立 Agent、两个是异步任务、一个是工具开关。按性质分层之后，需要会话级绑定的只剩数据分析一个——因为只有它换执行器。而它必须换执行器，是因为 DataAgent 不能挂 Bash：我实测过模型会绕开整套安全工具栈直接用 Bash 连库。
+> 我一开始是四个模式平铺、发送后自动复位，跑起来发现用户追问时会静默掉出模式，模型没有数据库工具就开始编数据画图。回头分析，我把两个问题混成了一个：一是模式不该是一次性的，二是换执行器会让历史里的 `tool_calls` 指向当前不存在的工具。第一版方案是"模式做成会话级绑定"，一刀切死，两个问题一起解决，代价是换模式必须开新会话。
+>
+> 后来重新拆的时候，我回去核对了第二个问题到底怎么发生——结果发现**它在我自己的实现里根本不成立**：我的跨轮历史重建只 SELECT `question` 和 `answer` 两列，工具调用时间线虽然落了库但从来不读回来，历史本来就是纯问答文本。也就是说，我用一个很重的产品约束（换模式要开新会话），去防一个我的代码结构已经天然防住的故障。
+>
+> 所以最后的做法是：模式改成会话内可自由切，而那条"历史不回放工具调用"的隐式契约，加注释和回归测试钉死——因为"让模型看到自己上一轮查了什么"是个很自然的优化想法，谁哪天顺手加上，这个故障立刻就真了。
 
-这套讲法的力量在于**展示"先分类再决策"，并且承认第一版做错了**，而不是声称自己的方案是业界标准。
+这套讲法的力量在于**承认自己曾经为一个没核实过的假设付了设计代价，并且是靠回读实现纠正的**——比"我的方案是业界标准"有说服力得多。它同时展示了两种能力：能推导约束，也能回头验证约束是不是真的存在。
 
 **三个必然被追问的：**
 
@@ -282,7 +391,8 @@ flowchart TB
 |---|---|
 | 「提示词里禁止用 Bash 不就行了？」 | 提示词是软约束。这是 ReAct 不是 Workflow。现成证据：模型在提示词明确要求"不要凭空推断"的情况下，照样编数据画了图 |
 | 「OpenAI 的 code interpreter 也能跑任意代码，人家怎么不怕？」 | 威胁模型不同。他们跑在一次性沙箱里，沙箱里没有生产库连接；我的风险是**越权读到别的部门的数据**，不是沙箱逃逸 |
-| 「会话级绑定体验差吧？」 | 承认代价，给缓解（基于当前会话新建 + 摘要）。再补一句：现状下这个流程本来也不 work，PPT 链路读不到聊天历史 |
+| 「模型看不到自己上一轮查了什么，不影响效果吗？」 | 上一轮的**结论**在 `answer` 里，模型看得到；看不到的是 SQL 和中间结果。真需要复现细节时用户会重新问，那时重跑一次比让模型基于陈旧的调用记录臆测更可靠。这也不是这次改的——现状即如此，我只是把它变成有意识的约束 |
+| 「那你怎么防止以后有人把 `timeline` 读回来？」 | 注释写清理由 + 一条回归断言：构造"数据分析轮 → 切普通对话追问"，断言历史里不含任何 `tool_call_id`。把隐式契约变成会变红的测试，这是唯一可靠的办法 |
 
 **前提：先改再讲。** 现在的状态是这套叙事的反面证据——面试官动手点两下就能看到模式静默复位和编造数据。叙事和实现必须先对上。
 
@@ -307,14 +417,23 @@ flowchart TB
 
 ### 7.9 需求条目
 
+> **交付状态见 [§2.1](#21-需求交付状态2026-08-17-逐条核对代码) 的统一清单**（R1–R22 逐条核对）。本节只写"要什么"。
+> 注意 R13/R17 的表述已按 §7.2/7.3 重写，与 F6/F7 上线时的口径不同——回退范围见 §11。
+
 | 编号 | 需求 | 验收 |
 |---|---|---|
-| R13 | Agent 层（普通对话 / 数据分析）会话级绑定，创建时确定、会话内不可变 | 同一 `conversationId` 下所有轮次的执行器变体一致 |
-| R14 | 当前 Agent 做成常驻可见标识 | 任意时刻用户都能看到自己在哪个 Agent 下 |
+| R13 | 四个模式互斥、逐轮可切；`mode` 由前端每轮显式传，并落库到 `agent_session.mode`（**现状：存在前端 localStorage，换浏览器丢、历史回放读不到**） | 同一会话内切过模式后刷新页面，历史各轮仍按其原 `mode` 正确渲染 |
+| R13a | `mode` 改枚举，未知值返回 400，不再静默降级 | 传未注册的 `mode` 值返回 400，而不是按普通聊天跑完 |
+| R14 | 当前模式做成常驻可见标识，**保持到用户手动取消或切到另一个模式**，绝不因发送而自动复位 | 任意时刻用户都能看到自己在哪个模式下；连发多条追问，每条的 `mode` 都一致 |
+| R14a | 联网搜索开关只在普通对话下出现；数据分析下禁用，深度研究 / PPT 下不渲染为开关（内建必需） | 切到数据分析，搜索开关不可点且有说明；切到 DR/PPT，界面上没有这个开关 |
 | R15 | `ConversationDigest` 机制：跨 Agent / 进任务链路时传压缩摘要，触发按会话状态判定 | 「根据前面的会话生成 PPT」能拿到上下文；trace 里有消费记录 |
 | R16 | 图表工具要求数据有工具产出来源，无来源拒绝并说明 | 构造"无数据源要求作图"的用例，断言不出现编造数字 |
-| R17 | PPT / 深度研究从"模式"改为"任务"，UI 上不与 Agent 切换并排 | 三层在界面上可区分 |
+| R17 | 把"跨轮历史只回放 `question`/`answer`、不回放 `timeline`"从隐式实现升格为**显式契约**：`loadHistory` 上写明约束与理由，并加回归断言 | 构造「数据分析轮 → 切普通对话追问」用例，断言发给模型的历史里不含任何 `tool_call_id`；有人把 `timeline` 读回来时测试必须变红 |
 | R18 | 新增 `view_image(file_id, question)` 工具：带用户具体问题重新调视觉模型看原图；文件读取保持在基线层，主对话模型不换 | 构造"描述里没覆盖的细节"提问，断言能答对且不编造 |
+| ~~R19~~ | ~~深度研究 / PPT 任务在 `agent_session` 占一行~~ | **已交付**（2026-08-17 核对发现）。走的是 `timeline` 里的 `StageOutput`，不是 `mode`+`task_ref` 两列——效果等价且不用加列，`stage` 兼任按轮的模式标记。原条目基于"DR/PPT 产物不在 agent_session 里"的错误前提，作废 |
+| R20 | 进行中的 DR 任务跨重启不再 404（**收窄**：已完成的报告本来就随 `timeline` 落库，不是缺口）。只持久化元信息 + 启动扫描给诚实终态，**不做续跑** | 重启后查一个曾经 RUNNING 的任务，返回 `FAILED: 服务重启，任务已中断，请重新发起`，不是 404；taskId 不复用 |
+| R21 | 文件绑定改为发送时显式传 `fileIds`，模型可见性口径同步收敛为"已绑定的 + 本轮传入的" | 上传后不发送就切走，下一轮的系统提示词里不出现该文件。详见 [`specs/session-turn-model.md`](specs/session-turn-model.md) §1 |
+| R22 | 新增**模式级系统提示词**：每个 `mode` 一份角色/边界/工具用法说明，随执行器装载，走 §6 外置 Registry 并计入 `prompt_stamps`。当前 `ContextAssembler.assemble` 的 `systemPrompt` 参数恒为 `null`，四个模式共用空骨架 | 每个模式各构造一条用例，断言其系统提示词首条 SystemMessage 含该模式的角色说明，且 `prompt_stamps` 记到对应 id@version#hash |
 
 ---
 
@@ -346,8 +465,10 @@ flowchart TB
 | trace 哈希链 | 非空才入链 | 没选"直接入链接受存量失效"，也没选"不入链" —— 前者让存量会话校验全红，后者让这个字段不受审计保护 |
 | AB 实验 | 只做离线对照 | 没做线上分流：流量是开发者本人，分流出不了统计结论，做了是摆设 |
 | 工具 description | 不纳管 | 保持工具定义完整；代价是描述调优仍要改代码 |
-| 能力入口形态 | 三层模型（Agent / 任务 / 开关） | 没选"四个模式平铺"（现状，性质不同的东西共用一种语义），也没选"全部独立拆分"（给异步任务加多余约束） |
-| Agent 切换粒度 | 会话级绑定 | 没选消息级激活 —— 那要求基线工具集是全集，与 DataAgent 不能挂 Bash 的硬边界冲突 |
+| 能力入口形态 | 交互统一为一排互斥模式，协议分两类（SSE 流 / 异步任务） | 没选"按性质分三层、做成三种交互"（把后端协议差异外化成用户要理解的层级）；也没选"协议跟着统一"（会丢掉 PPT 已有的 checkpoint / 续跑 / 下载） |
+| 模式切换粒度 | 轮次级，模式保持到用户显式切换 | 没选会话级绑定 —— 它用一个粗约束同时盖住"模式静默复位"和"`tool_calls` 跨执行器失效"两个问题，代价是换模式要开新会话。改为两个问题各自对症解决（§7.3） |
+| 跨模式历史 | 压平为纯文本，同模式照常结构化回放 | 没选"基线挂全集所以不用换执行器" —— 与 DataAgent 不能挂 Bash 的硬边界冲突（踩坑点 #29） |
+| 异步任务的会话可见性 | 在 `agent_session` 占一行，只存 `task_ref`，状态回查任务表 | 没选"状态也复制一份" —— 异步任务上双写状态的不一致不是可能发生而是必然发生（kill / cancel 打在两次写之间 / resume 续跑） |
 | 跨边界传递 | 只传纯文本摘要 | 没选传消息历史 —— `tool_calls` 结构跨到工具集不同的一侧就失效 |
 | 上下文引用的触发 | 按会话状态判定 | 没选语义识别"根据前面的会话" —— 沿用踩坑点 #52 的既有结论 |
 
@@ -356,7 +477,10 @@ flowchart TB
 ## 10. 开放问题
 
 - §3.2 的八个场景需要各配 1–3 条中文 fixture，具体条目待逐条过一遍（R4 落地时定）
-- ~~R5 的"路由兼容"在哪一层判断~~ → 已由 §7 回答：不做意图路由，按三层模型 + 会话状态判定。R5 的"提示切换"仍保留，用关键词不用 LLM
+- ~~R5 的"路由兼容"在哪一层判断~~ → 已由 §7 回答：不做意图路由，模式由用户显式选、按会话状态判定。R5 的"提示切换"仍保留，用关键词不用 LLM
+- R21 的两个附属决定（见 [`specs/session-turn-model.md`](specs/session-turn-model.md) §1.8/1.9）：`agent_file` 要不要补 `status` + `error_code` 两列（不补则兜不住"发送时文件还在解析/解析失败"）；上传了从没发送过的孤儿行怎么清
+- **`ImageDescriptionService.DESCRIBE_PROMPT` 归哪一类**（2026-08-17 核对发现）：它是 B11 在 B6 提示词清理**之后**新增的，既没进 `resources/prompts/`，也没进 §6.2 豁免清单，处于 R9 明令禁止的"第三种状态"。要么外置为 `prompts/runtime/image_description.md`，要么写进豁免清单说明理由。**顺带暴露一个流程缺口**：R9 是一次性清理，没有任何机制阻止新增的提示词绕过登记——是否要加一条 ArchUnit 或构建期检查，待定
+- `file-001`/`file-002` 的 `tool_called failed: read_file`：生产工具名是 `load_file_content`，疑为 fixture 写错工具名而非能力缺陷，需跑一次确认后修 `file.yml`
 - 意图路由（Agent as Tool 形态）留到 Phase 8 SubAgent 机制就位后再评估，届时路由的落点是 `AgentDefinition` 而不是 `forXxx` 分支
 - R2 的 `Skill` 调用率需要实测数据才能决定是否退回常驻方案 —— 第一轮评测就要记这个指标
 - 演示环境是本机还是部署一套，取决于面试形式，暂不决策（不影响本期开发）
@@ -382,14 +506,22 @@ flowchart TB
 | B9 | [#103](https://github.com/renjian-pro/AgentTrail/issues/103) | R15（ConversationDigest） | — |
 | B10 | [#104](https://github.com/renjian-pro/AgentTrail/issues/104) | R16（图表需数据来源） | — |
 | B11 | [#105](https://github.com/renjian-pro/AgentTrail/issues/105) | R18（view_image 视觉工具） | — |
+| B12 | [#106](https://github.com/renjian-pro/AgentTrail/issues/106) | R13a（mode 枚举化 + 未知值 400） | — |
+| B13 | [#107](https://github.com/renjian-pro/AgentTrail/issues/107) | R17（钉住 loadHistory 契约） | — |
+| B14 | [#108](https://github.com/renjian-pro/AgentTrail/issues/108) | R20（ResearchArtifactStore 落库） | — |
+| B15 | [#109](https://github.com/renjian-pro/AgentTrail/issues/109) | R19（任务占 agent_session 一行） | **B14** |
+| B16 | [#110](https://github.com/renjian-pro/AgentTrail/issues/110) | R21（文件绑定改显式 fileIds） | — |
+| B17 | [#111](https://github.com/renjian-pro/AgentTrail/issues/111) | R22（模式级系统提示词） | — |
 
 ### 前端
 
-| 票 | issue | 覆盖需求 | 依赖 |
-|---|---|---|---|
-| F6 | [#92](https://github.com/renjian-pro/AgentTrail/issues/92) | R13 + R14（会话级绑定 + 常驻标识） | — |
-| F7 | [#93](https://github.com/renjian-pro/AgentTrail/issues/93) | R17（三层视觉分组） | F6 |
-| F8 | [#94](https://github.com/renjian-pro/AgentTrail/issues/94) | R5（数据问题引导卡片） | F6 |
+| 票 | issue | 覆盖需求 | 依赖 | 状态（2026-08-17 §7 修订后） |
+|---|---|---|---|---|
+| F6 | [#92](https://github.com/renjian-pro/AgentTrail/issues/92) | R13 + R14 | — | **已交付**。R14（常驻标识）保留；R13 改为轮次级后，**需回退**"首条消息后锁定"（`agentLocked`），并把 `agentKind` 从 localStorage 迁到 `agent_session.mode` |
+| F7 | [#93](https://github.com/renjian-pro/AgentTrail/issues/93) | R17（旧口径：三层视觉分组） | F6 | **已交付，需回退**：上线的是"PPT／深度研究从模式 chip 改为动作按钮（无 active 态）"，与新模型正好相反——四个能力现在就是一排互斥模式。R17 已改写为后端的 `loadHistory` 契约钉死，与前端无关 |
+| F8 | [#94](https://github.com/renjian-pro/AgentTrail/issues/94) | R5（数据问题引导卡片） | F6 | **已交付**，不受影响 |
+
+> **B1–B11 / F6–F8 全部已 closed 并上线**（截至 2026-08-17）。§7 这次修订**不是给未开工的票改范围，是要回退 F6/F7 已上线的两处行为**：模式锁定、以及 PPT/深度研究的"动作按钮"形态。代价见 [`specs/frontend-capability-model/`](specs/frontend-capability-model/frontend-capability-model-tickets.md) 顶部。
 
 ### 建议起手顺序
 

@@ -248,6 +248,39 @@ CREATE TABLE IF NOT EXISTS ppt_generation_task
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT 'PPT 生成状态机任务：status/error_msg 是按状态粒度的断点续传 checkpoint';
 
+-- 深度研究任务的元信息（issue #108 / R20）。
+--
+-- **刻意不存报告正文。** 完成的报告随 CapabilityConversationService 落进 agent_session.timeline
+-- （StageOutput{stage:"research", payload:<报告>}），前端历史回放读的就是那一份；在这里再存一份
+-- 就是把同一个产物存两处，两份必然漂移。
+--
+-- 这张表解决的是另一件事：DeepResearchController 的 handles/publicIds 原本全在内存里，应用一重启，
+-- 进行中的任务就查不到了——前端轮询拿到 404，而 404 的语义是"从来不存在"，和事实正好相反。
+-- 自增主键同时充当对外的 taskId，重启后不会像原来那个 AtomicLong 一样从 0 重来、复用旧编号。
+--
+-- 和 ppt_generation_task 的区别：那张表的 status + context_json 合起来是断点续传的 checkpoint，
+-- 能真的从中断处继续；这张表只记元信息，**不支持续跑**。DeepResearchService#research 是一次不带
+-- checkpoint 的单体调用，要续跑得先拆状态机，那是另一个量级的工作。启动时把残留的 RUNNING 一律
+-- 标成 FAILED（见 ResearchTaskRecordStore#markRunningAsInterrupted），给用户一个诚实的终态。
+
+CREATE TABLE IF NOT EXISTS research_task
+(
+    id               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键，同时是对外的 taskId；自增保证重启后不复用编号',
+    user_id          VARCHAR(100) NULL COMMENT '发起人，查询与取消都要做归属校验',
+    conversation_id  VARCHAR(100) NOT NULL COMMENT '发起这个任务的会话标识',
+    question         LONGTEXT     NOT NULL COMMENT '用户的原始提问，用于列表展示和排查',
+    status           VARCHAR(20)  NOT NULL COMMENT 'RUNNING / SUCCESS / FAILED / CANCELLED',
+    error_msg        LONGTEXT     NULL COMMENT '失败原因；成功或进行中为 NULL',
+    created_at       BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
+    updated_at       BIGINT       NOT NULL COMMENT '最近一次状态推进的时刻（epoch millis）',
+    PRIMARY KEY (id),
+    -- "我当前有哪些研究在跑"走这个索引；启动扫描按 status 全表更新，量级很小，不额外建索引
+    KEY idx_research_task_user (user_id),
+    KEY idx_research_task_conversation (conversation_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT '深度研究任务元信息（报告正文在 agent_session.timeline，不在这里）';
+
 -- 用户体系采用五张标准 RBAC 表：用户与部门多对多，角色上的 data_scope 决定后续
 -- 数据分析能力包能看到的范围。认证 token 不把权限事实复制到 token 内，角色变更可以即时生效。
 CREATE TABLE IF NOT EXISTS sys_dept

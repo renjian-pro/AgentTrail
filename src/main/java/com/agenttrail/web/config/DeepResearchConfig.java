@@ -96,9 +96,51 @@ public class DeepResearchConfig {
         return new InMemoryRunEventStore();
     }
 
+    /**
+     * 工作流步骤之间交接报告用，**只活在一次运行内部**（`DeepResearchWorkflow` save → find）。
+     * 完成的报告由 {@code CapabilityConversationService} 落进 {@code agent_session.timeline}，
+     * 历史回放读的是那一份，所以这里没必要落库（issue #108 讨论后的结论）。
+     */
     @Bean
     public ResearchArtifactStore deepResearchArtifactStore() {
         return new InMemoryResearchArtifactStore();
+    }
+
+    /**
+     * 任务元信息（issue #108 / R20）。配了数据源就落库，否则退化成内存——后者只是让不带
+     * 数据库的装配能启动，它当然不解决"重启后 404"那个问题。
+     */
+    @Bean
+    public com.agenttrail.capability.deepresearch.ResearchTaskRecordStore researchTaskRecordStore(
+            org.springframework.beans.factory.ObjectProvider<javax.sql.DataSource> dataSource) {
+        javax.sql.DataSource resolved = dataSource.getIfAvailable();
+        return resolved == null
+                ? new com.agenttrail.capability.deepresearch.InMemoryResearchTaskRecordStore()
+                : new com.agenttrail.capability.deepresearch.JdbcResearchTaskRecordStore(resolved);
+    }
+
+    /**
+     * 启动扫描：把上一个进程留下的 RUNNING 记录一律标成"被重启打断"（issue #108 / R20）。
+     *
+     * <p>进程都没了，那些任务不可能再自己推进——留着 RUNNING 会让前端一直轮询一个永远不会变的
+     * 状态，比 404 更难判断。这里给出一个诚实的终态，用户看得懂发生了什么、也知道该重新发起。
+     *
+     * <p>**明确不做续跑**：{@code DeepResearchService#research} 是一次不带 checkpoint 的单体调用，
+     * 要做到 PPT 那种"凭 taskId 继续"得先把它拆成状态机，是另一个量级的工作。
+     *
+     * <p>单实例部署下这个全表扫描是安全的。将来真要多实例，得先有实例标识或租约才能判断
+     * "这条 RUNNING 是不是我的"，否则一个实例启动会把另一个实例正在跑的任务标成失败。
+     */
+    @Bean
+    public org.springframework.boot.ApplicationRunner researchTaskRestartSweeper(
+            com.agenttrail.capability.deepresearch.ResearchTaskRecordStore records) {
+        return args -> {
+            int interrupted = records.markRunningAsInterrupted();
+            if (interrupted > 0) {
+                org.slf4j.LoggerFactory.getLogger(DeepResearchConfig.class)
+                        .info("启动扫描：{} 个深度研究任务被上次重启打断，已标记为失败", interrupted);
+            }
+        };
     }
 
     @Bean

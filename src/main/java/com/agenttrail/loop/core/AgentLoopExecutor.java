@@ -5,6 +5,7 @@ import com.agenttrail.loop.context.ContextPolicy;
 import com.agenttrail.loop.context.MessageRendering;
 import com.agenttrail.capability.file.FilePromptFormatter;
 import com.agenttrail.capability.file.FileStore;
+import com.agenttrail.capability.file.UploadedFile;
 import com.agenttrail.loop.hook.AgentHooks;
 import com.agenttrail.loop.hook.HookContext;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
@@ -15,6 +16,7 @@ import com.agenttrail.loop.memory.MemoryStore;
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.loop.model.ToolParams;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.pause.PauseReason;
@@ -24,6 +26,7 @@ import com.agenttrail.loop.pause.ResumeInstruction;
 import com.agenttrail.loop.pause.SafePoint;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;
+import com.agenttrail.loop.prompt.PromptDefinition;
 import com.agenttrail.loop.security.DataProvenancePolicy;
 import com.agenttrail.loop.security.PiiMasker;
 import com.agenttrail.loop.security.PromptInjectionGuard;
@@ -171,6 +174,19 @@ public class AgentLoopExecutor {
     private final DataProvenancePolicy dataProvenancePolicy;
     private final RuntimeProfile runtimeProfile;
     private final ContextAssembler contextAssembler;
+    /**
+     * 模式级系统提示词（issue #111 / R22）；null 表示不挂，行为与本机制上线前一致。
+     *
+     * <p>存 {@link PromptDefinition} 而不是光存正文：{@code stamp()} 要跟着落进
+     * {@code agent_trace.prompt_stamps}，不然 Golden 分数变化就归因不到"这轮用的哪版角色提示词"，
+     * 而那正是 issue #101 建这一列的全部理由。正文和 stamp 同源，也就不会各自漂移。
+     */
+    private final PromptDefinition systemPrompt;
+    /**
+     * 轮次落库 + 附件绑定的提交口（issue #110 / R21）。**永不为 null**：Builder 没给就装
+     * {@code TurnCommitter.direct(...)}，所以这里只有一条路径，"要不要事务"是装配期的选择。
+     */
+    private final com.agenttrail.loop.persistence.TurnCommitter turnCommitter;
     private final RoundDriver roundDriver;
     private final RunCompletionCoordinator<RunContext> completionCoordinator;
     private final RunLifecycleManager lifecycleManager;
@@ -226,6 +242,10 @@ public class AgentLoopExecutor {
         List<ToolCallback> allTools = withDeferredPool(baseTools, toolCatalog);
         this.llmInvoker = new LlmInvoker(chatModel, allTools);
         this.contextAssembler = new ContextAssembler();
+        this.systemPrompt = options.systemPrompt;
+        // 读 options 而不是 this.*：字段赋值顺序里这两个可能还没初始化
+        this.turnCommitter = options.turnCommitter != null ? options.turnCommitter
+                : com.agenttrail.loop.persistence.TurnCommitter.direct(options.persistenceHook, options.fileStore);
         this.roundDriver = new RoundDriver((request, callbacks) -> llmInvoker.streamModelRound(request,
                 callbacks.stream().map(ToolCallback.class::cast).toList()));
         this.completionCoordinator = new RunCompletionCoordinator<>(ignored -> { });
@@ -367,6 +387,8 @@ public class AgentLoopExecutor {
         private Duration roundTimeout = DEFAULT_ROUND_TIMEOUT;
         private SkillManager skillManager;
         private DataProvenancePolicy dataProvenancePolicy = DataProvenancePolicy.DISABLED;
+        private PromptDefinition systemPrompt;
+        private com.agenttrail.loop.persistence.TurnCommitter turnCommitter;
         private RuntimeProfile runtimeProfile = RuntimeProfile.defaults();
 
         private Builder(ChatModel chatModel, List<ToolCallback> tools, int maxRounds) {
@@ -474,6 +496,33 @@ public class AgentLoopExecutor {
         }
 
         /** 传 null 等价于 {@link DataProvenancePolicy#DISABLED}。 */
+        /**
+         * 模式级系统提示词（issue #111 / R22）：角色定位、能力边界、工具用法说明。
+         *
+         * <p>{@code null} 或空白表示不挂——那正是本机制上线前四个模式的处境：
+         * {@code ContextAssembler.assemble} 的 systemPrompt 参数恒为 null，
+         * 系统消息里只有日期/记忆/文件三个与模式无关的区块，模型没有任何关于"我是谁、
+         * 我的边界在哪"的指令。§7.5 那条实测到的失败（有图表工具、没有 SQL 结果就编数据画图）
+         * 就是这个空缺的直接产物。
+         *
+         * <p><b>只放模式级的东西，不要把任务 SOP 搬进来</b>——"这类任务按什么套路做"仍走
+         * {@code Skill} 元工具按需加载（R2，带取舍记录）。这两层混在一起就等于悄悄推翻了 R2。
+         */
+        public Builder systemPrompt(PromptDefinition systemPrompt) {
+            this.systemPrompt = systemPrompt;
+            return this;
+        }
+
+        /**
+         * 让「轮次落库」和「附件绑定」跑在同一个事务里（issue #110 / R21）。不设时退化成两次
+         * 独立调用——行为和本机制上线前一致，但**没有原子性**：中间失败会留下不可自愈的
+         * 「轮次有、文件永远 turn_id IS NULL」。只有真的没有数据库的装配才该留空。
+         */
+        public Builder turnCommitter(com.agenttrail.loop.persistence.TurnCommitter turnCommitter) {
+            this.turnCommitter = turnCommitter;
+            return this;
+        }
+
         public Builder dataProvenancePolicy(DataProvenancePolicy dataProvenancePolicy) {
             this.dataProvenancePolicy = dataProvenancePolicy;
             return this;
@@ -547,7 +596,7 @@ public class AgentLoopExecutor {
             // 那是追加在问题后面；这里的内容性质不同，适合放在历史最前）
             messages.add(new SystemMessage(memorySection));
         }
-        String fileSection = buildFileSection(params.conversationId());
+        String fileSection = buildFileSection(params.conversationId(), requestedFileIds(params));
         if (!fileSection.isEmpty()) {
             // 和记忆区块一样是独立的一条 SystemMessage，不是同一段文本里拼接——两者关注点不同，
             // 分开便于各自独立开关、独立测试断言
@@ -556,7 +605,14 @@ public class AgentLoopExecutor {
         if (persistenceHook != null) {
             messages.addAll(persistenceHook.loadHistory(params.conversationId(), HISTORY_TOKEN_BUDGET));
         }
-        messages = new ArrayList<>(contextAssembler.assemble(null, messages,
+        // 模式级系统提示词排在最前（issue #111 / R22）——它定义"我是谁、边界在哪"，
+        // 优先级高于日期/记忆/文件这些背景区块。此处此前恒传 null，四个模式共用一套空骨架。
+        //
+        // 位置还有一个附带效果：ContextCompactor.autoCompact 保留 messages.get(0)，
+        // 所以自动压缩不会把角色定义摘要掉——"被摘要改写等于当场换了个 Agent"正是它想防的，
+        // 而在这条提示词出现之前，那个位置上其实是日期区块。
+        messages = new ArrayList<>(contextAssembler.assemble(
+                systemPrompt == null ? null : systemPrompt.text(), messages,
                 withFormatInstruction(sanitizedQuestion, params.outputType())));
 
         // 每次对话请求各自开一个全新会话——发现的工具互相隔离，不会泄漏给并发的其他会话
@@ -568,6 +624,7 @@ public class AgentLoopExecutor {
 
         RunContext context = new RunContext(sanitizedQuestion, params, messages, sink, new AtomicInteger(0),
                 System.currentTimeMillis(), toolSearchSession, mdcSnapshot);
+        recordSystemPromptStamp(context);
         fireSessionStart(context);
         context.emit(new AgentStreamEvent.AgentStart(params.conversationId()));
         stageOutputManager.afterStart(new StageContext(question, null, params), context::emit);
@@ -982,6 +1039,8 @@ public class AgentLoopExecutor {
         // 从暂停时的轮次续数，而不是从 0 重开一整份 maxRounds 预算——否则反复暂停/恢复能绕开轮次上限
         RunContext context = new RunContext(paused.question(), paused.params(), messages, sink,
                 new AtomicInteger(paused.roundAtPause()), System.currentTimeMillis(), null, MDC.getCopyOfContextMap());
+        // 恢复的轮次同样要带 stamp：那些 trace 行和正常轮次一样要能归因到提示词版本
+        recordSystemPromptStamp(context);
         scheduleRound(context);
         return sink.asFlux();
     }
@@ -1062,12 +1121,57 @@ public class AgentLoopExecutor {
         return MemoryPromptFormatter.formatSection(memoryStore.findByUserId(userId));
     }
 
-    /** 未启用（{@link #fileStore} 为 null）时返回空串——调用方直接据此判断要不要插入（issue #28）。 */
-    private String buildFileSection(String conversationId) {
+    /**
+     * 未启用（{@link #fileStore} 为 null）时返回空串——调用方直接据此判断要不要插入（issue #28）。
+     *
+     * <p><b>可见性口径（issue #110 / R21）：已绑定到某一轮的 + 本轮显式带上来的。</b>
+     * 此前是"这个会话里的全部文件"，于是<b>上传接口一返回成功，文件就已经进了下一轮的系统提示词</b>，
+     * 跟用户有没有按发送、有没有在输入框里删掉它完全无关——"发送前删除"只是前端幻觉。
+     *
+     * <p>两半各有各的用处：已绑定的那半维持"跨轮可见"（第 1 轮传的 PDF，第 5 轮还能追问），
+     * 本轮 fileIds 那半让刚上传的文件在这一轮就能用。<b>没绑定过、这轮也没带的，一律不可见</b>——
+     * 那正是"上传完没发就走人"和"多标签页互相吞"这两个缺口的堵法。
+     *
+     * <p>越权在这里也天然堵住了：{@code findByConversationId} 本身就按会话收口，别人会话的
+     * fileId 压根不在结果集里，静默缺席即可，不需要额外报错。
+     */
+    private String buildFileSection(String conversationId, List<Long> requestedFileIds) {
         if (fileStore == null) {
             return "";
         }
-        return FilePromptFormatter.formatSection(fileStore.findByConversationId(conversationId));
+        return FilePromptFormatter.formatSection(
+                fileStore.findVisibleForPrompt(conversationId, requestedFileIds));
+    }
+
+    /**
+     * 这一轮显式带上来的文件（issue #110 / R21）。走 {@code toolParams} 这条模型不可见的通道，
+     * 理由见 {@code ChatApplicationService#request}。
+     *
+     * <p>取值要容错：{@code toolParams} 是 {@code Map<String, Object>}，历史调用方（旧测试、
+     * 内部编排子调用）根本不放这个键，取不到就是"这一轮没带文件"，不是错误。
+     */
+    /**
+     * 把模式级提示词的 {@code id@version#hash} 记进本次运行的 stamp 集合（issue #111 / R22 验收）。
+     *
+     * <p>没有这一步，{@code agent_trace.prompt_stamps} 对主对话轮次永远是空的，Golden 分数一变就
+     * 回答不了"是不是改 chat.system/analytics.system 改出来的"——而那正是 issue #101 建这一列的
+     * 全部理由。上下文压缩、记忆提取早就各自记了自己的（见 ContextCompactor/MemoryExtractor）。
+     */
+    private void recordSystemPromptStamp(RunContext context) {
+        if (systemPrompt != null) {
+            context.usedPromptStamps().add(systemPrompt.stamp());
+        }
+    }
+
+    private static List<Long> requestedFileIds(RunnableParams params) {
+        Object raw = params.toolParams().get("fileIds");
+        if (!(raw instanceof List<?> values)) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(Number.class::isInstance)
+                .map(value -> ((Number) value).longValue())
+                .toList();
     }
 
     /**
@@ -1097,14 +1201,14 @@ public class AgentLoopExecutor {
         log.debug("[{}] 收尾落库中", context.conversationId());
         forgetBudget(context);
         String think = state.reasoning().isEmpty() ? null : state.reasoning();
-        Long turnId = persistenceHook == null ? null : persistenceHook.onTurnComplete(new TurnRecord(
+        TurnRecord record = new TurnRecord(
                 context.conversationId(), context.params().userId(), context.question(),
-                state.text(), think, context.toolTimelineJson(), null, context.elapsedMillis()));
-
-        // 上传发生在这一轮结束之前，那时候轮次 id 还不存在，只能等这里拿到 id 才回填（issue #28）
-        if (fileStore != null && turnId != null) {
-            fileStore.linkFilesToTurn(context.conversationId(), turnId);
-        }
+                state.text(), think, context.toolTimelineJson(), null, context.elapsedMillis());
+        // 上传发生在这一轮结束之前，那时候轮次 id 还不存在，只能等拿到 id 才回填（issue #28）；
+        // 回填的对象从"这个会话里所有还没归属的"收紧成"用户这一轮显式带上来的"（issue #110）。
+        // 生产装配下两步跑在同一个事务里：绑定失败时整轮回滚，不留"轮次有、文件永远 NULL"
+        // 的中间态——改成精确绑之后，旧 sweep 那种"下一轮顺手扫走"的自愈没有了
+        Long turnId = turnCommitter.commit(record, requestedFileIds(context.params()));
 
         // 和落库一样必须在 emitComplete 之前同步做完；提取本身失败会被 MemoryExtractor 内部吞掉，
         // 不会因为这一步把整轮对话搞崩

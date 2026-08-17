@@ -51,6 +51,10 @@ import java.util.stream.Collectors;
  */
 public class AgentLoopExecutorFactory {
 
+    /** 模式级系统提示词的来源（issue #111 / R22），和 ContextCompactor/MemoryExtractor 同一套加载方式。 */
+    private static final com.agenttrail.loop.prompt.PromptRegistry PROMPTS =
+            com.agenttrail.loop.prompt.PromptRegistry.shared();
+
     private static final String QWEN_PLUS = com.agenttrail.platform.model.ToolCallingCompatibility.QWEN_PLUS;
     private static final String TOOL_CALLING_COMPATIBLE_MODEL =
             com.agenttrail.platform.model.ToolCallingCompatibility.FALLBACK_MODEL_ID;
@@ -82,6 +86,11 @@ public class AgentLoopExecutorFactory {
      * {@code AgentLoopExecutor.Builder}）。
      */
     private final FileStore fileStore;
+    /**
+     * 轮次落库 + 附件绑定的原子提交（issue #110 / R21）。为 null 表示这套装配没有事务管理器
+     * （单测、没配数据源的场景），执行器退化成两次独立调用。
+     */
+    private final com.agenttrail.loop.persistence.TurnCommitter turnCommitter;
     private final AnalyticsToolProvider analyticsToolProvider;
     private final AgentHooks sharedHooks;
     private final PauseConfig pauseConfig;
@@ -132,6 +141,7 @@ public class AgentLoopExecutorFactory {
         private TurnPersistenceHook persistenceHook;
         private FileContentTool fileContentTool;
         private FileStore fileStore;
+        private com.agenttrail.loop.persistence.TurnCommitter turnCommitter;
         private AnalyticsToolProvider analyticsToolProvider;
         private PauseConfig pauseConfig;
         private SessionBudgetTracker sessionBudgetTracker;
@@ -155,6 +165,7 @@ public class AgentLoopExecutorFactory {
         public Builder persistence(TurnPersistenceHook value) { this.persistenceHook = value; return this; }
         public Builder fileContentTool(FileContentTool value) { this.fileContentTool = value; return this; }
         public Builder fileStore(FileStore value) { this.fileStore = value; return this; }
+        public Builder turnCommitter(com.agenttrail.loop.persistence.TurnCommitter value) { this.turnCommitter = value; return this; }
         public Builder analytics(AnalyticsToolProvider value) { this.analyticsToolProvider = value; return this; }
         public Builder pause(PauseConfig value) { this.pauseConfig = value; return this; }
         public Builder budget(SessionBudgetTracker value) { this.sessionBudgetTracker = value; return this; }
@@ -192,6 +203,7 @@ public class AgentLoopExecutorFactory {
         TurnPersistenceHook persistenceHook = options.persistenceHook;
         FileContentTool fileContentTool = options.fileContentTool;
         FileStore fileStore = options.fileStore;
+        com.agenttrail.loop.persistence.TurnCommitter turnCommitter = options.turnCommitter;
         AnalyticsToolProvider analyticsToolProvider = options.analyticsToolProvider;
         PauseConfig pauseConfig = options.pauseConfig;
         SessionBudgetTracker sessionBudgetTracker = options.sessionBudgetTracker;
@@ -227,6 +239,7 @@ public class AgentLoopExecutorFactory {
         this.chartToolProvider = chartToolProvider;
         this.persistenceHook = persistenceHook;
         this.fileStore = fileStore;
+        this.turnCommitter = turnCommitter;
         this.analyticsToolProvider = analyticsToolProvider;
         this.pauseConfig = pauseConfig;
         this.sessionBudgetTracker = sessionBudgetTracker;
@@ -293,6 +306,8 @@ public class AgentLoopExecutorFactory {
                 .taskManager(taskManager)
                 .thinkingMode(model.thinkingMode())
                 .persistenceHook(spec.persist() ? persistenceHook : null)
+                // 只有真正落库的装配才需要事务；内部编排子调用 persist=false，本来就不写库
+                .turnCommitter(spec.persist() ? turnCommitter : null)
                 .hooks(sharedHooks)
                 .pauseConfig(pauseConfig)
                 .budgetTracker(sessionBudgetTracker)
@@ -305,6 +320,7 @@ public class AgentLoopExecutorFactory {
                 .dataProvenancePolicy(spec.dataProvenancePolicy())
                 .maxConsecutiveToolFailures(spec.maxConsecutiveToolFailures())
                 .contextPolicy(contextPolicy)
+                .systemPrompt(systemPromptFor(spec))
                 .runtimeProfile(runtimeProfile(contextPolicy, null));
         // 三个机制各自的接入范围不同，不能合成一个开关——分析执行器要 Skill 但不要记忆和文件
         if (spec.skills()) {
@@ -317,6 +333,22 @@ public class AgentLoopExecutorFactory {
             builder.fileStore(fileStore);
         }
         return builder.build();
+    }
+
+    /**
+     * 取模式级系统提示词正文（issue #111 / R22）。{@code systemPromptId} 为 null 表示这个变体
+     * 不挂（只有内部编排子调用是这种情况）。
+     *
+     * <p>缺文件时**不静默返回空串**：提示词是这一层能力边界的载体，少一份的后果是模型失去
+     * 全部角色约束却照常应答——这正是本机制上线前的处境，也是 §7.5 那条"没数据源就编数据"
+     * 的成因。装配期直接炸掉，比运行期悄悄降级好得多。
+     *
+     * <p>返回整个 {@link com.agenttrail.loop.prompt.PromptDefinition} 而不是光取 {@code text()}：
+     * {@code stamp()} 要跟着落进 {@code agent_trace.prompt_stamps}（R22 验收），正文和标识同源
+     * 才不会各自漂移。
+     */
+    private static com.agenttrail.loop.prompt.PromptDefinition systemPromptFor(CapabilitySpec spec) {
+        return spec.systemPromptId() == null ? null : PROMPTS.get(spec.systemPromptId());
     }
 
     private static List<String> toolNames(List<ToolCallback> tools) {
@@ -355,9 +387,13 @@ public class AgentLoopExecutorFactory {
 
     private AgentLoopExecutor buildExecutor(RegisteredModel model, List<ToolCallback> tools, ContextPolicy contextPolicy,
             boolean persist, DataProvenancePolicy dataProvenancePolicy) {
-        return assemble(model, new CapabilitySpec(tools, 10, 0,
-                contextPolicy == null ? List.of() : toolNames(tools),
-                dataProvenancePolicy, persist, persist, persist, persist));
+        // persist 这一个布尔同时决定五个装配分量 + 挂不挂模式级提示词，正好对应两个具名 spec：
+        // 手写一份等价的构造调用等于把"什么是一个 chat 执行器"定义在两处，"chat.system"
+        // 这个字面量也要跟着抄一遍。具名工厂方法存在的意义就是拦住这个。
+        return assemble(model, persist
+                ? CapabilitySpec.chat(tools, contextPolicy == null ? List.of() : toolNames(tools),
+                        dataProvenancePolicy)
+                : CapabilitySpec.internalOrchestration(tools));
     }
 
     /** @param modelId 为 null 或空串时使用默认模型；未注册的标识直接抛异常，不做静默兜底 */

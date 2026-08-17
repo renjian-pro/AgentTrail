@@ -24,23 +24,28 @@ import { looksLikeDataQuestion } from '../utils/dataQuestionHint'
 import { useChatStore, type AgentKind, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
 /**
- * 能力分三层，交互语义各不相同（见 `docs/requirements.md` §7.2）：
+ * 交互一层、协议两类（见 `docs/requirements.md` §7.2）。
  *
+ * <p><b>交互层</b>：四个模式互斥，同一时刻只能选一个，会话内随时可切，由 store 的
+ * `agentKind` 持有。选中后一直保持，不因发送而复位。
+ *
+ * <p><b>协议层</b>，`send()` 按模式分派到两条完全不同的链路：
  * <ul>
- *   <li><b>Agent 层</b>（普通对话 / 数据分析）——换一套执行器，工具集不相交。**会话级绑定**，
- *       由 store 的 `agentKind` 持有，首条消息发出后锁定。
- *   <li><b>任务层</b>（research / ppt）——各自另起一条同步创建任务 + 轮询的链路
- *       （见 runResearch/runPpt），提交后立即解锁 busy，不影响当前会话的工具集。
- *   <li><b>开关层</b>（联网搜索）——往同一份工具列表里叠加工具。
+ *   <li>`chat` / `analytics` —— `/agent/v1/chat` 的 SSE 单次流，差别只在后端换执行器
+ *   <li>`research` / `ppt` —— 各自创建异步任务再轮询（runResearch/runPpt），提交成功即解锁
+ *       busy，报告/幻灯片在后台跑
  * </ul>
+ * 协议不统一是刻意的：SSE 单次流承载不了"刷新页面还能看进度""断点续跑""产物下载"，PPT 已有的
+ * checkpoint 机制不能为了入口统一而丢掉。这层映射就是下面这个 `send` 里的两行 if，不引入调度层。
  *
- * <p>三层曾经被平铺成同一排 chip，作用域完全不同的东西共用一种交互——那是"用户在一个会话里
- * 随便切、模型看到历史里有当前不存在的工具"的根源。Agent 层已经上移到会话头部（issue #92），
- * 任务层这里改成动作按钮：点一下就带着当前输入发起任务，没有选中态，也不改变会话状态（issue #93）。
+ * <p><b>为什么四个能力现在同一排</b>：它们此前被拆成两处——身份在头部、任务是输入框上方的动作
+ * 按钮（issue #93），理由是"作用域不同的东西不能共用一种交互"。但那个作用域差异（换执行器 vs
+ * 异步任务）是后端事实，用户认知里"我要做什么"只有一个维度。差异下沉到 `send` 的分派，界面回到
+ * 一排互斥模式。两组外观相同的按钮的问题同时消失了——现在只剩头部一组。
  */
 
 const chat = useChatStore()
-const { conversationId, messages, todos, navigationSeq, agentKind, agentLocked } = storeToRefs(chat)
+const { conversationId, messages, todos, navigationSeq, agentKind } = storeToRefs(chat)
 const busy = ref(false)
 const error = ref('')
 const webSearch = ref(false)
@@ -50,11 +55,15 @@ const uploadBusy = ref(false)
 const uploadError = ref('')
 const composerDragging = ref(false)
 const initialMessage = ref('')
-/** 点了任务按钮但输入框是空的时候，告诉用户缺的是什么；发出任何一条消息就清掉。 */
-const taskHint = ref('')
-/** 任务按钮要取走输入框里的当前内容，见 runTask —— 输入状态仍归 MessageInput 自己持有。 */
-const composer = ref<InstanceType<typeof MessageInput>>()
 let aborter: AbortController | undefined
+
+/** 输入框的占位文案随模式变，用户不用猜"这个模式下该写什么"。 */
+const PLACEHOLDERS: Record<AgentKind, string> = {
+  chat: '问我任何事',
+  analytics: '问一个关于业务数据的问题',
+  research: '描述你要研究的问题，生成深度研究报告',
+  ppt: '输入你想创作的 PPT 主题'
+}
 
 onMounted(() => {
   if (typeof window === 'undefined' || window.location.pathname !== '/chat') return
@@ -85,48 +94,43 @@ watch(navigationSeq, () => {
 // cannot be cancelled by the chat stop endpoint, so showing that control there
 // would promise an action the backend cannot perform.
 const canStop = computed(() => busy.value && aborter !== undefined)
-/** 数据分析执行器明确不挂联网搜索工具（DataAgent 不复用通用工具），开着只是摆设。 */
-const webSearchDisabled = computed(() => busy.value || agentKind.value === 'analytics')
-const webSearchHint = computed(() =>
-  agentKind.value === 'analytics' ? '数据分析不挂载联网搜索工具，这个开关对它不生效' : '')
-
 /**
- * 任务层：点一下就带着当前输入发起，不进入任何"选中"状态，也不影响会话的 Agent 和工具集。
+ * 联网搜索与模式**不正交**，四个模式各不相同（requirements.md §7.2 / R14a）：
  *
- * <p>输入为空时**不能静默返回**——按钮亮着、可点、点了没反应，用户唯一能得出的结论是
- * "这按钮坏了"，不会想到"哦原来要先打字"。这里把光标送回输入框并说清楚缺什么。
- *
- * <p>PPT 状态机和 DeepResearch 各自内部都无条件做自己的资料检索，不接收联网搜索开关，
- * 所以这里也不需要像以前那样把它关掉——开关只作用于普通对话，两者已经不在同一个语义层上了。
+ * <ul>
+ *   <li>`chat` —— 用户可开关，有隐私/成本权衡要留给用户
+ *   <li>`analytics` —— 禁用。`forAnalytics(String modelId)` 根本不接 `webSearchEnabled` 参数，
+ *       开着只是摆设。禁用理由常驻显示，不能只写 title（触屏没有 hover）
+ *   <li>`research` / `ppt` —— **整个开关不渲染**。两者内部无条件做自己的资料检索
+ *       （`SearchStrategy` 固定两个角度喂给 OUTLINE 状态；DeepResearch 本身就是检索驱动的），
+ *       渲染成"已开启的开关"会暗示用户可以关掉，而关掉它们压根跑不起来
+ * </ul>
  */
-function runTask(kind: 'research' | 'ppt') {
-  const message = composer.value?.take()
-  if (!message) {
-    taskHint.value = kind === 'research'
-      ? '先写下要研究的问题，再点「深度研究」'
-      : '先写下要做成 PPT 的主题，再点「生成 PPT」'
-    composer.value?.focus()
-    return
-  }
-  taskHint.value = ''
-  if (kind === 'research') void runResearch(message)
-  else void runPpt(message)
+const webSearchApplies = computed(() => agentKind.value === 'chat' || agentKind.value === 'analytics')
+const webSearchDisabled = computed(() => busy.value || agentKind.value === 'analytics')
+/** 查表而不是链式 if：后者的第二个分支要靠"前一个分支已经排除了 analytics"才成立，
+ *  等于把正确性押在两个 computed 的求值顺序上。和上面的 PLACEHOLDERS 同一种写法。 */
+const BAR_NOTES: Partial<Record<AgentKind, string>> = {
+  analytics: '数据分析不挂载联网搜索工具，这个开关对它不生效',
+  research: '这个模式自带资料检索，不需要单独开联网搜索',
+  ppt: '这个模式自带资料检索，不需要单独开联网搜索'
 }
+const barNote = computed(() => BAR_NOTES[agentKind.value] ?? '')
 
 function changeAgent(kind: AgentKind) {
   chat.setAgentKind(kind)
-  if (kind === 'analytics') webSearch.value = false
+  if (kind !== 'chat') webSearch.value = false
 }
 
-/** 会话已锁定时换 Agent 的出口：开一个新会话、沿用当前 Agent（未锁定，可再改）。
- *  带上下文摘要要等后端 ConversationDigest（R15 / issue #103），本票只做新建。 */
-function newFromHere() {
-  chat.startNewConversation(agentKind.value)
-}
-
-/** 引导卡片的动作：直接开一个数据分析会话。带上下文摘要要等后端 ConversationDigest（issue #103）。 */
+/**
+ * 引导卡片的动作：就地切到数据分析，**不再新开会话**。
+ *
+ * <p>此前这里是 `startNewConversation('analytics')`——那是会话级绑定时代的唯一出路（会话一旦
+ * 锁定就换不了 Agent）。模式改成轮次级之后，就地切换是对的：用户刚问的那个数据问题还在上面，
+ * 换个会话反而把它丢了。
+ */
 function switchToAnalytics() {
-  chat.startNewConversation('analytics')
+  changeAgent('analytics')
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -138,12 +142,19 @@ const TOOL_LABELS: Record<string, string> = {
 }
 const toolLabel = (name: string) => TOOL_LABELS[name] ?? name
 
+/**
+ * 唯一的发送入口，按当前模式分派到两条协议链路（见文件头部）。
+ *
+ * <p>**模式不在这里复位**——曾经这一行是 `pendingMode.value = undefined`，导致用户追问时
+ * 静默掉回普通对话、模型没有数据库工具就去编数据（issue #92）。模式一直保持到用户显式切换。
+ */
 async function send(message: string) {
-  // Agent 是会话级的，不在这里读取后复位——曾经这一行是 `pendingMode.value = undefined`，
-  // 导致用户追问时静默掉回普通对话（issue #92）。
-  const mode = agentKind.value === 'analytics' ? 'analytics' : undefined
   error.value = ''
-  taskHint.value = ''
+  // 异步任务链路：不推 user 气泡，问题/主题就在各自的卡片里，推一条只会重复显示。
+  if (agentKind.value === 'research') return runResearch(message)
+  if (agentKind.value === 'ppt') return runPpt(message)
+
+  const mode = agentKind.value === 'analytics' ? 'analytics' : undefined
   busy.value = true
   messages.value.push({ kind: 'chat', role: 'user', content: message })
   // 卡片插在提问之后、回答之前：这条会话本来就没有数据库工具，等模型答完再提示就晚了——
@@ -164,11 +175,16 @@ async function send(message: string) {
       conversationId: conversationId.value,
       modelId: modelId.value,
       webSearchEnabled: webSearch.value,
-      mode
+      mode,
+      // 显式带上这一轮附的文件（issue #110）——后端据此绑定，不再扫全会话
+      fileIds: files.value.map(file => file.fileId)
     }, aborter.signal)) {
       const failureMessage = chat.applyStreamEvent(event, assistant, message)
       if (failureMessage) error.value = failureMessage
     }
+    // 附件已经绑到这一轮了，输入框上的挂件该清空——它表达的是"下一条消息要带什么"。
+    // 只在成功路径清：失败时保留着，用户重发一次就行，不用重新上传一遍。
+    files.value = []
   } catch (failure) {
     if ((failure as Error).name !== 'AbortError') error.value = toErrorMessage(failure)
   } finally {
@@ -298,7 +314,9 @@ async function removeFile(fileId: number) {
 
 <template>
   <div class="chat-view" :class="{ 'is-empty': !messages.length }">
-    <AgentHeader :agent-kind="agentKind" :locked="agentLocked" @change="changeAgent" @new-from-here="newFromHere" />
+    <!-- 不再需要 `:key="navigationSeq"` 强制重建：那是为了让「换一个」展开的解释不跨会话
+         活下来，而锁定语义连同那段解释一起删掉之后，这个组件已经没有自己的内部状态了。 -->
+    <AgentHeader :agent-kind="agentKind" @change="changeAgent" />
     <div v-if="!messages.length" class="welcome">
       <span class="welcome-mark">✦</span>
       <h1>AgentTrail，我帮你</h1>
@@ -331,33 +349,27 @@ async function removeFile(fileId: number) {
         @dragover.prevent="composerDragging = true" @dragleave="composerDragging = false" @drop.prevent="onComposerDrop">
       <AttachedFileList :files="files" :busy="uploadBusy" :error="uploadError" @remove="removeFile" />
       <!--
-        四颗按钮同一排、同样的分量：它们都是"这条消息怎么处理"。此前任务按钮（深度研究/生成 PPT）
-        被 `margin-right: auto` 顶到最左，和右边的联网搜索/添加文件分成遥遥相望的两堆，而顶部
-        还有一排长得一模一样的能力按钮——屏幕上于是有两组外观相同、作用域完全不同的按钮
-        （一组定会话身份、一组发起一次性任务），没有任何视觉线索能区分。现在身份只在头部、
-        动作只在输入框上方，位置本身就是那条线索。
+        这一排现在只剩"叠加/附加"这一类东西：文件、联网搜索。能力模式全部回到头部那一排，
+        屏幕上不再有两组外观相同、作用域不同的按钮——那正是 issue #93 当初要解决的问题，
+        把模式收成一排之后它自然消失了，不需要靠"身份在上、动作在下"的位置约定来区分。
       -->
       <div class="capability-bar">
         <FileUploadWidget @upload="upload" />
-        <div class="toggles">
-          <button type="button" :disabled="webSearchDisabled" :title="webSearchHint"
-              :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
-        </div>
-        <div class="composer-tasks">
-          <button type="button" :disabled="busy" @click="runTask('research')">⌕ 深度研究</button>
-          <button type="button" :disabled="busy" @click="runTask('ppt')">▣ 生成 PPT</button>
-        </div>
+        <!-- 禁用理由必须看得见：原来只写在 title 里，触屏设备根本没有 hover，用户只看到一颗
+             点不动的按钮，不知道是坏了还是不该用。理由现在由 .bar-notes 常驻显示，title 就是
+             同一句话的第二个副本了——两处绑同一个 computed，只会各自漂移。
+             research/ppt 下整颗按钮不渲染，不是禁用：见 webSearchApplies 的说明。 -->
+        <button v-if="webSearchApplies" type="button" :disabled="webSearchDisabled"
+            :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         <!-- 灰字说明统一放到这一排的末尾，不夹在按钮中间——那一排的意思就是"这些是同一类东西"，
-             中间插一句说明会把它从视觉上切成两段。 -->
-        <span class="bar-notes">
-          <!-- 禁用理由必须看得见：原来只写在 title 里，触屏设备根本没有 hover，
-               用户只看到一颗点不动的按钮，不知道是坏了还是不该用。 -->
-          <span v-if="webSearchDisabled">{{ webSearchHint }}</span>
-          <span v-else>也可拖放文件</span>
-        </span>
+             中间插一句说明会把它从视觉上切成两段。
+             条件直接问 barNote 有没有话说，不问 webSearchDisabled：后者还包含 busy，
+             而 busy 期间是没有理由可讲的——按那个条件走，普通会话每次生成都会让这格变成空白，
+             "也可拖放文件"莫名其妙消失一次，原因和拖放毫无关系。 -->
+        <span v-if="barNote" class="bar-notes">{{ barNote }}</span>
+        <span v-else class="bar-notes drop-note">也可拖放文件</span>
       </div>
-      <p v-if="taskHint" class="task-hint">{{ taskHint }}</p>
-      <MessageInput ref="composer" :busy="busy" :initial-value="initialMessage" @send="send" />
+      <MessageInput :busy="busy" :initial-value="initialMessage" :placeholder="PLACEHOLDERS[agentKind]" @send="send" />
       <div class="controls">
         <span>当前模型</span>
         <select v-model="modelId" aria-label="当前模型"><option>qwen-plus</option><option>deepseek-chat</option></select>

@@ -1,5 +1,17 @@
 # 前端能力模型重构 拆票总览
 
+> ⚠️ **2026-08-17：本页三张票已全部交付上线，`requirements.md` §7 随后修订，其中两处上线行为需要回退。**
+>
+> 这不是"改未开工的票的范围"，是**改已上线的实现**，代价请按这个前提评估。
+>
+> | 票 | 已上线的 | 新模型要求 | 动作 |
+> |---|---|---|---|
+> | F6 会话级 Agent 绑定 | `chat` store 的会话级 `agentKind` + 首条消息后 `agentLocked` + `AgentHeader` 常驻标识 + localStorage 持久化 | 模式**轮次级、可自由切**；持久化落 `agent_session.mode` | **部分回退**：拆掉 `agentLocked` 锁定语义与配套的 `newFromHere`；`agentKind` 从 localStorage 迁到后端落库。**常驻标识（R14）保留** |
+> | F7 三层视觉分组 | PPT／深度研究从模式 chip 改为**动作按钮（无 active 态）**；联网搜索归位为 toggle | 四个能力是一排**互斥模式**，都有 active 态 | **回退动作按钮形态**。搜索 toggle 保留但改为只在普通对话下出现（R14a） |
+> | F8 数据问题引导卡片 | 关键词识别 + inline 卡片 | — | **不动** |
+>
+> R17 已从"三层视觉分组"改写为后端的 `loadHistory` 契约钉死，与前端无关。新模型见 [`../session-turn-model.md`](../session-turn-model.md) §3 与 `requirements.md` §7.2/7.3。GitHub issue #92/#93 已 closed，回退应另开新票而不是重开旧票。
+>
 > 这是三张票的索引和依赖图。**开工前先读这一页**，再去读要做的那张票。
 >
 > 需求 Spec：[`frontend-capability-model.md`](frontend-capability-model.md)

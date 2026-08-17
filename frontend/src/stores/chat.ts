@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { chatApi, type ConversationSummary, type HistoryTurn } from '../api/chat-api'
 import type { PptTask } from '../api/ppt-api'
@@ -32,14 +32,37 @@ export type ChatMessage = ChatTurn | PptEntry | ResearchEntry | SwitchHintEntry
 export type ChatSession = { id: string; title: string }
 
 /**
- * 会话绑定的 Agent（issue #92）。**是会话级的，不是消息级的**——工具集在一个会话里必须稳定，
- * 否则消息历史里的 tool_calls 会指向当前执行器根本没挂载的工具（见 `docs/requirements.md` §7.3
- * 的推导：DataAgent 不能挂 Bash → 基线不可能是全集 → 换模式就是换执行器 → 工具集必须会话内稳定）。
+ * 当前选中的能力模式。四者互斥，同一时刻只能选一个（`docs/requirements.md` §7.2）。
  *
- * <p>改这个之前的行为是"模式只对下一条消息生效、发完立刻复位"，用户追问时会静默掉回普通对话，
- * 模型没有数据库工具就去编造演示数据——这条静默失败链路正是本次要堵掉的。
+ * <p><b>轮次级，不是会话级</b>——一个会话里可以自由切换，选中后一直保持，直到用户手动
+ * 取消（切回 `chat`）或换成另一个。绝不因为发送了一条消息就复位：那条静默失败链路
+ * （用户以为在数据分析、模型却在编数据）是 issue #92 堵掉的，不能倒回去。
+ *
+ * <p><b>为什么会话内可以自由切</b>：曾经的推导是"换模式＝换执行器 → 消息历史里的 tool_calls
+ * 会指向当前不存在的工具 → 工具集必须会话内稳定"，据此做成了会话级绑定 + 首条消息后锁定。
+ * 2026-08-17 核对实现后发现第二步不成立：`JdbcSessionStore.loadHistory` 只 SELECT
+ * `question`/`answer` 两列，`timeline` 从不读回，跨轮历史里压根没有 tool_calls 结构。
+ * 工具集的稳定作用域天然就是"一轮"，锁定是多余约束（§7.3）。
+ *
+ * <p><b>`research`/`ppt` 的执行协议不同</b>：它们不走 `/agent/v1/chat` 的 SSE 流，而是各自
+ * 创建异步任务再轮询（见 ChatView 的 runResearch/runPpt）。交互上是同一排模式，协议上不是
+ * 同一条链路——入口统一不等于协议统一。
  */
-export type AgentKind = 'chat' | 'analytics'
+export type AgentKind = 'chat' | 'analytics' | 'research' | 'ppt'
+
+/**
+ * 模式的图标和名字，**选择器和侧栏共用这一份**。
+ *
+ * <p>此前侧栏是内联的三元 `=== 'analytics' ? '⌁' : '○'`，而名字/图标另在 AgentHeader 里写了
+ * 一遍。从两个模式扩到四个时，那个三元不会报错，只会把深度研究和 PPT 静默显示成普通对话——
+ * 恰恰是"同一件事写在两处"最典型的失效方式：一处改了，另一处继续无声地给出错误答案。
+ */
+export const AGENT_KIND_MARKS: Record<AgentKind, string> = {
+  chat: '○', analytics: '⌁', research: '⌕', ppt: '▣'
+}
+export const AGENT_KIND_LABELS: Record<AgentKind, string> = {
+  chat: '普通对话', analytics: '数据分析', research: '深度研究', ppt: '生成 PPT'
+}
 
 const STORAGE_KEY = 'agenttrail.chat-sessions'
 /**
@@ -91,13 +114,6 @@ export const useChatStore = defineStore('chat', () => {
   const agentKind = ref<AgentKind>('chat')
   const agentKinds = ref<Record<string, AgentKind>>(readAgentKinds())
 
-  /**
-   * 锁定点就是"会话已经有 id 了"——`conversationId` 在首条消息发出前是 undefined
-   * （`acceptConversation` 那时才赋值），所以这个判断天然等价于"首条消息已发出"，
-   * 不需要另外维护一个标志位。
-   */
-  const agentLocked = computed(() => conversationId.value !== undefined)
-
   function persistSessions() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions.value))
   }
@@ -107,13 +123,25 @@ export const useChatStore = defineStore('chat', () => {
     localStorage.setItem(AGENT_KIND_STORAGE_KEY, JSON.stringify(agentKinds.value))
   }
 
-  /** 已锁定的会话不允许换 Agent——静默忽略而不是抛错，调用方本来就该先看 `agentLocked`。 */
+  /**
+   * 模式随时可切，没有锁定。此前这里有一道 `if (agentLocked) return` 的静默忽略，
+   * 是"首条消息后锁定"那套会话级绑定的一部分，已随 §7.3 的重新推导拆掉。
+   *
+   * <p>已经有会话号时立刻落一次本地映射——否则在一个已存在的会话里换模式，刷新之后
+   * 侧栏还显示旧模式（`acceptConversation` 只在会话号首次分配那一刻写过一次）。
+   */
   function setAgentKind(kind: AgentKind) {
-    if (agentLocked.value) return
     agentKind.value = kind
+    if (conversationId.value) persistAgentKind(conversationId.value, kind)
   }
 
-  /** 侧栏会话列表用：未知会话（含全部存量会话）一律普通对话。 */
+  /**
+   * 侧栏会话列表用：未知会话（含全部存量会话）一律普通对话。
+   *
+   * <p><b>一个会话只记一个模式，记的是最后一次用过的那个</b>——模式改成轮次级之后，
+   * 一个会话里可以有多种模式的轮次，这个映射表达不了。真正的按轮归属要等后端
+   * `agent_session.mode` 落库（R13 的后端那一半，尚未做）；在那之前侧栏图标只是个近似。
+   */
   function agentKindFor(id: string): AgentKind {
     return agentKinds.value[id] ?? 'chat'
   }
@@ -132,12 +160,12 @@ export const useChatStore = defineStore('chat', () => {
     persistSessions()
   }
 
-  /** @param kind 新会话的 Agent，默认普通对话（spec 3.3：零摩擦，数据分析靠引导卡片进入）。 */
-  function startNewConversation(kind: AgentKind = 'chat') {
+  /** 新会话一律从普通对话开始（spec 3.3：零摩擦，数据分析靠引导卡片进入）。 */
+  function startNewConversation() {
     conversationId.value = undefined
     messages.value = []
     todos.value = []
-    agentKind.value = kind
+    agentKind.value = 'chat'
     navigationSeq.value++
   }
 
@@ -290,7 +318,7 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     conversationId, messages, todos, sessions, sessionsHasMore, navigationSeq,
-    agentKind, agentKinds, agentLocked,
+    agentKind, agentKinds,
     acceptConversation, ensureConversation, applyStreamEvent, setAgentKind, agentKindFor,
     startNewConversation, openSession, hydrateSessions, loadMoreSessions
   }

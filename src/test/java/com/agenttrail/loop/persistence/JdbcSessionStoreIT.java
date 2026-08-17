@@ -4,7 +4,9 @@ import com.agenttrail.support.SharedMySql;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -99,6 +101,39 @@ class JdbcSessionStoreIT {
 
         assertThat(store.loadHistory("conv-1", 100_000)).extracting(Message::getText)
                 .containsExactly("被中断的提问");
+    }
+
+    /**
+     * issue #107 / R17：**跨轮历史永远只有用户/助手两种角色，不含任何工具调用结构。**
+     *
+     * <p>这是端到端的行为断言，配套的快速守法在 {@code HistoryReplayContractTest}（那个每次
+     * {@code mvn test} 都跑，这个要真实 MySQL）。
+     *
+     * <p>场景就是真实的那个：第 1 轮在数据分析模式下跑出一串工具调用（timeline 非空），第 2 轮
+     * 用户切回普通对话追问。此时若历史带着 {@code execute_sql} 的调用记录，它指向的工具在普通
+     * 对话执行器上根本不存在——{@code tool_call_id} 悬空。推导见 requirements.md §7.3。
+     */
+    @Test
+    void neverReplaysToolCallStructureAcrossTurnsEvenWhenTheTurnHadOne() {
+        String analyticsTimeline = """
+                [{"type":"tool","name":"execute_sql","toolCallId":"call_abc123",\
+                "arguments":"{\\"sql\\":\\"SELECT COUNT(*) FROM rental\\"}","result":"16044"}]""";
+        store.onTurnComplete(new TurnRecord(
+                "conv-1", "u-1", "一共有多少条租赁记录？", "一共 16044 条。", null, analyticsTimeline, 100L, 9_000L));
+
+        List<Message> history = store.loadHistory("conv-1", 100_000);
+
+        assertThat(history)
+                .as("跨轮历史只该有提问和回答两条")
+                .extracting(Message::getText)
+                .containsExactly("一共有多少条租赁记录？", "一共 16044 条。");
+        assertThat(history)
+                .as("回放出来的消息只能是用户/助手两种角色——出现 ToolResponseMessage 就意味着"
+                        + "工具调用结构被带进了历史，切模式后它会指向不存在的工具")
+                .allSatisfy(message -> assertThat(message)
+                        .isInstanceOfAny(UserMessage.class, AssistantMessage.class));
+        assertThat(history).noneSatisfy(message ->
+                assertThat(message.getText()).contains("call_abc123"));
     }
 
     @Test

@@ -2,7 +2,20 @@ import type { StreamEvent } from '../types/stream-event'
 import { jsonInit, request } from './http'
 import { clearToken, readToken } from './auth-token'
 
-export type ChatRequest = { message: string; conversationId?: string; modelId?: string; webSearchEnabled: boolean; mode?: string }
+/**
+ * `fileIds`：这一轮要附带的文件（issue #110）。**上传和"这一轮附了什么"是两件事**——
+ * 上传只是把文件存下来，真正的绑定发生在按下发送、把 id 显式带上来的这一刻。
+ * 后端此前是"扫一遍这个会话里所有还没归属轮次的文件"，于是在输入框里删掉一个 chip
+ * 只是视觉效果，它下一轮照样会进模型的上下文。
+ */
+export type ChatRequest = {
+  message: string
+  conversationId?: string
+  modelId?: string
+  webSearchEnabled: boolean
+  mode?: string
+  fileIds?: number[]
+}
 export type HistoryTurn = { id: number; question: string; answer: string; think: string | null; timeline: string | null; createdAtMillis: number }
 export type HistoryPage = { conversationId: string; page: number; size: number; hasMore: boolean; turns: HistoryTurn[] }
 export type ConversationSummary = { conversationId: string; title: string; lastActiveAtMillis: number }

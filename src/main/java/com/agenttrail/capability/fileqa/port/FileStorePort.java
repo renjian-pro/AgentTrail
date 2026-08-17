@@ -20,6 +20,7 @@ public interface FileStorePort {
     default void markFailed(long id, String errorMessage) {
         // Legacy stores have no status/error columns; the adapter may override this when available.
     }
-    void linkFilesToTurn(String conversationId, long turnId);
+    /** issue #110：按用户这一轮显式带上来的 fileIds 精确绑，不再扫全会话。见 {@code FileStore}。 */
+    void linkFilesToTurn(String conversationId, java.util.List<Long> fileIds, long turnId);
     void delete(long id);
 }

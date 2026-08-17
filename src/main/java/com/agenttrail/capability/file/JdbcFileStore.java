@@ -33,12 +33,30 @@ public class JdbcFileStore implements FileStore {
             ORDER BY id ASC
             """;
 
+    /** 只取提示词区块要用的四列，谓词一并下推——见 {@code FileStore#findVisibleForPrompt}。 */
+    private static final String SELECT_VISIBLE_FOR_PROMPT_TEMPLATE = """
+            SELECT id, turn_id, file_name, kind
+            FROM agent_file
+            WHERE conversation_id = ? AND (turn_id IS NOT NULL%s)
+            ORDER BY id ASC
+            """;
+
     private static final String UPDATE_PARSED_TEXT_SQL = """
             UPDATE agent_file SET parsed_text = ? WHERE id = ?
             """;
 
-    private static final String LINK_FILES_TO_TURN_SQL = """
-            UPDATE agent_file SET turn_id = ? WHERE conversation_id = ? AND turn_id IS NULL
+    /**
+     * 三个条件各有各的职责，一个都不能省（issue #110）：
+     * <ul>
+     *   <li>{@code id IN (...)} —— 只绑用户这一轮显式带上来的，不再是"扫一遍会话里所有没归属的"
+     *   <li>{@code conversation_id = ?} —— 让跨会话绑定在 SQL 层就不可能发生，比上层校验可靠
+     *   <li>{@code turn_id IS NULL} —— 幂等保证，同时挡住"把已经属于第 3 轮的文件改绑到第 7 轮"
+     * </ul>
+     * 占位符个数随 fileIds 变，所以这里是个模板，由 {@code linkFilesToTurn} 拼出来。
+     */
+    private static final String LINK_FILES_TO_TURN_SQL_TEMPLATE = """
+            UPDATE agent_file SET turn_id = ?
+            WHERE conversation_id = ? AND turn_id IS NULL AND id IN (%s)
             """;
 
     private static final String DELETE_SQL = """
@@ -86,6 +104,30 @@ public class JdbcFileStore implements FileStore {
     }
 
     @Override
+    public List<UploadedFile> findVisibleForPrompt(String conversationId, List<Long> requestedFileIds) {
+        boolean hasRequested = requestedFileIds != null && !requestedFileIds.isEmpty();
+        // 没带文件时整个 OR 分支不拼——空的 IN () 在 MySQL 上是语法错误
+        String clause = hasRequested
+                ? " OR id IN (" + String.join(", ", java.util.Collections.nCopies(requestedFileIds.size(), "?")) + ")"
+                : "";
+        var statement = jdbcClient.sql(SELECT_VISIBLE_FOR_PROMPT_TEMPLATE.formatted(clause)).param(conversationId);
+        if (hasRequested) {
+            for (Long fileId : requestedFileIds) {
+                statement = statement.param(fileId);
+            }
+        }
+        return statement.query(JdbcFileStore::mapPromptRow).list();
+    }
+
+    /** 元数据投影：parsedText/rawBytes 一律 null，见接口说明。 */
+    private static UploadedFile mapPromptRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        long turnId = rs.getLong("turn_id");
+        return new UploadedFile(rs.getLong("id"), null, null,
+                rs.wasNull() ? null : turnId, rs.getString("file_name"), null, 0L,
+                FileKind.valueOf(rs.getString("kind")), null, null, 0L);
+    }
+
+    @Override
     public void updateParsedText(long id, String parsedText) {
         jdbcClient.sql(UPDATE_PARSED_TEXT_SQL)
                 .param(parsedText)
@@ -94,11 +136,20 @@ public class JdbcFileStore implements FileStore {
     }
 
     @Override
-    public void linkFilesToTurn(String conversationId, long turnId) {
-        jdbcClient.sql(LINK_FILES_TO_TURN_SQL)
+    public void linkFilesToTurn(String conversationId, List<Long> fileIds, long turnId) {
+        if (fileIds == null || fileIds.isEmpty()) {
+            // 这一轮没带文件。**必须早返回**——空的 IN () 在 MySQL 上是语法错误，
+            // 而且"没带文件"是绝大多数轮次的常态，不该产生任何写入
+            return;
+        }
+        String placeholders = String.join(", ", java.util.Collections.nCopies(fileIds.size(), "?"));
+        var statement = jdbcClient.sql(LINK_FILES_TO_TURN_SQL_TEMPLATE.formatted(placeholders))
                 .param(turnId)
-                .param(conversationId)
-                .update();
+                .param(conversationId);
+        for (Long fileId : fileIds) {
+            statement = statement.param(fileId);
+        }
+        statement.update();
     }
 
     @Override

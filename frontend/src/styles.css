@@ -229,17 +229,11 @@ button { cursor: pointer; }
    一排外观完全一致的能力按钮：屏幕上于是有两组长得一样、作用域却完全不同的按钮（一组定会话
    身份、一组发起一次性任务），没有任何视觉线索区分。现在身份只在顶部、动作只在输入框上方。 */
 .capability-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 0 5px 10px; }
-/* 名字必须和 .task-card 里那组卡片动作按钮区分开：那边的 `.task-actions button` 是深色实心块，
-   规则又排在后面，于是把输入框上方这两颗任务按钮一并染成了深色实心——同一排里"添加文件/联网搜索"
-   是浅色描边、"深度研究/生成 PPT"是深色实心，看上去就不是同一类东西。这不是设计，是重名。 */
-.composer-tasks, .toggles { display: flex; flex-wrap: wrap; gap: 7px; }
-/* 说明性灰字靠右收尾，不参与左边那排按钮的节奏 */
-.bar-notes { margin-left: auto; color: var(--faint); font-size: 11px; }
-/* 点了任务按钮却没写内容时的提示——紧贴输入框上沿，视线不用离开正要填的地方。 */
-.task-hint { margin: -4px 8px 8px; color: var(--accent); font-size: 11px; }
-.composer-tasks button,
-.toggles button,
-.file-upload button {
+/* "同一排、同样的分量"由**一条**规则表达，而不是一串并列的 wrapper 选择器：并列选择器是那个
+   决定的副本，改一个忘一个就会悄悄分家——暗色主题此前就只补了 `.file-upload button` 一支，
+   于是暗色下"添加文件"是浅字、旁边三颗还是浅色主题留下的深灰字，同一排肉眼可见地不是一套东西。
+   作用域限定在 .capability-bar 内，与 .task-card 里那组深色实心的 `.task-actions button` 天然不撞。 */
+.capability-bar button {
   height: 30px;
   padding: 0 11px;
   border: 1px solid var(--line);
@@ -248,13 +242,11 @@ button { cursor: pointer; }
   background: var(--surface);
   font-size: 12px;
 }
-.composer-tasks button:hover,
-.toggles button:hover,
-.file-upload button:hover { border-color: #cdd0c9; color: var(--text); }
-.toggles button.active { border-color: #30332f; color: #fff; background: #30332f; }
-.composer-tasks button:disabled,
-.toggles button:disabled { opacity: .42; cursor: not-allowed; }
-.file-upload { display: flex; align-items: center; }
+.capability-bar button:hover { border-color: #cdd0c9; color: var(--text); }
+.capability-bar button.active { border-color: #30332f; color: #fff; background: #30332f; }
+.capability-bar button:disabled { opacity: .42; cursor: not-allowed; }
+/* 说明性灰字靠右收尾，不参与左边那排按钮的节奏 */
+.bar-notes { margin-left: auto; color: var(--faint); font-size: 11px; }
 
 .composer {
   min-height: 104px;
@@ -362,7 +354,7 @@ button { cursor: pointer; }
 .dark .history button.selected,
 .dark .nav-item.active { background: rgb(255 255 255 / 6%); }
 .dark .new-chat { background: #232623; }
-.dark .file-upload button { color: #c6cac2; background: #242724; }
+.dark .capability-bar button { color: #c6cac2; background: #242724; }
 .dark .brand-mark,
 .dark .welcome-mark,
 .dark .composer button { color: #20221f; background: #eef0eb; }
@@ -382,8 +374,11 @@ button { cursor: pointer; }
   .chat-view { width: min(100% - 24px, 920px); padding-top: 28px; }
   .chat-bottom,
   .messages { padding-left: 4px; padding-right: 4px; }
-  /* 窄屏保持一行换行排布，不改成纵向堆叠——一颗按钮一行会把输入框顶到屏幕外 */
-  .bar-notes { display: none; }
+  /* 窄屏保持一行换行排布，不改成纵向堆叠——一颗按钮一行会把输入框顶到屏幕外。
+     这里只收起"也可拖放文件"这种锦上添花的提示：禁用理由必须留着。窄屏正是**触屏设备**，
+     而禁用理由改成可见文字的全部理由就是触屏没有 hover、读不到 title——在这块屏幕上把它
+     藏起来，等于把这次改动想解决的问题原样还回去。 */
+  .drop-note { display: none; }
   .bubble { max-width: 88%; }
   .task-card { display: block; }
   .task-actions { margin-top: 16px; }
@@ -535,26 +530,10 @@ button { cursor: pointer; }
   .schema-list button { min-width: 145px; }
 }
 
-/* 会话级 Agent 标识（issue #92）。放在会话顶部而不是输入框旁边——位置编码作用域：
-   越靠上作用域越大。Agent 管整个会话，任务和开关管单次发送，不该在同一视觉层级。 */
+/* 能力模式选择器（issue #92，2026-08-17 按 §7.2 改为四模式互斥）。放在会话顶部而不是输入框
+   旁边——位置编码作用域：越靠上作用域越大。模式决定这一轮走哪条协议链路，开关和上传只是
+   往当前模式上叠加，不该在同一视觉层级。选中态本身就是常驻标识，不需要另一颗只读 chip。 */
 .agent-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 6px 10px; }
-/* 「换一个」的解释是展开出来的，占满整行另起一段——它只在用户主动问"为什么不能换"时出现，
-   不是常驻文案。此前那句常驻的「发出第一条消息后即锁定」讲的是实现约束，而且赶在用户
-   什么都还没做的时候出现，第一眼读到的就是一句看不懂的警告。 */
-.agent-explain { flex-basis: 100%; margin: 2px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
-.agent-explain button { margin-left: 6px; color: var(--accent); background: none; border: 0; font-size: 11px; text-decoration: underline; }
-.agent-current {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 11px;
-  border-radius: 999px;
-  color: #fff;
-  background: #30332f;
-  font-size: 12px;
-  font-weight: 600;
-}
 .agent-option {
   display: inline-flex;
   align-items: center;
@@ -569,14 +548,12 @@ button { cursor: pointer; }
 }
 .agent-option:hover { border-color: #cdd0c9; color: var(--text); }
 .agent-option.active { border-color: #30332f; color: #fff; background: #30332f; }
-.agent-fork { color: var(--muted); background: none; border: none; font-size: 11px; text-decoration: underline; }
-.agent-fork:hover { color: var(--text); }
 .history button .kind-mark { margin-right: 6px; color: var(--faint); }
-.dark .agent-current, .dark .agent-option.active { color: #16180f; background: #e7e9e0; }
+.dark .agent-option.active { color: #16180f; background: #e7e9e0; }
 /* 联网搜索开启态在暗色下曾经是深灰底 + 白字压在深色背景上，几乎看不出开没开——它的暗色规则
    本来挂在 .mode-picker 上，早先把开关从那排 chip 里搬出来时一起丢了，样式表里只剩一条没人
    匹配的死规则。这里补回来，和顶部 Agent 选中态用同一套反色。 */
-.dark .toggles button.active { border-color: #e7e9e0; color: #16180f; background: #e7e9e0; }
+.dark .capability-bar button.active { border-color: #e7e9e0; color: #16180f; background: #e7e9e0; }
 
 /* 普通对话里问了数据问题时的引导卡片（issue #94）。做成对话流里的 inline 卡片而不是 toast——
    它解释的是"接下来这个回答为什么可能不靠谱"，用户回头翻记录时仍然需要看到。 */

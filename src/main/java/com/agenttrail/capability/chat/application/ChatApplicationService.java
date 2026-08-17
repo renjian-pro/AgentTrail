@@ -4,6 +4,7 @@ import com.agenttrail.conversation.application.ConversationHistory;
 import com.agenttrail.conversation.application.ConversationPage;
 import com.agenttrail.conversation.application.ConversationPort;
 import com.agenttrail.platform.events.EventEnvelope;
+import com.agenttrail.loop.model.ToolParams;
 import com.agenttrail.platform.ids.ConversationId;
 import com.agenttrail.platform.ids.RunId;
 import com.agenttrail.runtime.api.AgentEvent;
@@ -30,30 +31,44 @@ public final class ChatApplicationService {
         this.conversations = conversations;
     }
 
-    public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId,
-                                    String message, ToolScope toolScope) {
-        return send(principal, conversationId, null, message, toolScope, null);
-    }
-
     public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId, String modelId,
                                     String message, ToolScope toolScope) {
         return send(principal, conversationId, modelId, message, toolScope, null);
     }
 
     /**
-     * @param mode 前端 {@code AgentChatRequest#mode()} 原样传入；目前只认 {@code "analytics"}——
-     *             命中时写进 {@link AgentRequest#toolParams()} 的 {@code analyticsEnabled} 键，
-     *             {@link ChatToolScopeRuntimeAdapter} 据此把整个执行器切到
-     *             {@code AgentLoopExecutorFactory#forAnalytics}，其它取值（含 null）一律按普通聊天处理。
+     * @param mode 前端 {@code AgentChatRequest#mode()} 原样传入，由 {@link CapabilityMode#require}
+     *             解析。{@code null}/空白落 {@link CapabilityMode#CHAT}；**未注册的取值、以及
+     *             走任务链路的 research/ppt，一律抛 {@link IllegalArgumentException}**
+     *             （由 {@code AgentLoopController} 转 400），不再静默降级成普通聊天。
+     *             {@link CapabilityMode#ANALYTICS} 命中时写进 {@link AgentRequest#toolParams()}
+     *             的 {@code analyticsEnabled} 键，{@code ChatToolScopeRuntimeAdapter} 据此把整个
+     *             执行器切到 {@code AgentLoopExecutorFactory#forAnalytics}。
+     * @throws IllegalArgumentException mode 传了但不认识，或该模式不由本端点承载
      */
     public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId, String modelId,
                                     String message, ToolScope toolScope, String mode) {
+        return send(principal, conversationId, modelId, message, toolScope, mode, java.util.List.of());
+    }
+
+    /**
+     * @param fileIds 这一轮显式附带的文件（issue #110 / R21）。走 {@code toolParams} 这条
+     *                <b>模型不可见</b>的通道，和 {@code webSearchEnabled}/{@code analyticsEnabled}
+     *                同一个理由——让模型自己决定能看到哪些文件，等于把越权口子交给一个可被诱导的组件。
+     *                归属校验不在这一层做，收口在数据访问侧（{@code buildFileSection} 天然按会话查、
+     *                绑定 SQL 带 {@code AND conversation_id = ?}），那里绕不过去。
+     */
+    public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId, String modelId,
+                                    String message, ToolScope toolScope, String mode,
+                                    java.util.List<Long> fileIds) {
         String id = conversationId == null || conversationId.isBlank()
                 ? ConversationId.newId().value() : conversationId;
         ToolScope scope = toolScope == null ? ToolScope.none() : toolScope;
-        boolean analyticsEnabled = "analytics".equals(mode);
+        // 解析放在最前面：模式不认识就不该建会话号、不该起 runtime，直接 400 出去
+        boolean analyticsEnabled = CapabilityMode.require(mode) == CapabilityMode.ANALYTICS;
         AgentRuntimePort runtime = profiles.resolve("chat-default", modelId, scope);
-        AgentRunHandle handle = runtime.start(request(principal, id, message, scope, analyticsEnabled));
+        AgentRunHandle handle = runtime.start(
+                request(principal, id, message, scope, analyticsEnabled, fileIds));
         return toEvents(handle, ConversationId.of(id));
     }
 
@@ -89,15 +104,27 @@ public final class ChatApplicationService {
         return conversations.history(principal, conversationId, page, size);
     }
 
-    /** webSearchEnabled/analyticsEnabled 走 toolParams 而不是加 AgentRequest 字段——运行时（见
-     * ChatToolScopeRuntimeAdapter）据此决定这次 start() 用哪套执行器，图表工具始终无条件带上。 */
+    /**
+     * webSearchEnabled/analyticsEnabled/fileIds 走 toolParams 而不是加 AgentRequest 字段——
+     * 运行时（见 ChatToolScopeRuntimeAdapter）据此决定这次 start() 用哪套执行器，图表工具始终
+     * 无条件带上。
+     *
+     * <p>{@code fileIds} 放这条通道的理由和 {@code userId} 一样：**模型不可见**。让模型自己决定
+     * 能看到哪些文件，等于把越权口子交给一个可以被用户诱导的组件。{@code ToolParamInjector} 会按
+     * 目标工具的 inputSchema 白名单过滤，没有工具声明 {@code fileIds} 参数，所以它不会被误注入
+     * 到任何一次工具调用里。
+     */
     private static AgentRequest request(ExecutionPrincipal principal, String conversationId, String message,
-                                        ToolScope toolScope, boolean analyticsEnabled) {
+                                        ToolScope toolScope, boolean analyticsEnabled,
+                                        java.util.List<Long> fileIds) {
         return new AgentRequest(ConversationId.of(conversationId),
                 new com.agenttrail.platform.identity.Principal(principal.userId()), message,
-                Map.of("userId", principal.userId(), "conversation_id", conversationId,
-                        "webSearchEnabled", toolScope.webSearch(),
-                        "analyticsEnabled", analyticsEnabled),
+                Map.of(ToolParams.USER_ID, principal.userId(),
+                        ToolParams.CONVERSATION_ID, conversationId,
+                        ToolParams.WEB_SEARCH_ENABLED, toolScope.webSearch(),
+                        ToolParams.ANALYTICS_ENABLED, analyticsEnabled,
+                        ToolParams.FILE_IDS,
+                        fileIds == null ? java.util.List.<Long>of() : java.util.List.copyOf(fileIds)),
                 null, AgentRequest.Budget.UNBOUNDED);
     }
 

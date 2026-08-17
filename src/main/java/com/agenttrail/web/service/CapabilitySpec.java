@@ -28,6 +28,9 @@ import java.util.List;
  * @param skills                    是否挂 Skill 元工具
  * @param memory                    是否挂分层记忆（每轮结束会多发一次同步 LLM 调用做记忆提取）
  * @param files                     是否挂会话文件区块
+ * @param systemPromptId            模式级系统提示词在 {@code PromptRegistry} 里的 id；
+ *                                  {@code null} 表示这个变体不挂角色提示词——只有内部编排子调用
+ *                                  该是这种，它们各自已经带着一份很具体的任务提示词
  */
 public record CapabilitySpec(
         List<ToolCallback> tools,
@@ -38,7 +41,8 @@ public record CapabilitySpec(
         boolean persist,
         boolean skills,
         boolean memory,
-        boolean files) {
+        boolean files,
+        String systemPromptId) {
 
     private static final int DEFAULT_MAX_ROUNDS = 10;
 
@@ -52,7 +56,7 @@ public record CapabilitySpec(
     public static CapabilitySpec chat(List<ToolCallback> tools, List<String> protectedToolNames,
                                       DataProvenancePolicy provenance) {
         return new CapabilitySpec(tools, DEFAULT_MAX_ROUNDS, 0, protectedToolNames, provenance,
-                true, true, true, true);
+                true, true, true, true, "chat.system");
     }
 
     /**
@@ -66,7 +70,11 @@ public record CapabilitySpec(
         // 多发一次同步 LLM 调用——2026-08-16 统一 builder 链时把这三个压成一个开关，等于给分析
         // 执行器顺手打开了记忆，整个流因此完不成，跑批每条卡满 3 分钟超时上限。
         // 工厂里 memoryStore/skillManager 两个字段的注释原本就写明了各自的接入范围，是我改宽了。
-        return new CapabilitySpec(tools, 20, 3, protectedToolNames, provenance, true, true, false, false);
+        // analytics.system 只写边界（数据只能来自工具、不自己写权限条件、只读、口径要说清），
+        // **不写 SOP**——"怎么一步步做"仍在 skills/data-analysis/SKILL.md 里走 Skill 元工具
+        // 按需加载（R2）。把 SOP 搬进系统提示词等于悄悄推翻 R2 那个带取舍记录的决策。
+        return new CapabilitySpec(tools, 20, 3, protectedToolNames, provenance, true, true, false, false,
+                "analytics.system");
     }
 
     /**
@@ -75,7 +83,9 @@ public record CapabilitySpec(
      * （真实发生过，一次请求能留下十几条上万字的垃圾行）。
      */
     public static CapabilitySpec internalOrchestration(List<ToolCallback> tools) {
+        // 不挂模式级提示词：每个子调用自己带着 prompts/deepresearch/* 里那份很具体的任务提示词，
+        // 上面再压一层"你是 AgentTrail 的通用助手"只会和它打架。
         return new CapabilitySpec(tools, DEFAULT_MAX_ROUNDS, 0, List.of(),
-                DataProvenancePolicy.DISABLED, false, false, false, false);
+                DataProvenancePolicy.DISABLED, false, false, false, false, null);
     }
 }

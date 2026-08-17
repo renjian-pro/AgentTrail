@@ -52,6 +52,29 @@ public final class PromptRegistry {
         this.byId = Map.copyOf(byId);
     }
 
+    /**
+     * 全进程共用的那一份。**生产代码应当用这个，不要各自 {@link #loadFromClasspath()}。**
+     *
+     * <p>一次加载要扫一遍 {@code classpath*:prompts/**}{@code /*.md}、读全部文件、逐个算 SHA-256。
+     * 内容是不可变的，六个消费方各扫一遍等于把同样的活干六遍、再把同样的内容留六份在静态字段里。
+     *
+     * <p>惰性持有类而不是直接 {@code static final}：加载要读 {@link #LOCATION_PROPERTY}，
+     * 用它做离线 A/B（{@code -Dagenttrail.prompts.dir=prompts-variants/exp-a}）时，属性必须在
+     * 第一次真正取用之前设好。持有类把"第一次取用"推迟到真的有人调 {@link #shared()} 那一刻，
+     * 比"谁先被类加载谁说了算"确定得多。
+     */
+    public static PromptRegistry shared() {
+        return SharedHolder.INSTANCE;
+    }
+
+    private static final class SharedHolder {
+        private static final PromptRegistry INSTANCE = loadFromClasspath();
+    }
+
+    /**
+     * 独立加载一份。只在**需要和 {@link #shared()} 不同的一份**时用——目前只有测试
+     * （测试要能对着某个特定目录断言，不受全局那份影响）。
+     */
     public static PromptRegistry loadFromClasspath() {
         try {
             String location = System.getProperty(LOCATION_PROPERTY, DEFAULT_LOCATION);

@@ -57,9 +57,12 @@ record RunContext(
          * 本次运行里真正用过的外置提示词标识（{@code id@version#hash}），落进
          * {@code agent_trace.prompt_stamps} 供 Golden 分数归因（issue #101）。
          *
-         * <p>主对话轮次通常是空的——系统提示词的组装是条件拼接代码，按 requirements §6.2
-         * 明确豁免于提示词纳管。真正会往里写的是上下文压缩、记忆提取这类走 PromptRegistry
-         * 的轮内内部调用，所以这个集合非空本身就说明"这一轮触发过压缩/提取"。
+         * <p>三个来源：**模式级角色提示词**（issue #111 起，chat.system / analytics.system，
+         * 每一轮都有）、上下文压缩、记忆提取。前者是 R22 加进来的——在那之前主对话轮次的这个
+         * 集合永远是空的，于是 Golden 分数一变就回答不了"是不是改角色提示词改出来的"。
+         *
+         * <p>注意 §6.2 豁免的是**系统提示词的条件拼接代码**（日期/记忆/文件那几个区块），
+         * 不是角色提示词本身——后者是 `resources/prompts/` 里的纯文本，纳管、有版本、进 stamp。
          */
         Set<String> usedPromptStamps) {
 

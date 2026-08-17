@@ -92,27 +92,31 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('第一段已经到达，第二段稍后到达')
   })
 
-  it('fires PPT generation straight from the composer without entering a mode', async () => {
+  it('fires PPT generation from the composer once PPT mode is selected', async () => {
     vi.mocked(pptApi.create).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
     // create() 现在只提交任务，本身没跑完（RENDER 不是终态）——runPpt 提交后会立即再轮询一次
     // pptApi.status()，让它原地停在同一个状态即可，这个用例不关心后续轮询本身。
     vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
+    await wrapper.findAll('.agent-option')[3].trigger('click')
     await wrapper.find('textarea').setValue('生成战略汇报')
-    await wrapper.findAll('.composer-tasks button')[1].trigger('click')
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     expect(pptApi.create).toHaveBeenCalledWith(expect.any(String), '生成战略汇报')
     expect(wrapper.text()).toContain('正在渲染')
-    // 任务是动作不是模式：按钮没有选中态，点完也不该在界面上留下"下一条消息将使用 XX"这类残留
-    expect(wrapper.findAll('.composer-tasks button.active')).toHaveLength(0)
-    expect(wrapper.find('.mode-hint').exists()).toBe(false)
+    // 模式发完不复位（R13/R14）：PPT 仍然是选中态，用户可以接着改主题再发一版
+    expect(wrapper.findAll('.agent-option')[3].classes()).toContain('active')
 
-    await wrapper.find('textarea').setValue('这条应该走普通对话')
+    // 这条断言的方向和改造前**正好相反**，是有意的：任务曾经是"动作"，点一次发起一次，
+    // 下一条消息自动回到普通对话；现在它是模式，选中后一直保持，第二次发送仍然走 PPT。
+    // 想发普通消息得先手动切回去——这正是 R13「不因发送而复位」要的行为。
+    await wrapper.find('textarea').setValue('再来一版，换个角度')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
-    expect(pptApi.create).toHaveBeenCalledTimes(1)
+    expect(pptApi.create).toHaveBeenCalledTimes(2)
+    expect(streamChat).not.toHaveBeenCalled()
   })
 
   /**
@@ -146,22 +150,44 @@ describe('ChatView', () => {
   })
 
   /**
-   * 三层分离的核心断言（issue #93）：任务层不碰 Agent 层。在数据分析会话里发起一个 PPT 任务，
-   * 会话仍然是数据分析——任务走的是自己的链路，不共享执行器也不共享工具集，没有理由改变会话状态。
-   * 曾经它们是同一排 chip，点 PPT 会把"数据分析"顶掉，那正是作用域被混为一谈的表现。
+   * 协议分派的核心断言（requirements.md §7.2）：四个模式共用一个发送入口，但 `research`/`ppt`
+   * 不走 `/agent/v1/chat` 的 SSE 流，而是各自创建异步任务。选中 PPT 模式后按发送，走的必须是
+   * `pptApi.create`，而且**模式保持不变**——发完不复位是 R13/R14 的核心。
    */
-  it('leaves the session agent untouched when a task is fired', async () => {
+  it('routes send to the task API when a task mode is selected, and keeps the mode', async () => {
     vi.mocked(pptApi.create).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
-    vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
+    vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'SUCCESS', errorMsg: null, outputPath: 'a.pptx' })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.agent-option')[1].trigger('click')
+    await wrapper.findAll('.agent-option')[3].trigger('click')
     await wrapper.find('textarea').setValue('把刚才的结论做成 PPT')
-    await wrapper.findAll('.composer-tasks button')[1].trigger('click')
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     expect(pptApi.create).toHaveBeenCalled()
-    expect(useChatStore().agentKind).toBe('analytics')
+    expect(streamChat).not.toHaveBeenCalled()
+    expect(useChatStore().agentKind).toBe('ppt')
+  })
+
+  /**
+   * 联网搜索与模式不正交（R14a）：普通对话可开关、数据分析禁用并说明理由、
+   * research/ppt 下**整颗按钮不渲染**——它们内部无条件做自己的资料检索，
+   * 渲染成"已开启的开关"会暗示用户可以关掉，而关掉这两个模式压根跑不起来。
+   */
+  it('scopes the web-search toggle to the modes it actually applies to', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+    const toggle = () => wrapper.findAll('.capability-bar button').find(b => b.text().includes('联网搜索'))
+
+    expect(toggle()).toBeTruthy()
+    expect(toggle()!.attributes('disabled')).toBeUndefined()
+
+    await wrapper.findAll('.agent-option')[1].trigger('click')
+    expect(toggle()!.attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.bar-notes').text()).toContain('不挂载联网搜索')
+
+    await wrapper.findAll('.agent-option')[2].trigger('click')
+    expect(toggle()).toBeUndefined()
+    expect(wrapper.get('.bar-notes').text()).toContain('自带资料检索')
   })
 
   /**
@@ -177,11 +203,13 @@ describe('ChatView', () => {
 
     expect(wrapper.find('.switch-hint').exists()).toBe(true)
 
+    // 就地切换，**不再新开会话**：模式改成轮次级之后，用户刚问的那个数据问题还在上面，
+    // 换个会话反而把它丢了。此前这里是 startNewConversation('analytics')，那是会话级绑定
+    // 时代的唯一出路（会话一旦锁定就换不了 Agent）。
     await wrapper.find('.switch-hint button').trigger('click')
     const store = useChatStore()
     expect(store.agentKind).toBe('analytics')
-    expect(store.conversationId).toBeUndefined()
-    expect(store.messages).toEqual([])
+    expect(store.messages.length).toBeGreaterThan(0)
   })
 
   /** 数据分析会话里不该出现这张卡片——它已经在正确的 Agent 上了。 */
@@ -208,21 +236,21 @@ describe('ChatView', () => {
   })
 
   /**
-   * 输入为空时点任务按钮不发起任务，但**必须说清楚为什么**。
-   *
-   * <p>回归测试：这里原来是静默 return——按钮亮着、可点、点了毫无反应，用户唯一能得出的结论
-   * 是"这按钮坏了"，不会想到"原来要先打字"。
+   * 模式化之后"空输入"不再是特例：发送按钮本来就不接受空白输入（MessageInput.submit 自己拦），
+   * 所以不需要再为任务按钮单独准备一句"先写下要研究的问题"。占位文案随模式变，
+   * 用户不用猜这个模式下该写什么。
    */
-  it('explains what is missing when a task button is pressed with an empty composer', async () => {
+  it('tells the user what to write by switching the composer placeholder per mode', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.composer-tasks button')[0].trigger('click')
+    await wrapper.findAll('.agent-option')[2].trigger('click')
+    expect(wrapper.find('textarea').attributes('placeholder')).toContain('研究')
+
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
-
     expect(researchApi.run).not.toHaveBeenCalled()
-    expect(wrapper.get('.task-hint').text()).toContain('深度研究')
 
-    // 真正写了内容再点，提示要让位给任务本身
+    // 写了内容再发，才真的发起任务
     vi.mocked(researchApi.run).mockResolvedValue({
       taskId: 7,
       status: 'SUCCESS',
@@ -236,36 +264,45 @@ describe('ChatView', () => {
       errorMsg: null
     })
     await wrapper.find('textarea').setValue('查一下行业现状')
-    await wrapper.findAll('.composer-tasks button')[0].trigger('click')
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.find('.task-hint').exists()).toBe(false)
+    expect(researchApi.run).toHaveBeenCalled()
   })
 
   /**
-   * 首条消息发出即锁定：选择器消失、原地换成只读标识 + 一个「换一个」出口。
+   * **本次修复的核心回归**（requirements.md R13/R14）：模式发完不复位、发完还能自由切、
+   * 选择器始终在，四个模式常驻可见。
    *
-   * <p>锁定的**理由**是按需展开的，不是常驻文案——此前顶部常年挂着一句「发出第一条消息后即锁定」，
-   * 赶在用户什么都还没做的时候讲我们的实现约束，第一眼读到的就是一句看不懂的警告。
+   * <p>此前是"首条消息发出即锁定"——选择器消失、换成只读标识 + 一个「换一个」出口，
+   * 想换模式必须新开会话。那套约束建立在"换执行器会让历史里的 tool_calls 指向当前不存在的
+   * 工具"之上，而 `JdbcSessionStore.loadHistory` 只回放 question/answer，故障并不存在（§7.3）。
+   *
+   * <p>再往前还有一次更糟的：发完 `pendingMode = undefined` 静默复位，用户追问时掉回普通对话
+   * 而毫不知情。两个方向都不能再走回去，所以正反都钉住。
    */
-  it('locks the agent once the first message is sent', async () => {
+  it('keeps the selected mode after sending and still allows switching', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
+    expect(wrapper.findAll('.agent-option')).toHaveLength(4)
     await wrapper.findAll('.agent-option')[1].trigger('click')
-    expect(wrapper.find('.agent-current').exists()).toBe(false)
 
     await wrapper.find('textarea').setValue('上个月的订单量是多少')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.findAll('.agent-option')).toHaveLength(0)
-    expect(wrapper.find('.agent-current').text()).toContain('数据分析')
-    expect(wrapper.find('.agent-fork').exists()).toBe(true)
-    // 理由默认不占版面，点了「换一个」才出现，并且给出一个带着当前对话走的出口
-    expect(wrapper.find('.agent-explain').exists()).toBe(false)
-    await wrapper.find('.agent-fork').trigger('click')
-    expect(wrapper.get('.agent-explain').text()).toContain('新开一个会话')
-    expect(wrapper.find('.agent-explain button').exists()).toBe(true)
+    // 不复位：选择器还在，数据分析仍然选中
+    expect(wrapper.findAll('.agent-option')).toHaveLength(4)
+    expect(useChatStore().agentKind).toBe('analytics')
+    expect(wrapper.findAll('.agent-option')[1].classes()).toContain('active')
+
+    // 不锁定：会话已经有 id 了，照样能换
+    await wrapper.findAll('.agent-option')[2].trigger('click')
+    expect(useChatStore().agentKind).toBe('research')
+
+    // 再点当前模式＝取消，落回普通对话
+    await wrapper.findAll('.agent-option')[2].trigger('click')
+    expect(useChatStore().agentKind).toBe('chat')
   })
 
   it('renders the Deep Research clarification card inline instead of dumping raw JSON', async () => {
@@ -285,8 +322,9 @@ describe('ChatView', () => {
     })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
+    await wrapper.findAll('.agent-option')[2].trigger('click')
     await wrapper.find('textarea').setValue('帮我研究 AI')
-    await wrapper.findAll('.composer-tasks button')[0].trigger('click')
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     expect(wrapper.text()).toContain('你希望研究哪个行业？')
@@ -304,14 +342,15 @@ describe('ChatView', () => {
     vi.mocked(researchApi.status).mockReturnValue(new Promise(resolve => { resolveStatus = resolve }))
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
+    await wrapper.findAll('.agent-option')[2].trigger('click')
     await wrapper.find('textarea').setValue('研究 Java 工程师就业趋势')
-    await wrapper.findAll('.composer-tasks button')[0].trigger('click')
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     expect(wrapper.get('.research-question').text()).toContain('研究 Java 工程师就业趋势')
     expect(wrapper.get('.research-loading').text()).toContain('深度研究进行中')
-    // 提交已经完成（拿到了 taskId），不该继续锁住工具栏——报告还在后台轮询，界面不该跟着卡死。
-    expect(wrapper.findAll('.composer-tasks button').every(button => button.attributes('disabled') === undefined)).toBe(true)
+    // 提交已经完成（拿到了 taskId），不该继续锁住输入框——报告还在后台轮询，界面不该跟着卡死。
+    expect(wrapper.find('.composer button').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('.stop').exists()).toBe(false)
     expect(researchApi.run).toHaveBeenCalledWith(expect.any(String), '研究 Java 工程师就业趋势')
     expect(researchApi.status).toHaveBeenCalledWith(7)

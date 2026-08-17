@@ -4,6 +4,10 @@
 # 不改版本号只改正文时，PromptRegistry 会在启动时 WARN，PromptRegistryLockTest 会失败——
 # 因为那会让 Golden 分数变化归因到错误的版本，是评测体系里最难查的一类错。
 prompts:
+  # 模式级系统提示词（issue #111 / R22）：角色定位、能力边界、工具用法说明。
+  # 只写边界，不写 SOP——"这类任务按什么套路做"仍在 skills/ 里走 Skill 元工具按需加载（R2）。
+  analytics.system: v1#bdac6cea
+  chat.system: v1#dde9c8bc
   deepresearch.clarification: v1#f05a7bfc
   deepresearch.critique: v1#f38b5e93
   deepresearch.execute: v1#1f309300

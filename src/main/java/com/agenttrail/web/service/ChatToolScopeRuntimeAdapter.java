@@ -33,8 +33,8 @@ import java.util.Objects;
  * 聊天没有任何区别。
  */
 public class ChatToolScopeRuntimeAdapter implements AgentRuntimePort {
-    private static final String WEB_SEARCH_PARAM = "webSearchEnabled";
-    private static final String ANALYTICS_PARAM = "analyticsEnabled";
+    private static final String WEB_SEARCH_PARAM = com.agenttrail.loop.model.ToolParams.WEB_SEARCH_ENABLED;
+    private static final String ANALYTICS_PARAM = com.agenttrail.loop.model.ToolParams.ANALYTICS_ENABLED;
 
     private final AgentLoopExecutorFactory executorFactory;
     private final String modelId;
@@ -110,9 +110,9 @@ public class ChatToolScopeRuntimeAdapter implements AgentRuntimePort {
      * 值可能是 {@code Boolean} 也可能是字符串——快照走 JSON 往返，历史数据里两种都出现过，
      * 只认 {@code Boolean.TRUE} 会把恢复出来的分析会话静默判成普通聊天。
      */
+    /** 口径归 {@link com.agenttrail.loop.model.ToolParams} 所有——含"恢复时布尔可能变字符串"那份宽容。 */
     private static boolean flagEnabled(Map<String, Object> params, String key) {
-        Object value = params.get(key);
-        return Boolean.TRUE.equals(value) || "true".equalsIgnoreCase(String.valueOf(value));
+        return com.agenttrail.loop.model.ToolParams.flag(params, key);
     }
 
     private boolean webSearchEnabled(AgentRequest request) {

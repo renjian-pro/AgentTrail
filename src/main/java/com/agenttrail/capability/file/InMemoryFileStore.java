@@ -43,6 +43,14 @@ public class InMemoryFileStore implements FileStore {
     }
 
     @Override
+    public List<UploadedFile> findVisibleForPrompt(String conversationId, List<Long> requestedFileIds) {
+        return findByConversationId(conversationId).stream()
+                .filter(file -> file.turnId() != null
+                        || (requestedFileIds != null && requestedFileIds.contains(file.id())))
+                .toList();
+    }
+
+    @Override
     public void updateParsedText(long id, String parsedText) {
         filesById.computeIfPresent(id, (key, existing) -> new UploadedFile(existing.id(), existing.userId(), existing.conversationId(),
                 existing.turnId(), existing.fileName(), existing.contentType(), existing.sizeBytes(),
@@ -50,9 +58,14 @@ public class InMemoryFileStore implements FileStore {
     }
 
     @Override
-    public void linkFilesToTurn(String conversationId, long turnId) {
+    public void linkFilesToTurn(String conversationId, List<Long> fileIds, long turnId) {
+        if (fileIds == null || fileIds.isEmpty()) {
+            return;
+        }
+        // 三个条件和 JdbcFileStore 那条 SQL 一一对应：显式带上来的、属于这个会话的、还没归属的
         for (UploadedFile file : filesById.values()) {
-            if (file.conversationId().equals(conversationId) && file.turnId() == null) {
+            if (fileIds.contains(file.id())
+                    && file.conversationId().equals(conversationId) && file.turnId() == null) {
                 filesById.put(file.id(), new UploadedFile(file.id(), file.userId(), file.conversationId(), turnId, file.fileName(),
                         file.contentType(), file.sizeBytes(), file.kind(), file.parsedText(), file.rawBytes(),
                         file.createdAtMillis()));

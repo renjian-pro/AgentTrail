@@ -1,5 +1,10 @@
 # 前端能力模型重构：三层分类 + 会话级 Agent 绑定 — 需求与技术方案
 
+> ⚠️ **状态：已交付，其中两处需回退（2026-08-17）。** 本 spec 的三张票（F6/F7/F8）均已实现上线。此后 `requirements.md` §7 修订——三层能力模型（Agent/任务/开关）改为**一排互斥模式、轮次级可自由切**；跨执行器的 `tool_calls` 问题经核实在当前实现中并不存在（`loadHistory` 只回放 `question`/`answer`），改为把该契约钉死，不再靠会话级绑定。
+> 影响：**F7 的动作按钮形态要回退**（PPT／深度研究重新变回有 active 态的模式）；**F6 的 `agentLocked` 锁定语义要拆**，`agentKind` 从 localStorage 迁到 `agent_session.mode`，常驻标识（R14）保留；**F8 不动**。
+> 回退清单见 [`frontend-capability-model-tickets.md`](frontend-capability-model-tickets.md) 顶部；新模型见 [`../session-turn-model.md`](../session-turn-model.md) §3 与 `requirements.md` §7.2/7.3。
+> 下文保留原样作为**已交付实现的记录 + 决策演进留痕**，不再是待办清单。
+>
 > 状态：草案，按 `to-spec` 模板整理。
 > 上位文档：[`requirements.md`](../../requirements.md) §7「能力入口与会话模型」——那里定的是"做什么、为什么"（三层模型、会话级绑定、ConversationDigest、R13–R17），这份 spec 只定前端"怎么做"。冲突时以 §7 为准。
 > 已拆票：3 张（F6/F7/F8），依赖图见 [`frontend-capability-model-tickets.md`](frontend-capability-model-tickets.md)。

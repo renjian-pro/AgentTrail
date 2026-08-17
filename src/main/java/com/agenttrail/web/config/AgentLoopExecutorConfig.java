@@ -349,7 +349,8 @@ public class AgentLoopExecutorConfig {
             PiiMasker piiMasker,
             ToolRateLimiter toolRateLimiter,
             ObjectProvider<SkillManager> skillManagerProvider,
-            ObjectProvider<MemoryStore> memoryStoreProvider) {
+            ObjectProvider<MemoryStore> memoryStoreProvider,
+            ObjectProvider<org.springframework.transaction.PlatformTransactionManager> transactionManagerProvider) {
         List<RegisteredModel> models = List.of(
                 new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
                 // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
@@ -363,6 +364,11 @@ public class AgentLoopExecutorConfig {
                 .persistence(turnPersistenceHook)
                 .fileContentTool(fileContentToolProvider.getIfAvailable())
                 .fileStore(fileStoreProvider.getIfAvailable())
+                // issue #110 / R21：轮次落库和附件绑定必须同生共死。改成按 fileIds 精确绑之后，
+                // 旧 sweep 那种"下一轮顺手扫走"的自愈没有了——中间失败会留下"轮次有、文件永远
+                // turn_id IS NULL"且不可恢复。没有事务管理器时传 null，执行器退化成两次独立调用。
+                .turnCommitter(turnCommitter(turnPersistenceHook, fileStoreProvider.getIfAvailable(),
+                        transactionManagerProvider.getIfAvailable()))
                 .analytics(analyticsToolProvider.getIfAvailable())
                 .pause(pauseConfig)
                 .budget(sessionBudgetTracker)
@@ -381,5 +387,23 @@ public class AgentLoopExecutorConfig {
                 memoryStoreProvider.getIfAvailable() != null, traceStore != null,
                 meterRegistryProvider.getIfAvailable() != null);
         return factory;
+    }
+
+    /**
+     * 只有三样都齐了才包事务（issue #110 / R21）。缺任何一样返回 null，执行器退化成两次独立调用
+     * ——那是没有数据库的装配（单测、没配数据源）的正常形态，不是降级。
+     *
+     * <p>特别地，{@code fileStore} 为 null 时也不需要事务：没有附件要绑，就只剩轮次落库这一步，
+     * 单步操作本来就是原子的。
+     */
+    private static com.agenttrail.loop.persistence.TurnCommitter turnCommitter(
+            com.agenttrail.loop.persistence.TurnPersistenceHook persistenceHook,
+            com.agenttrail.capability.file.FileStore fileStore,
+            org.springframework.transaction.PlatformTransactionManager transactionManager) {
+        if (persistenceHook == null || fileStore == null || transactionManager == null) {
+            return null;
+        }
+        return new com.agenttrail.loop.persistence.TransactionalTurnCommitter(
+                persistenceHook, fileStore, transactionManager);
     }
 }

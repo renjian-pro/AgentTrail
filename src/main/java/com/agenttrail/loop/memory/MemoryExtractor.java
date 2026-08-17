@@ -29,7 +29,7 @@ import java.util.Locale;
 public class MemoryExtractor {
     /** 提示词正文外置在 {@code resources/prompts/}（issue #100）：改一句不用动代码，
      *  且每一版都有可写进 trace 的 {@code id@version#hash} 标识，Golden 分数变化才归因得了。 */
-    private static final PromptRegistry PROMPTS = PromptRegistry.loadFromClasspath();
+    private static final PromptRegistry PROMPTS = PromptRegistry.shared();
 
 
     private static final Logger log = LoggerFactory.getLogger(MemoryExtractor.class);

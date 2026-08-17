@@ -26,15 +26,14 @@ describe('chat store', () => {
   })
 
   /**
-   * Agent 是会话级的（issue #92）。绑定关系存在本地映射里而不是挂在 ChatSession 上——
-   * hydrateSessions() 会用服务端列表整体覆盖 sessions，而服务端不知道 Agent 这个概念。
+   * 模式记在本地映射里而不是挂在 ChatSession 上——hydrateSessions() 会用服务端列表整体覆盖
+   * sessions，而服务端目前还不知道 mode 这个概念（R13 的后端那一半未做）。
    */
-  it('binds the agent to the conversation and restores it when reopening', async () => {
+  it('binds the mode to the conversation and restores it when reopening', async () => {
     const store = useChatStore()
     store.setAgentKind('analytics')
     store.acceptConversation('analytics-conversation', '上个月的订单量')
 
-    expect(store.agentLocked).toBe(true)
     expect(store.agentKindFor('analytics-conversation')).toBe('analytics')
 
     store.startNewConversation()
@@ -45,13 +44,30 @@ describe('chat store', () => {
     expect(store.agentKind).toBe('analytics')
   })
 
-  /** 锁定后不许换 Agent——静默忽略，调用方本来就该先看 agentLocked。 */
-  it('refuses to change the agent once the conversation has an id', () => {
+  /**
+   * **这条是本次修复的核心断言**（requirements.md R13）：模式是轮次级的，会话已经有 id 之后
+   * 照样能切。此前这里有一道 `if (agentLocked) return` 的静默忽略，是"首条消息后锁定"那套
+   * 会话级绑定的一部分；核对实现后发现它防的故障（跨轮历史里的 tool_calls 指向不存在的工具）
+   * 并不存在——`JdbcSessionStore.loadHistory` 只回放 question/answer。约束没了，锁定也就多余。
+   *
+   * <p>改回去了没人发现的话，用户又会被困在第一次选的模式里，所以必须钉住。
+   */
+  it('allows switching mode freely after the conversation has an id', () => {
     const store = useChatStore()
-    store.acceptConversation('locked-conversation', '第一句')
+    store.acceptConversation('live-conversation', '第一句')
 
     store.setAgentKind('analytics')
+    expect(store.agentKind).toBe('analytics')
 
+    store.setAgentKind('ppt')
+    expect(store.agentKind).toBe('ppt')
+
+    // 切换要立刻落进本地映射，否则刷新后侧栏还显示旧模式——acceptConversation 只在会话号
+    // 首次分配那一刻写过一次，之后的切换没有第二个写入点。
+    expect(store.agentKindFor('live-conversation')).toBe('ppt')
+
+    // 取消回普通对话也是一次普通的切换，没有特殊路径
+    store.setAgentKind('chat')
     expect(store.agentKind).toBe('chat')
   })
 

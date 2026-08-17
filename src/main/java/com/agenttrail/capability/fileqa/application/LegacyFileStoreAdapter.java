@@ -34,7 +34,9 @@ public final class LegacyFileStoreAdapter implements FileStorePort {
     }
 
     @Override public void updateParsedText(long id, String parsedText) { delegate.updateParsedText(id, parsedText); }
-    @Override public void linkFilesToTurn(String conversationId, long turnId) { delegate.linkFilesToTurn(conversationId, turnId); }
+    @Override public void linkFilesToTurn(String conversationId, java.util.List<Long> fileIds, long turnId) {
+        delegate.linkFilesToTurn(conversationId, fileIds, turnId);
+    }
     @Override public void delete(long id) { delegate.delete(id); }
 
     private static Attachment fromLegacy(UploadedFile file) {

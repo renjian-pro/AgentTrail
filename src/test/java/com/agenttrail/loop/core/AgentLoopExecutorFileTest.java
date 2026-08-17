@@ -13,6 +13,7 @@ import org.springframework.ai.chat.messages.SystemMessage;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import static com.agenttrail.loop.core.support.ChatResponses.text;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,21 +28,30 @@ class AgentLoopExecutorFileTest {
 
     private static final RunnableParams PARAMS = new RunnableParams("conv-1", "user-1");
 
+    /**
+     * 带上"这一轮显式附了哪些文件"（issue #110 / R21）。走 {@code toolParams} 这条模型不可见的
+     * 通道，和生产链路（{@code ChatApplicationService#request}）用的是同一个键。
+     */
+    private static RunnableParams paramsWithFiles(Long... fileIds) {
+        return new RunnableParams("conv-1", "user-1", Map.of("fileIds", List.of(fileIds)));
+    }
+
     @Test
     void groupsFilesUploadedInTheCurrentRoundSeparatelyFromEarlierRounds() {
         InMemoryFileStore fileStore = new InMemoryFileStore();
-        fileStore.save(textFile("conv-1", "old.txt"));
+        long firstId = fileStore.save(textFile("conv-1", "old.txt"));
         long linkedId = fileStore.save(textFile("conv-1", "old.txt"));
-        fileStore.linkFilesToTurn("conv-1", 999L); // 模拟这两份文件已经归属到更早的一轮
-        fileStore.save(textFile("conv-1", "new-a.txt"));
-        fileStore.save(textFile("conv-1", "new-b.txt"));
+        fileStore.linkFilesToTurn("conv-1", List.of(firstId, linkedId), 999L); // 模拟这两份文件已经归属到更早的一轮
+        long newA = fileStore.save(textFile("conv-1", "new-a.txt"));
+        long newB = fileStore.save(textFile("conv-1", "new-b.txt"));
 
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("好的")));
         AgentLoopExecutor executor = AgentLoopExecutor.builder(chatModel, List.of(), 5)
                 .fileStore(fileStore)
                 .build();
 
-        executor.stream("看看这两个文件", PARAMS).collectList().block(Duration.ofSeconds(5));
+        // 新上传的两份要由用户显式带上来才可见（issue #110）——不带就等于"传了但没发"
+        executor.stream("看看这两个文件", paramsWithFiles(newA, newB)).collectList().block(Duration.ofSeconds(5));
 
         String fileSection = fileSectionFrom(chatModel);
         assertThat(fileSection).contains("本轮上传的文件").contains("此前上传的文件");
@@ -67,7 +77,9 @@ class AgentLoopExecutorFileTest {
                 .persistenceHook(persistenceHook)
                 .build();
 
-        executor.stream("看看这个文件", PARAMS).collectList().block(Duration.ofSeconds(5));
+        // 用户按发送时把这个 fileId 带上来，绑定才发生（issue #110）——此前是"扫一遍会话里
+        // 所有还没归属的"，于是上传过就一定会被下一轮吞掉，跟用户按没按发送无关
+        executor.stream("看看这个文件", paramsWithFiles(fileId)).collectList().block(Duration.ofSeconds(5));
 
         assertThat(fileStore.findById(fileId).orElseThrow().turnId()).isEqualTo(42L);
     }
@@ -76,7 +88,7 @@ class AgentLoopExecutorFileTest {
     void doesNotRelinkFilesThatAlreadyBelongToAnEarlierTurn() {
         InMemoryFileStore fileStore = new InMemoryFileStore();
         long fileId = fileStore.save(textFile("conv-1", "old.txt"));
-        fileStore.linkFilesToTurn("conv-1", 7L);
+        fileStore.linkFilesToTurn("conv-1", List.of(fileId), 7L);
         FixedIdPersistenceHook persistenceHook = new FixedIdPersistenceHook(42L);
 
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(text("好的")));
