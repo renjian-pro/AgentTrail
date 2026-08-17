@@ -176,6 +176,32 @@ class ContextCompactorTest {
         assertThat(messages.get(0).getText()).isEqualTo("你是一个 SQL 分析助手");
     }
 
+    /**
+     * 历史最前面是一串独立的系统区块（日期、用户记忆、会话文件清单），必须**整段**留在摘要之外。
+     * 只保住第一条的话，模型压缩后就看不到会话文件清单，也就不知道有哪些 fileId 能传给
+     * load_file_content——"模型看不到文件"这个已知故障形态正是这么来的；用户记忆同样会丢。
+     */
+    @Test
+    void keepsEveryLeadingSystemMessageOutOfTheSummary() {
+        ContextPolicy policy = ContextPolicy.builder().tokenThreshold(50).maxToolLength(0).build();
+        List<Message> messages = new ArrayList<>(List.of(
+                new SystemMessage("## 当前日期\n2026-08-17"),
+                new SystemMessage("## 用户记忆\n用户偏好用中文回答"),
+                new SystemMessage("## 会话文件\n- fileId=f-001 销售明细.xlsx"),
+                new UserMessage("原始提问".repeat(200)),
+                new AssistantMessage("一段很长的回答".repeat(200)),
+                new UserMessage("再问一句".repeat(200))));
+
+        new ContextCompactor(policy, summarisingModelReturning("这是摘要")).compact(messages, "现在问什么");
+
+        assertThat(messages).as("三条系统消息 + 一条摘要").hasSize(4);
+        assertThat(messages.subList(0, 3)).allMatch(SystemMessage.class::isInstance);
+        assertThat(messages.get(0).getText()).isEqualTo("## 当前日期\n2026-08-17");
+        assertThat(messages.get(1).getText()).isEqualTo("## 用户记忆\n用户偏好用中文回答");
+        assertThat(messages.get(2).getText()).isEqualTo("## 会话文件\n- fileId=f-001 销售明细.xlsx");
+        assertThat(messages.get(3).getText()).contains("这是摘要");
+    }
+
     /** 摘要要靠一次额外的 LLM 调用，它自己也可能失败——不能因此让整轮对话崩掉。 */
     @Test
     void fallsBackToKeepingRecentTurnsWhenTheSummaryCallFails() {

@@ -187,20 +187,28 @@ public class ContextCompactor {
      * 或者一个没有来由的结果，反而更困惑（踩坑点 #7）。
      *
      * <p>系统提示词永远不进摘要：它定义了 Agent 的身份和行为规则，被摘要改写等于当场换了个 Agent。
+     *
+     * <p>要保留的是开头**连续的全部** SystemMessage，而不只是第一条：调用方在历史最前面拼的是
+     * 一串独立的系统区块（日期、用户分层记忆、会话文件清单，见 {@code AgentLoopExecutor#stream}），
+     * 它们性质相同、只是刻意拆成了几条以便各自开关。只认 {@code messages.get(0)} 会把后面那几条
+     * 当成"历史"折进摘要——最直接的后果是模型看不到会话文件清单，于是不知道有哪些 fileId 能传给
+     * {@code load_file_content}，用户记忆也一并丢掉。往最前面再插一条（R22 的模式级系统提示词）
+     * 同样落在这个连续段里，不需要再改这里。
      */
     private void autoCompact(List<Message> messages, String currentQuestion) {
-        SystemMessage systemPrompt = (messages.get(0) instanceof SystemMessage first) ? first : null;
-        int historyStart = (systemPrompt != null) ? 1 : 0;
+        int historyStart = 0;
+        while (historyStart < messages.size() && messages.get(historyStart) instanceof SystemMessage) {
+            historyStart++;
+        }
+        List<Message> systemPrompts = new ArrayList<>(messages.subList(0, historyStart));
         List<Message> history = new ArrayList<>(messages.subList(historyStart, messages.size()));
 
         String summary = summarise(history, currentQuestion);
 
         messages.clear();
-        if (systemPrompt != null) {
-            messages.add(systemPrompt);
-        }
+        messages.addAll(systemPrompts);
         messages.add(new UserMessage("[对话已压缩] 以下是之前对话的摘要：\n" + summary));
-        log.info("已将 {} 条历史消息压缩为一段摘要", history.size());
+        log.info("已将 {} 条历史消息压缩为一段摘要，保留了开头 {} 条系统消息", history.size(), systemPrompts.size());
     }
 
     /** 摘要本身要靠一次 LLM 调用，它同样可能失败——失败时降级为保留最近若干条，不能让整轮对话崩掉。 */
