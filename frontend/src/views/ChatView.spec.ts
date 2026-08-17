@@ -5,12 +5,13 @@ import ChatView from './ChatView.vue'
 import { useChatStore } from '../stores/chat'
 import { pptApi } from '../api/ppt-api'
 import { researchApi } from '../api/research-api'
-import { streamChat } from '../api/chat-api'
+import { chatApi, streamApproval, streamChat } from '../api/chat-api'
 import { fileApi } from '../api/file-api'
 
 vi.mock('../api/chat-api', () => ({
-  chatApi: { stop: vi.fn(), history: vi.fn() },
-  streamChat: vi.fn()
+  chatApi: { stop: vi.fn(), history: vi.fn(), getPendingApproval: vi.fn() },
+  streamChat: vi.fn(),
+  streamApproval: vi.fn()
 }))
 vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn() } }))
 vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn(), status: vi.fn() } }))
@@ -40,6 +41,84 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('这是回答')
     expect(store.conversationId).toBe('streamed-conversation')
     expect(store.sessions).toEqual([{ id: 'streamed-conversation', title: '你好' }])
+  })
+
+  it('renders a paused tool approval inline and continues the same assistant after approval', async () => {
+    vi.mocked(streamChat).mockImplementation(async function * () {
+      yield { type: 'RunStarted', conversationId: 'approval-conversation' }
+      yield {
+        type: 'Paused', conversationId: 'approval-conversation', reason: 'HITL_APPROVAL',
+        pendingTools: [{ toolCallId: 't1', toolName: 'chargeCard', arguments: '{"amount":100}', riskLevel: 'HIGH_RISK' }]
+      }
+    })
+    vi.mocked(streamApproval).mockImplementation(async function * () {
+      yield { type: 'ToolStarted', toolName: 'chargeCard', toolCallId: 't1', arguments: '{"amount":100}' }
+      yield { type: 'ToolCompleted', toolName: 'chargeCard', toolCallId: 't1', result: 'charged' }
+      yield { type: 'ModelDelta', content: '充值成功' }
+      yield { type: 'RunCompleted', conversationId: 'approval-conversation', turnId: 2 }
+    })
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+    await wrapper.find('textarea').setValue('充值 100 元')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('.tool-approval-card').text()).toContain('chargeCard')
+    expect(wrapper.find('.composer button').attributes('disabled')).toBeDefined()
+    await wrapper.get('.approve-button').trigger('click')
+    await flushPromises()
+
+    expect(streamApproval).toHaveBeenCalledTimes(1)
+    const assistant = useChatStore().messages.find(message => message.kind === 'chat' && message.role === 'assistant')
+    expect(assistant?.kind === 'chat' ? assistant.tools?.[0]?.result : undefined).toBe('charged')
+    expect(wrapper.text()).toContain('充值成功')
+    expect(wrapper.get('.tool-approval-card').text()).toContain('已批准')
+    expect(wrapper.find('.composer button').attributes('disabled')).toBeUndefined()
+  })
+
+  it('recovers an unresolved approval when an existing conversation is opened', async () => {
+    vi.mocked(chatApi.history).mockResolvedValue({
+      conversationId: 'paused-conversation', page: 0, size: 20, hasMore: false, turns: []
+    })
+    vi.mocked(chatApi.getPendingApproval).mockResolvedValue({
+      conversationId: 'paused-conversation', reason: 'HITL_APPROVAL', pausedAtMillis: 7,
+      pendingTools: [{ toolCallId: 't1', toolName: 'chargeCard', arguments: '{}', riskLevel: 'HIGH_RISK' }]
+    })
+    const pinia = createPinia()
+    const wrapper = mount(ChatView, { global: { plugins: [pinia] } })
+
+    await useChatStore().openSession('paused-conversation')
+    await flushPromises()
+
+    expect(wrapper.get('.tool-approval-card').text()).toContain('chargeCard')
+    expect(useChatStore().hasPendingApproval).toBe(true)
+  })
+
+  it('sends the optional rejection reason and continues without executing the tool', async () => {
+    vi.mocked(streamChat).mockImplementation(async function * () {
+      yield { type: 'RunStarted', conversationId: 'rejection-conversation' }
+      yield {
+        type: 'Paused', conversationId: 'rejection-conversation', reason: 'HITL_APPROVAL',
+        pendingTools: [{ toolCallId: 't1', toolName: 'chargeCard', arguments: '{}', riskLevel: 'HIGH_RISK' }]
+      }
+    })
+    vi.mocked(streamApproval).mockImplementation(async function * (_conversationId, decision) {
+      expect(decision).toEqual({ approved: false, rejectionReason: '金额异常' })
+      yield { type: 'ModelDelta', content: '好的，已取消充值' }
+      yield { type: 'RunCompleted', conversationId: 'rejection-conversation', turnId: 3 }
+    })
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+    await wrapper.find('.composer textarea').setValue('充值')
+    await wrapper.find('.composer').trigger('submit')
+    await flushPromises()
+
+    await wrapper.get('.tool-approval-card textarea').setValue('金额异常')
+    await wrapper.get('.reject-button').trigger('click')
+    await flushPromises()
+
+    const assistant = useChatStore().messages.find(message => message.kind === 'chat' && message.role === 'assistant')
+    expect(assistant?.kind === 'chat' ? assistant.tools : undefined).toEqual([])
+    expect(wrapper.text()).toContain('好的，已取消充值')
+    expect(wrapper.get('.tool-approval-card').text()).toContain('已拒绝')
   })
 
   /**

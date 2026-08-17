@@ -12,6 +12,7 @@ import PptTaskCard from '../components/PptTaskCard.vue'
 import ResearchReportCard from '../components/ResearchReportCard.vue'
 import SwitchAgentHint from '../components/SwitchAgentHint.vue'
 import TodoProgressBar from '../components/TodoProgressBar.vue'
+import ToolApprovalCard from '../components/ToolApprovalCard.vue'
 import { chatApi, streamChat } from '../api/chat-api'
 import { fileApi, type AttachedFile } from '../api/file-api'
 import { toErrorMessage } from '../api/http'
@@ -180,6 +181,21 @@ async function send(message: string) {
   }
 }
 
+async function decideApproval(approved: boolean, rejectionReason?: string) {
+  error.value = ''
+  aborter = new AbortController()
+  busy.value = true
+  try {
+    const failureMessage = await chat.submitApproval(approved, rejectionReason, aborter.signal)
+    if (failureMessage) error.value = failureMessage
+  } catch (failure) {
+    if ((failure as Error).name !== 'AbortError') error.value = toErrorMessage(failure)
+  } finally {
+    busy.value = false
+    aborter = undefined
+  }
+}
+
 /**
  * 提交后反复轮询直到终态——PPT/DeepResearch 都是"提交即返回，后台跑"，这是唯一能看到进度
  * 推进的办法（PPT 每完成一个状态就有新 checkpoint 可看；DeepResearch 只有 RUNNING→终态一步跳）。
@@ -322,6 +338,7 @@ async function removeFile(fileId: number) {
               <ChartToolCard v-else-if="chartImageUrl(tool.result)" :name="tool.name" :arguments-text="tool.argumentsText" :result="tool.result" />
               <CollapsibleChip v-else :label="toolLabel(tool.name)" :content="tool.detail" />
             </template>
+            <ToolApprovalCard v-if="message.approval" :approval="message.approval" @decide="decideApproval" />
           </div>
         </article>
         <SwitchAgentHint v-else-if="message.kind === 'switch-hint'" @switch-to-analytics="switchToAnalytics" />

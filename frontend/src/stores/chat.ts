@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { chatApi, streamApproval, type ConversationSummary, type HistoryTurn, type PendingApprovalResponse } from '../api/chat-api'
 import { toErrorMessage } from '../api/http'
@@ -13,6 +13,7 @@ export type ChatTurn = {
   content: string
   think?: string
   tools?: { name: string; toolCallId: string; detail: string; argumentsText: string; result?: string }[]
+  approval?: ApprovalCardState
 }
 export type PptEntry = { kind: 'ppt'; prompt: string; task?: PptTask; error?: string }
 export type ResearchEntry = {
@@ -32,10 +33,12 @@ export type ChatMessage = ChatTurn | PptEntry | ResearchEntry | SwitchHintEntry
 
 export type ChatSession = { id: string; title: string }
 export type ApprovalStatus = 'pending' | 'submitting' | 'approved' | 'rejected' | 'failed'
-export type ApprovalState = PendingApprovalResponse & {
+export type ApprovalCardState = PendingApprovalResponse & {
   status: ApprovalStatus
   decision?: 'approved' | 'rejected'
   error?: string
+}
+export type ApprovalState = ApprovalCardState & {
   assistant: ChatTurn
 }
 
@@ -199,13 +202,19 @@ export const useChatStore = defineStore('chat', () => {
         }, assistant)
         return undefined
       case 'RunCompleted':
+        if (pendingApproval.value) {
+          pendingApproval.value.status = pendingApproval.value.decision === 'rejected' ? 'rejected' : 'approved'
+          pendingApproval.value.error = undefined
+        }
         pendingApproval.value = undefined
         return undefined
     }
   }
 
   function restorePendingApproval(snapshot: PendingApprovalResponse, assistant: ChatTurn) {
-    pendingApproval.value = { ...snapshot, status: 'pending', assistant }
+    const state: ApprovalState = { ...snapshot, status: 'pending', assistant }
+    assistant.approval = state
+    pendingApproval.value = state
   }
 
   /** 返回 false 表示请求已经在提交，调用方必须据此抑制重复点击。 */
@@ -321,6 +330,15 @@ export const useChatStore = defineStore('chat', () => {
     navigationSeq.value++
     if (!sessions.value.some(session => session.id === id)) {
       acceptConversation(id, page.turns.at(0)?.question ?? '新对话')
+    }
+    try {
+      const paused = await chatApi.getPendingApproval(id)
+      if (!paused) return
+      const assistant = reactive<ChatTurn>({ kind: 'chat', role: 'assistant', content: '', tools: [] })
+      messages.value.push(assistant)
+      restorePendingApproval(paused, assistant)
+    } catch {
+      // 404 表示这条会话没有暂停；服务暂不可用时也不阻断已经成功载入的历史。
     }
   }
 
