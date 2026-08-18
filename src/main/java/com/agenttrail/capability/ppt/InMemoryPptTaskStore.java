@@ -91,7 +91,9 @@ public class InMemoryPptTaskStore implements PptTaskStore {
         }
         return tasks.values().stream()
                 .filter(task -> userId.equals(task.userId()))
-                .filter(task -> task.status() != PptState.SUCCESS && task.status() != PptState.CANCELLED)
+                // AWAITING_INPUT 排除在外：它没出错，但没有用户补充就推不动，算不上"仍可继续推进"
+                .filter(task -> task.status() != PptState.SUCCESS && task.status() != PptState.CANCELLED
+                        && task.status() != PptState.AWAITING_INPUT)
                 .filter(task -> task.errorMsg() == null && !cancelRequested.contains(task.id()))
                 .map(PptTask::id)
                 .sorted()

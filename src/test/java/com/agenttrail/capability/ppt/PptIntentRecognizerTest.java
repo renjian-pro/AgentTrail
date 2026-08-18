@@ -28,29 +28,20 @@ class PptIntentRecognizerTest {
     }
 
     @Test
-    void resumeMarkerIsRecognizedEvenWithoutAnyResumeKeyword() {
-        assertThat(PptIntentRecognizer.recognize("【开始生成PPT】"))
-                .as("固定标记本身就足够判定 RESUME，不需要额外命中关键词")
-                .isEqualTo(PptIntent.RESUME);
-    }
-
-    @Test
-    void pauseMarkerOverridesAResumeKeywordThatHappensToBePresent() {
-        // 消息里同时出现了"继续生成"这个关键词和暂停标记（比如复制粘贴历史提示文案）——
-        // 固定标记的优先级必须压过关键词兜底，不能被误判成 RESUME
-        assertThat(PptIntentRecognizer.recognize("【暂停生成PPT】（之前发过：继续生成这份 PPT）"))
-                .as("暂停标记命中时明确不是继续，即使文本里夹带了继续类关键词")
-                .isEqualTo(PptIntent.CREATE);
-    }
-
-    @Test
-    void pauseMarkerAloneDoesNotFallThroughToModifyOrResume() {
-        assertThat(PptIntentRecognizer.recognize("【暂停生成PPT】"))
-                .isEqualTo(PptIntent.CREATE);
-    }
-
-    @Test
-    void resumeKeywordFallbackStillWorksWhenNeitherMarkerIsPresent() {
+    void recognizesEveryResumeKeywordVariant() {
         assertThat(PptIntentRecognizer.recognize("恢复生成一下")).isEqualTo(PptIntent.RESUME);
+        assertThat(PptIntentRecognizer.recognize("接着生成剩下的")).isEqualTo(PptIntent.RESUME);
+        assertThat(PptIntentRecognizer.recognize("继续之前的那份")).isEqualTo(PptIntent.RESUME);
+    }
+
+    /**
+     * 曾经存在的 {@code 【开始生成PPT】}/{@code 【暂停生成PPT】} 标记已随实现一起删除——前端从来
+     * 没发过它们，卡片上的"继续"按钮走的是带任务号的 /resume 端点。这条用例守住删除后的行为：
+     * 那两个串现在就是普通文本，不再有任何特殊含义，落到 CREATE 兜底。
+     */
+    @Test
+    void treatsTheRemovedMarkerStringsAsOrdinaryTextWithNoSpecialMeaning() {
+        assertThat(PptIntentRecognizer.recognize("【开始生成PPT】")).isEqualTo(PptIntent.CREATE);
+        assertThat(PptIntentRecognizer.recognize("【暂停生成PPT】")).isEqualTo(PptIntent.CREATE);
     }
 }

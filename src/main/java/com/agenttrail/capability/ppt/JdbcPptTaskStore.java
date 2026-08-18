@@ -71,7 +71,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
 
     private static final String RUNNING_TASK_IDS_SQL = """
             SELECT id FROM ppt_generation_task
-            WHERE user_id = ? AND status NOT IN ('SUCCESS', 'CANCELLED')
+            WHERE user_id = ? AND status NOT IN ('SUCCESS', 'CANCELLED', 'AWAITING_INPUT')
               AND error_msg IS NULL AND cancel_requested = FALSE
             ORDER BY id
             """;

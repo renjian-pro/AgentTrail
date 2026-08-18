@@ -12,6 +12,7 @@ import com.agenttrail.capability.ppt.image.MinioPptImageStore;
 import com.agenttrail.capability.ppt.image.PptImageStore;
 import com.agenttrail.capability.ppt.image.TextToImageClient;
 import com.agenttrail.capability.ppt.strategy.ImageStrategy;
+import com.agenttrail.capability.ppt.strategy.ClarifyStrategy;
 import com.agenttrail.capability.ppt.strategy.InitStrategy;
 import com.agenttrail.capability.ppt.strategy.OutlineStrategy;
 import com.agenttrail.capability.ppt.strategy.RenderStrategy;
@@ -120,6 +121,16 @@ public class PptGenerationConfig {
     @Bean
     public InitStrategy pptInitStrategy() {
         return new InitStrategy();
+    }
+
+    /**
+     * CLARIFY 状态：不挂工具（{@code forInternalOrchestration(id, false)}），它只做清晰度判定，
+     * 挂上联网搜索反而会诱导模型去"查一查再判断"，把一次本该 1 秒返回的判定拖成一轮检索。
+     */
+    @Bean
+    public ClarifyStrategy pptClarifyStrategy(AgentLoopExecutorFactory executorFactory,
+            @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
+        return new ClarifyStrategy(executorFactory.forInternalOrchestration(modelId, false));
     }
 
     @Bean

@@ -28,8 +28,17 @@ onMounted(() => {
     timer = setInterval(() => { elapsedSeconds.value += 1 }, 1000)
   }
 })
+// 双向：拿到结果/报错就停表；答完追问回到"研究中"（result 被清空）要重新开始计时，
+// 只处理"停"的那一半会让续跑后的卡片挂着一个不动的秒数。
 watch([() => props.entry.result, () => props.entry.error], ([result, error]) => {
-  if (result || error) stopTimer()
+  if (result || error) {
+    stopTimer()
+    return
+  }
+  if (!timer) {
+    elapsedSeconds.value = 0
+    timer = setInterval(() => { elapsedSeconds.value += 1 }, 1000)
+  }
 })
 onUnmounted(stopTimer)
 </script>
@@ -58,7 +67,12 @@ onUnmounted(stopTimer)
     <section v-else-if="entry.result?.needsClarification" class="clarification-card">
       <p class="eyebrow">需要补充信息</p>
       <h2>请先澄清研究范围</h2>
-      <p>{{ entry.result.clarifyingQuestion }}</p>
+      <p class="clarify-question">{{ entry.result.clarifyingQuestion }}</p>
+      <form class="clarify-form" @submit.prevent="submitReply">
+        <textarea v-model="replyText" rows="2" placeholder="补充一下研究范围…"
+            @keydown.enter.exact.prevent="submitReply" />
+        <button type="submit" :disabled="!replyText.trim()">提交并继续</button>
+      </form>
     </section>
     <article v-else-if="entry.result" class="report">
       <p class="eyebrow">研究主题</p>

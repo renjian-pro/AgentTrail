@@ -14,6 +14,7 @@ prompts:
   deepresearch.plan: v1#812901f2
   deepresearch.summarize: v1#990f07e9
   deepresearch.topic_generation: v1#a0edeb9e
+  ppt.clarification: v1#eee597ef
   ppt.outline: v1#70543a32
   ppt.requirement: v1#77d23709
   ppt.schema: v1#f86537b8

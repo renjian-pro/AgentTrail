@@ -1,4 +1,5 @@
 package com.agenttrail.web.controller;
+import com.agenttrail.web.dto.PptClarifyRequest;
 import com.agenttrail.web.dto.PptGenerationResponse;
 import com.agenttrail.web.dto.PptGenerationRequest;
 import com.agenttrail.web.service.CapabilityConversationService;
@@ -120,6 +121,36 @@ public class PptGenerationController {
         return toResponse(userId, taskId);
     }
 
+    /**
+     * 用户回答澄清追问：把回答并回需求、把 checkpoint 推到 REQUIREMENT，再丢回后台继续跑。
+     *
+     * <p>和 {@code /resume} 的分工——{@code /resume} 是"从中断处再跑一遍当前状态"，不改需求；
+     * 这里是"需求变了（补充了信息），从 REQUIREMENT 重新开始理解"。两者都落到同一个
+     * {@link PptGenerationService#run} 上，区别只在调用前把 checkpoint 放到了哪儿。
+     *
+     * <p>任务没在等人时返回 409 而不是静默照做：那种情况下这句"回答"其实是一句新需求，
+     * 悄悄拿它覆盖掉一条正在跑的任务，是比报错难查得多的一类问题。
+     */
+    @PostMapping("/agent/v1/ppt/clarify/{taskId}")
+    public PptGenerationResponse clarify(@PathVariable long taskId, @Valid @RequestBody PptClarifyRequest request) {
+        String userId = currentUserIdOrLegacyForDirectCall();
+        try {
+            pptGenerationService.answerClarification(userId, taskId, request.answer());
+        } catch (IllegalArgumentException missingTask) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, missingTask.getMessage(), missingTask);
+        } catch (IllegalStateException notAwaiting) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, notAwaiting.getMessage(), notAwaiting);
+        }
+        try {
+            pptGenerationExecutor.execute(() -> runAndSwallow(userId, taskId));
+        } catch (RejectedExecutionException rejected) {
+            String message = "PPT 后台任务队列已满，请稍后重试";
+            pptGenerationService.markSchedulingFailure(taskId, message);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, message, rejected);
+        }
+        return toResponse(userId, taskId);
+    }
+
     /** 轮询端点：不驱动任何执行，纯读当前 checkpoint——前端靠反复调用这个来看到生成进度推进。 */
     @GetMapping("/agent/v1/ppt/{taskId}")
     public PptGenerationResponse status(@PathVariable long taskId) {
@@ -214,7 +245,8 @@ public class PptGenerationController {
                 && hasOutputFile(userId, taskId)
                 ? "/agent/v1/ppt/" + taskId + "/download"
                 : null;
-        return new PptGenerationResponse(taskId, task.status(), task.errorMsg(), downloadUrl);
+        return new PptGenerationResponse(taskId, task.status(), task.errorMsg(), downloadUrl,
+                pptGenerationService.pendingClarifyingQuestionOf(userId, taskId));
     }
 
     private long prepareTask(String userId, PptGenerationRequest request) {

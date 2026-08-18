@@ -13,8 +13,8 @@ vi.mock('../api/chat-api', () => ({
   streamChat: vi.fn(),
   streamApproval: vi.fn()
 }))
-vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn() } }))
-vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn(), status: vi.fn() } }))
+vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn(), clarify: vi.fn() } }))
+vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn(), reply: vi.fn(), status: vi.fn() } }))
 vi.mock('../api/file-api', () => ({ fileApi: { upload: vi.fn(), remove: vi.fn() } }))
 
 /**
@@ -463,7 +463,8 @@ describe('ChatView', () => {
     expect(wrapper.get('.research-loading').text()).toContain('深度研究进行中')
     // 提交已经完成（拿到了 taskId），不该继续锁住输入框——报告还在后台轮询，界面不该跟着卡死。
     expect(wrapper.find('.composer button').attributes('disabled')).toBeUndefined()
-    expect(wrapper.find('.stop').exists()).toBe(false)
+    // 发送键就是停止键（同一颗），所以"没在生成"要看它是不是回到了发送态。
+    expect(wrapper.find('.composer button').attributes('aria-label')).toBe('发送消息')
     expect(researchApi.run).toHaveBeenCalledWith(expect.any(String), '研究 Java 工程师就业趋势')
     expect(researchApi.status).toHaveBeenCalledWith(7)
 
@@ -533,4 +534,58 @@ describe('ChatView', () => {
     await flushPromises()
     expect(wrapper.text()).not.toContain('brief.pdf')
   })
+
+  /**
+   * 深度研究的澄清追问必须能被回答，而且要走 reply 而不是 run。
+   *
+   * <p>这条链路此前三处都是断的：卡片没有输入框、ChatView 没监听 @reply、researchApi.reply
+   * 全库零调用。表现是——追问渲染得好好的，用户在主输入框回答，然后开出一个从零开始的新研究，
+   * 原始问题和刚才那句追问一起丢掉。断言 reply 收到「原始问题 + 追问原文 + 这次的回答」三段，
+   * 就是在守这件事：少任何一段，后端的 continueAfterClarification 都拼不出完整上下文。
+   */
+  it('answers a research clarification through reply, carrying the original question and the question asked', async () => {
+    vi.mocked(researchApi.run).mockResolvedValue({
+      taskId: 7,
+      status: 'SUCCESS',
+      report: {
+        needsClarification: true,
+        clarifyingQuestion: '想研究哪个行业？时间范围呢？',
+        researchTopic: null,
+        taskResults: [],
+        report: null
+      },
+      errorMsg: null
+    })
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+    await chip(wrapper, '深度研究').trigger('click')
+    await wrapper.find('textarea').setValue('帮我研究一下')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.clarification-card').exists()).toBe(true)
+
+    vi.mocked(researchApi.reply).mockResolvedValue({
+      taskId: 8,
+      status: 'SUCCESS',
+      report: {
+        needsClarification: false,
+        clarifyingQuestion: null,
+        researchTopic: '新能源汽车 2025',
+        taskResults: [],
+        report: '结论'
+      },
+      errorMsg: null
+    })
+    await wrapper.find('.clarification-card textarea').setValue('新能源汽车，2025 年')
+    await wrapper.find('.clarification-card form').trigger('submit')
+    await flushPromises()
+
+    expect(researchApi.reply).toHaveBeenCalledWith(
+      expect.any(String), '帮我研究一下', '想研究哪个行业？时间范围呢？', '新能源汽车，2025 年')
+    // 复用同一张卡片，不是再推一张：这是同一次研究请求的延续
+    expect(researchApi.run).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('.research-entry')).toHaveLength(1)
+    expect(wrapper.text()).toContain('新能源汽车 2025')
+  })
+
 })

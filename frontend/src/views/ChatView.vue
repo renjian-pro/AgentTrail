@@ -286,6 +286,39 @@ function applyResearchTask(entry: ResearchEntry, task: ResearchTask) {
   else if (task.status === 'FAILED') entry.error = task.errorMsg ?? '深度研究失败，请重试'
 }
 
+/**
+ * 回答深度研究的澄清追问。走 {@code researchApi.reply} 而不是 {@code run}——后者会开一个从零开始的
+ * 新研究，把原始问题和刚才那句追问一起丢掉，用户答了等于没答（这条链路此前就是这么断的：
+ * 卡片把追问渲染出来了，但没有任何地方调 reply）。
+ *
+ * <p>复用同一个 entry 而不是新推一张卡片：这是同一次研究请求的延续，不是第二次提问。清空
+ * result 让卡片自己翻回"研究中"那一屏，后面的轮询和首次发起共用 applyResearchTask。
+ */
+async function replyToResearch(entry: ResearchEntry, answer: string) {
+  const clarifyingQuestion = entry.result?.clarifyingQuestion
+  if (!clarifyingQuestion || !conversationId.value) return
+  entry.result = undefined
+  entry.error = undefined
+  entry.currentStep = 'CLARIFYING'
+  let created: ResearchTask | undefined
+  try {
+    created = await researchApi.reply(conversationId.value, entry.question, clarifyingQuestion, answer)
+  } catch (failure) {
+    entry.error = toErrorMessage(failure)
+    return
+  }
+  applyResearchTask(entry, created)
+  if (created.status !== 'RUNNING') return
+  try {
+    await pollUntilTerminal(
+      () => researchApi.status(created!.taskId),
+      task => task.status !== 'RUNNING',
+      task => applyResearchTask(entry, task))
+  } catch (failure) {
+    entry.error = toErrorMessage(failure)
+  }
+}
+
 async function runPpt(prompt: string) {
   const entry = reactive<PptEntry>({ kind: 'ppt', prompt })
   chat.ensureConversation(prompt)
@@ -305,7 +338,9 @@ async function runPpt(prompt: string) {
   try {
     await pollUntilTerminal(
       () => pptApi.status(created!.taskId),
-      task => task.status === 'SUCCESS' || !!task.errorMsg,
+      // AWAITING_INPUT 也是终止条件：需求不够清晰时状态机停下来等用户在卡片里回答，
+      // 它既不是 SUCCESS 也没有 errorMsg，漏掉就是一个永不退出的轮询。
+      task => task.status === 'SUCCESS' || task.status === 'AWAITING_INPUT' || !!task.errorMsg,
       task => { entry.task = task })
   } catch (failure) {
     entry.error = toErrorMessage(failure)
@@ -383,7 +418,8 @@ async function removeFile(fileId: number) {
         </article>
         <SwitchAgentHint v-else-if="message.kind === 'switch-hint'" @switch-to-analytics="switchToAnalytics" />
         <PptTaskCard v-else-if="message.kind === 'ppt'" :entry="message" />
-        <ResearchReportCard v-else-if="message.kind === 'research'" :entry="message" />
+        <ResearchReportCard v-else-if="message.kind === 'research'" :entry="message"
+            @reply="answer => replyToResearch(message, answer)" />
       </template>
     </div>
     <TodoProgressBar :items="todos" />
@@ -418,11 +454,14 @@ async function removeFile(fileId: number) {
         <span v-if="barNote" class="bar-notes">{{ barNote }}</span>
         <span v-else class="bar-notes drop-note">也可拖放文件</span>
       </div>
-      <MessageInput :busy="interactionBusy" :initial-value="initialMessage" :placeholder="PLACEHOLDERS[agentKind]" @send="send" />
+      <!-- 停止不再单独占一颗按钮：发送键本身在可中断时变成停止键（见 MessageInput 的 action）。
+           两颗按钮同时在场时，用户要在"输入框右下角"和"模型选择那一排"之间挑一个，而它们
+           从来不会同时可用——同一个位置换个状态就够了。 -->
+      <MessageInput :busy="interactionBusy" :can-stop="canStop" :initial-value="initialMessage"
+          :placeholder="PLACEHOLDERS[agentKind]" @send="send" @stop="stop" />
       <div class="controls">
         <span>当前模型</span>
         <select v-model="modelId" aria-label="当前模型"><option>qwen-plus</option><option>deepseek-chat</option></select>
-        <button v-if="canStop" class="stop" @click="stop">■ 停止生成</button>
       </div>
       <p v-if="error" class="error">对话出错：{{ error }}</p>
     </div>

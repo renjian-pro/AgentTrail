@@ -17,6 +17,21 @@ public final class PptPrompts {
     private PptPrompts() {
     }
 
+    /** 澄清判定输出"信息不足"时的固定标记——和 {@code DeepResearchPrompts.NEEDS_INFO_MARKER} 同一个串，
+     *  两条能力各自持有一份常量而不是共享，是因为提示词正文各自独立，标记跟着正文走。 */
+    public static final String NEEDS_INFO_MARKER = "【需要补充信息】";
+
+    /** 澄清判定输出"信息充足"时的固定标记，对应 {@code DeepResearchPrompts.READY_MARKER}。 */
+    public static final String READY_MARKER = "【开始生成】";
+
+    /**
+     * CLARIFY 状态：只判断需求够不够清晰，不生成任何 PPT 内容。两个 {@code %s} 依次是
+     * {@link #NEEDS_INFO_MARKER}/{@link #READY_MARKER}——标记由代码注入而不是写死在正文里，
+     * 改标记时不会出现"提示词里是一个串、判定代码里是另一个串"的静默失配。
+     */
+    public static final String CLARIFICATION = PROMPTS.text("ppt.clarification")
+            .formatted(NEEDS_INFO_MARKER, READY_MARKER);
+
     /**
      * SEARCH 状态（issue #29）：和 {@code DeepResearchPrompts.EXECUTE} 同一种约束——
      * 必须真的调用联网搜索工具，不能凭模型自己的已有知识直接编答案，输出只保留工具真实

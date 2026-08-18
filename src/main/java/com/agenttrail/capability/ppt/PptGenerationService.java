@@ -37,8 +37,9 @@ public class PptGenerationService {
 
     private static final Logger log = LoggerFactory.getLogger(PptGenerationService.class);
 
+    /** {@link PptState#AWAITING_INPUT} 刻意不在这条链路里：它是等人的暂停态，不是流程里的一环。 */
     private static final List<PptState> ORDER = List.of(
-            PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
+            PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
             PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER, PptState.SUCCESS);
 
     private final PptTaskStore taskStore;
@@ -193,7 +194,8 @@ public class PptGenerationService {
         PptGenerationContext context = PptContextJson.fromJson(task.contextJson());
         PptState current = task.status();
         try {
-            while (current != PptState.SUCCESS && current != PptState.CANCELLED) {
+            while (current != PptState.SUCCESS && current != PptState.CANCELLED
+                    && current != PptState.AWAITING_INPUT) {
                 if (!leaseManager.renew(leaseKey, RUN_LEASE_TTL)) {
                     throw new PptGenerationException("PPT 任务执行租约已丢失: " + taskId);
                 }
@@ -213,6 +215,13 @@ public class PptGenerationService {
                     taskStore.markFailed(taskId, current, errorMsg);
                     throw new PptGenerationException("PPT 生成在状态 " + current + " 失败: " + errorMsg, executionFailed);
                 }
+                // CLARIFY 判定信息不足时不往下走，落到 AWAITING_INPUT 等用户补充——用的还是
+                // advance（而不是 markFailed）：等人不是失败，errorMsg 必须保持为空，否则前端会
+                // 把一次正常的追问渲染成一条错误，而 runningTaskIdsFor 也会把它当成出错任务筛掉。
+                if (current == PptState.CLARIFY && context.clarifyingQuestion() != null) {
+                    taskStore.advance(taskId, PptState.AWAITING_INPUT, context);
+                    return;
+                }
                 PptState next = nextState(current);
                 taskStore.advance(taskId, next, context);
                 current = next;
@@ -226,6 +235,45 @@ public class PptGenerationService {
         taskStore.findById(userId, taskId)
                 .orElseThrow(() -> new java.util.NoSuchElementException("PPT 任务不存在: " + taskId));
         run(taskId);
+    }
+
+    /**
+     * 用户回答澄清追问后的续接入口，对应 {@code DeepResearchService#continueAfterClarification}。
+     *
+     * <p><b>只追问一轮，而且这条约束是结构性的、不靠标志位。</b>这里把 checkpoint 直接推到
+     * {@link PptState#REQUIREMENT}——{@link PptState#CLARIFY} 被整个跳过，所以物理上不存在"再问一次"
+     * 的路径。DeepResearch 那边是靠"{@code continueAfterClarification} 内部不调 {@code needsMoreInfo}"
+     * 达成同一件事，都是把"不再打断"写进控制流，而不是加一个"已经问过了"的布尔字段——布尔字段总有
+     * 忘记置位的分支，跳过状态没有。
+     *
+     * <p>拼接格式和 DeepResearch 的三段式一致：模型下一步（REQUIREMENT）读到的是"原始需求 + 我问了什么
+     * + 用户答了什么"的完整上下文，而不是孤零零一句回答——只喂回答的话，"给市场部的，20 分钟"这种
+     * 补充脱离了追问就完全不知所云。
+     *
+     * @throws IllegalStateException 任务不在 {@link PptState#AWAITING_INPUT}：没在等人的任务没有"回答"可言，
+     *         静默接受只会把一句回答当成新需求覆盖掉正在跑的任务
+     */
+    public void answerClarification(String userId, long taskId, String answer) {
+        if (answer == null || answer.isBlank()) {
+            throw new IllegalArgumentException("澄清回答不能为空");
+        }
+        PptTask task = (userId == null ? taskStore.findById(taskId) : taskStore.findById(userId, taskId))
+                .orElseThrow(() -> new IllegalArgumentException("PPT 任务不存在: " + taskId));
+        if (task.status() != PptState.AWAITING_INPUT) {
+            throw new IllegalStateException(
+                    "PPT 任务 " + taskId + " 当前状态是 " + task.status() + "，没有在等待补充信息");
+        }
+        PptGenerationContext context = PptContextJson.fromJson(task.contextJson());
+        String combined = """
+                【此前的 PPT 需求】
+                %s
+
+                【助手追问】
+                %s
+
+                【用户补充】
+                %s""".formatted(context.userRequirement(), context.clarifyingQuestion(), answer);
+        taskStore.advance(taskId, PptState.REQUIREMENT, context.withUserRequirement(combined));
     }
 
     /** 查询一条任务当前的持久化状态（HTTP 层展示用）——不驱动任何执行，纯读。 */
@@ -245,7 +293,8 @@ public class PptGenerationService {
     /** Persist a user-visible failure when the asynchronous executor rejected a submission. */
     public void markSchedulingFailure(long taskId, String errorMsg) {
         taskStore.findById(taskId).ifPresent(task -> {
-            if (task.status() != PptState.SUCCESS && task.status() != PptState.CANCELLED) {
+            if (task.status() != PptState.SUCCESS && task.status() != PptState.CANCELLED
+                    && task.status() != PptState.AWAITING_INPUT) {
                 taskStore.markFailed(taskId, task.status(), errorMsg);
             }
         });
@@ -253,6 +302,22 @@ public class PptGenerationService {
 
     public List<Long> runningTaskIdsFor(String userId) {
         return taskStore.runningTaskIdsFor(userId);
+    }
+
+    /**
+     * 取出待用户回答的澄清追问；只有任务确实停在 {@link PptState#AWAITING_INPUT} 时才返回非空。
+     *
+     * <p>状态判断放在这里而不是交给调用方：上下文里的 {@code clarifyingQuestion} 在用户答完之后
+     * 是**不清空**的（留作可追溯的原文），直接读字段会让一条已经在正常推进的任务继续对外宣称
+     * "我在等你回答"。"在不在等人"的唯一权威是状态，不是这个字段。
+     */
+    public String pendingClarifyingQuestionOf(String userId, long taskId) {
+        return (userId == null ? taskStore.findById(taskId) : taskStore.findById(userId, taskId))
+                .filter(task -> task.status() == PptState.AWAITING_INPUT)
+                .map(PptTask::contextJson)
+                .map(PptContextJson::fromJson)
+                .map(PptGenerationContext::clarifyingQuestion)
+                .orElse(null);
     }
 
     /** 从任务当前的上下文快照里取出已产出的 pptx 路径；还没跑到 RENDER 完成时为 {@code null}。 */

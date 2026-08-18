@@ -59,10 +59,15 @@ class HttpContractSnapshotTest {
         assertThat(response.currentStep()).isEqualTo("CLARIFYING");
     }
 
+    /**
+     * clarifyingQuestion 是需求澄清引入的第五个字段：状态停在 AWAITING_INPUT 时承载助手的追问。
+     * 它和 errorMsg 是并列的两个"为什么没继续跑"的原因位，前端据此决定渲染回答框还是报错——
+     * 合并成一个字段会让"等你补充信息"和"跑挂了"在协议层就分不开。
+     */
     @Test
-    void pptResponseKeepsItsFourFields() {
+    void pptResponseCarriesClarifyingQuestionAlongsideTheOriginalFour() {
         assertThat(fieldNames(new PptGenerationResponse(9L, null, null, null)))
-                .containsExactlyInAnyOrder("taskId", "status", "errorMsg", "outputPath");
+                .containsExactlyInAnyOrder("taskId", "status", "errorMsg", "outputPath", "clarifyingQuestion");
     }
 
     @Test

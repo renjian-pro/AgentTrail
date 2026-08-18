@@ -275,9 +275,10 @@ button { cursor: pointer; }
   font-size: 18px;
 }
 .composer button:disabled { opacity: .45; cursor: default; }
+/* 发送键在可中断时就地变成停止键，用颜色把"这一下是取消"讲清楚 */
+.composer button.stopping { background: #b74940; }
 .controls { display: flex; align-items: center; gap: 7px; padding: 9px 9px 0; color: var(--faint); font-size: 11px; }
 .controls select { border: 0; outline: 0; color: var(--muted); background: transparent; font-size: 11px; }
-.controls .stop { margin-left: auto; border: 0; color: #b74940; background: transparent; font-size: 12px; }
 .error { color: #b42318; }
 
 .research-entry,
@@ -358,9 +359,22 @@ button { cursor: pointer; }
 .dark .brand-mark,
 .dark .welcome-mark,
 .dark .composer button { color: #20221f; background: #eef0eb; }
+.dark .composer button.stopping { color: #fff; background: #b74940; }
 .dark .user .bubble { background: #303430; }
 .dark .report-body { color: #d4d6d1; }
 .dark .clarification-card { background: #302d20; }
+
+/* PPT 卡片里的澄清区块：.task-card 是两列网格（内容 / 操作按钮），追问要横跨整行，
+   否则会被挤进右侧那条 auto 列里变成一条竖着的窄带。 */
+/* grid-column 只对 PPT 卡片有意义：.task-card 是两列网格，.research-entry 不是。
+   下面 .clarify-question / .clarify-form 两套则是两张卡片共用——同一件事（追问 + 回答框）
+   在两处长得不一样，是这类"能力各自实现一遍"最先漂起来的地方。 */
+.ppt-clarify { grid-column: 1 / -1; }
+.clarify-question { margin: 0 0 12px; color: var(--fg); line-height: 1.6; }
+.clarify-form { display: flex; align-items: flex-start; gap: 9px; }
+.clarify-form textarea { flex: 1; min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: inherit; font: inherit; line-height: 1.5; resize: vertical; }
+.clarify-form button { flex: none; padding: 9px 13px; border: 0; border-radius: 9px; color: #fff; background: #292b28; white-space: nowrap; }
+.clarify-form button:disabled { opacity: .45; }
 .dark .research-error { color: #ffb7b0; background: #3a2725; }
 
 @keyframes pulse { from { opacity: .28; } to { opacity: 1; } }
@@ -368,6 +382,12 @@ button { cursor: pointer; }
 @keyframes flow { from { transform: translateX(-110%); } to { transform: translateX(240%); } }
 
 @media (max-width: 760px) {
+  /* 澄清回答区在窄屏改成纵向堆叠：按钮是固定宽度（106px 左右），和输入框挤在同一行时
+     被压扁的只会是输入框——375px 宽下实测只剩 61px，一个连半句话都放不下的回答框。
+     这里和上面 .capability-bar 那条"保持一行换行"的取舍相反，是因为那边是一排等宽小按钮，
+     换行后每颗仍然可用；这边一旦挤压，主要的输入控件就直接失效了。 */
+  .clarify-form { flex-direction: column; align-items: stretch; }
+  .clarify-form button { width: 100%; }
   .shell { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .page > header { padding: 0 16px; }

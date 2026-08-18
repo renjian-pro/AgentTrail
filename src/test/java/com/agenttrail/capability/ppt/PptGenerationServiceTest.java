@@ -26,7 +26,7 @@ class PptGenerationServiceTest {
 
     private static List<PptGenerationStrategy> allStates(List<String> log) {
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
                 PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
@@ -44,7 +44,7 @@ class PptGenerationServiceTest {
     }
 
     @Test
-    void runsAllEightStatesInOrderAndReachesSuccess() {
+    void runsEveryStateInOrderAndReachesSuccess() {
         List<String> log = new ArrayList<>();
         InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
         PptGenerationService service = new PptGenerationService(taskStore, allStates(log));
@@ -52,7 +52,8 @@ class PptGenerationServiceTest {
         long taskId = service.create("conv-1", "帮我做一份介绍 PPT");
 
         assertThat(log).containsExactly(
-                "INIT#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1", "IMAGE#1", "RENDER#1");
+                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1",
+                "IMAGE#1", "RENDER#1");
         assertThat(service.describe(taskId)).isPresent();
         assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
         assertThat(service.describe(taskId).orElseThrow().errorMsg()).isNull();
@@ -92,7 +93,7 @@ class PptGenerationServiceTest {
     void resumeIntentContinuesFromCheckpointedStateByConversationIdNotFromInit() {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
                 PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
@@ -195,7 +196,7 @@ class PptGenerationServiceTest {
     void modifyIntentThrowsWhenTheLatestTaskForThatConversationIsStillMidFlight() {
         InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
                 PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
             strategies.add(new RecordingPptGenerationStrategy(state, new ArrayList<>()));
         }
@@ -212,7 +213,7 @@ class PptGenerationServiceTest {
     void checkpointStaysOnTheFailingStateAndDoesNotAdvanceOptimistically() {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
                 PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
@@ -227,7 +228,7 @@ class PptGenerationServiceTest {
 
         // 只跑到 SCHEMA 就失败了，RENDER 完全没有被调用过——不能因为异常路径而误触发下游状态
         assertThat(log).containsExactly(
-                "INIT#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1");
+                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1");
 
         // create() 抛异常时拿不到返回值——这个测试只创建了一条任务，InMemoryPptTaskStore 的主键
         // 序列从 1 开始，白盒断言用这个已知的第一个 id
@@ -242,7 +243,7 @@ class PptGenerationServiceTest {
     void resumingAfterAFailureRerunsOnlyTheFailedStateNotFromInit() {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
                 PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
@@ -293,6 +294,111 @@ class PptGenerationServiceTest {
             allowInitToFinish.countDown();
             executor.shutdownNow();
         }
+    }
+
+    /**
+     * CLARIFY 判定信息不足时，任务必须停在 AWAITING_INPUT：不往下跑、不记 errorMsg。
+     *
+     * <p>"不记 errorMsg" 是这条用例真正在守的东西——等人和跑挂了在协议层必须分得开，
+     * 一旦把追问写进 errorMsg，前端会把一次正常的追问渲染成一条报错，
+     * runningTaskIdsFor 也会把它当成出错任务筛掉，用户就再没有回答的入口了。
+     */
+    @Test
+    void parksTheTaskAtAwaitingInputWhenClarifyAsksAQuestionInsteadOfFailingIt() {
+        List<String> log = new ArrayList<>();
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        PptGenerationService service = new PptGenerationService(taskStore, askingClarify(log, "要做什么主题的 PPT？"));
+
+        long taskId = service.create("conv-1", "什么情况");
+
+        assertThat(log).containsExactly("INIT#1", "CLARIFY#1");
+        PptTask task = service.describe(taskId).orElseThrow();
+        assertThat(task.status()).isEqualTo(PptState.AWAITING_INPUT);
+        assertThat(task.errorMsg()).isNull();
+        assertThat(service.runningTaskIdsFor("legacy")).isEmpty();
+    }
+
+    /**
+     * 回答之后从 REQUIREMENT 继续，而且 **CLARIFY 不再跑第二次**——"只追问一轮"是靠跳过状态
+     * 达成的结构性约束，不是靠一个"已经问过了"的标志位。日志里 CLARIFY 只出现一次就是这条的证据。
+     */
+    @Test
+    void answeringTheClarificationResumesFromRequirementAndNeverAsksTwice() {
+        List<String> log = new ArrayList<>();
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        PptGenerationService service = new PptGenerationService(taskStore, askingClarify(log, "要做什么主题的 PPT？"));
+        long taskId = service.create("conv-1", "什么情况");
+
+        service.answerClarification("legacy", taskId, "讲一下我们团队三季度的复盘");
+        service.run(taskId);
+
+        assertThat(log).containsExactly(
+                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1",
+                "IMAGE#1", "RENDER#1");
+        assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
+    }
+
+    /** 追问、回答、原始需求三段都要带给 REQUIREMENT：只喂回答的话，"讲三季度复盘"这种补充脱离追问就不知所云。 */
+    @Test
+    void combinesOriginalRequirementQuestionAndAnswerIntoTheRequirementHandedDownstream() {
+        List<String> log = new ArrayList<>();
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        PptGenerationService service = new PptGenerationService(taskStore, askingClarify(log, "要做什么主题？"));
+        long taskId = service.create("conv-1", "什么情况");
+
+        service.answerClarification("legacy", taskId, "讲三季度复盘");
+
+        PptTask task = service.describe(taskId).orElseThrow();
+        assertThat(task.status()).isEqualTo(PptState.REQUIREMENT);
+        assertThat(task.contextJson()).contains("什么情况").contains("要做什么主题？").contains("讲三季度复盘");
+    }
+
+    /** 没在等人的任务收到"回答"，那其实是一句新需求——静默拿它覆盖掉正在跑的任务比报错难查得多。 */
+    @Test
+    void rejectsAnAnswerWhenTheTaskIsNotWaitingForOne() {
+        List<String> log = new ArrayList<>();
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        PptGenerationService service = new PptGenerationService(taskStore, allStates(log));
+        long taskId = service.create("conv-1", "做一份复盘 PPT");
+
+        assertThatThrownBy(() -> service.answerClarification("legacy", taskId, "补充一句"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("没有在等待补充信息");
+    }
+
+    /** 停在 AWAITING_INPUT 的任务点"继续"是空转：run() 立刻返回，不会去找一个并不存在的 Strategy。 */
+    @Test
+    void resumingAnAwaitingTaskIsANoOpRatherThanAMissingStrategyCrash() {
+        List<String> log = new ArrayList<>();
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        PptGenerationService service = new PptGenerationService(taskStore, askingClarify(log, "要做什么主题？"));
+        long taskId = service.create("conv-1", "什么情况");
+
+        service.run(taskId);
+
+        assertThat(log).containsExactly("INIT#1", "CLARIFY#1");
+        assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.AWAITING_INPUT);
+    }
+
+    /** 全量状态，但 CLARIFY 换成一个固定追问的替身。 */
+    private static List<PptGenerationStrategy> askingClarify(List<String> log, String question) {
+        List<PptGenerationStrategy> strategies = allStates(log);
+        strategies.removeIf(strategy -> strategy.handledState() == PptState.CLARIFY);
+        strategies.add(new PptGenerationStrategy() {
+            private int calls;
+
+            @Override
+            public PptState handledState() {
+                return PptState.CLARIFY;
+            }
+
+            @Override
+            public PptGenerationContext execute(PptGenerationContext context) {
+                log.add("CLARIFY#" + (++calls));
+                return context.withClarifyingQuestion(question);
+            }
+        });
+        return strategies;
     }
 
     private static final class BlockingInitStrategy implements PptGenerationStrategy {
