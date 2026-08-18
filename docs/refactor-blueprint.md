@@ -1,6 +1,6 @@
 # AgentTrail 重构技术文档
 
-> 最后更新：2026-08-16
+> 最后更新：2026-08-17（对 §0 结论表六个条目做了逐项复现核实，结果就地更新在各自章节）
 > 这是唯一一份重构技术文档，取代并合并了此前的 `architecture-refactor-blueprint-2026-08-03.md` 与
 > `refactor-audit-2026-08-11.md`——两份文档已删除，内容全部并入本文档。
 > **按系统层级组织**：核心层（Agent Runtime 引擎）→ 业务层（Capability Packs）→ 监控层（Metrics &
@@ -26,6 +26,16 @@
 
 逐项落地结果见 §6 Phase -1。下一步是 Phase 0（架构护栏）。
 
+**2026-08-17 复核**：逐条回到代码验证 §0 表里的六个未决条目（不看提交信息的措辞，只看当前代码）。**首先要认的一件事：两个 🔴 P0 在本文档 2026-08-16 写下它们的时候就已经修好了**——`2c24379`（权限注解 + 删 `setBucketPolicy`）和 `d3045d0`（PPT 下载 401）都是 **2026-08-12** 的提交，比这份文档早四天。也就是说 2026-08-16 那次复核把更早的 `refactor-audit-2026-08-11` 的结论原样搬了过来，没有回代码验证，于是两个"最高优先级安全问题"在已修复状态下又挂了一天。教训写在 §6。
+
+其余条目的结论分三种，值得分清楚：
+
+- **真解决了**（代码可验证、有测试守着）：Golden/审计权限校验、PPT 下载归属校验（这两条早在 2026-08-12）、提示词外置版本化（`b90a636`）、位置槽构造改具名 options（`ce9bcca`）
+- **换了形态但问题还在**：MinIO 公开读——`setBucketPolicy` 从代码里删了，公开读改由部署手册的一条 `mc` 命令承担，写好的 `presignedUrl()` 零调用方。代码看着私有、部署实际公开，是比原状态更难发现的两不像
+- **只是没复现**：超时/锁竞态那族计时测试 4 次全绿，但期间没有任何提交动过那段时序代码。**症状消失不等于缺陷修复**——这条不能记成已解决
+
+余下 `runId ≡ conversationId`、能力级路由、文件问答双路径三条**一字未变**，都要等 Phase 3/4/8。
+
 > 本轮明确排除的范围：**多租户不做**。`platform/identity/TenantContext.DEFAULT` 恒为 `"default"`、`ExecutionPrincipal.tenantId` 调用方一律传 null、`agent_run.tenant_id` 注释写着 `'Tenant placeholder'`——这些占位是死的，处置方式是删除或标注放弃，不是补齐。用户级隔离（`user_id` + Sa-Token + `sys_*` + `DataScopeRewriter`）照常维护。
 
 | 优先级 | 所属层 | 问题 | 一句话 | 章节 |
@@ -33,15 +43,16 @@
 | ✅ 已解决 | 核心层 | `runtime/` 整层是空壳，四张表 DDL 无写入方 | Phase -1 删除 `task`/`outbox`/`coordinator` 及 `RunRepository`/`AgentRouter`/`SubAgentRunner` 等 28 个类，四张表 DDL 一并移除 | §6 |
 | ✅ 已解决 | 核心层 | `loop` ↔ `runtime` 包循环依赖 | Phase -1 把 loop 内部类搬回 `loop.core`/`loop.profile`、适配器下沉 `infrastructure`，方向单向化并由 ArchUnit 钉死 | §6 |
 | ✅ 已解决 | 业务层 | `FileUploadController` 双路径，安全回归测试守着死分支 | Phase -1 删除 `legacyService` 兼容构造函数，8 个用例（含 2 个 IDOR、1 个 fail-open 回归）迁到生产路径 | §2.4 |
-| 🔴 P0 | 核心层 | telescoping constructor 被"修"成了 `Object... options` | 执行器 21 个位置槽、工厂 17 个，编译期零类型检查，传错顺序只在运行时 `ClassCastException`。Phase 3 处理 | §1.3 |
-| 🔴 P0 | 核心层 | 能力 = 代码分支，不是数据 | 工厂 5 个 `forXxx` 方法 + 4 个缓存 map，方法体是同一段 builder 链的复制。Phase 3 处理 | §1.3 |
-| 🟠 P1 | 核心层 | 提示词零外置、零版本 | `resources/` 下没有任何提示词文件，全是 Java 字符串常量；改一句要重编译，Golden 评测无法归因到提示词版本 | §1.9 |
-| 🟠 P1 | 核心层 | 缺**能力级**意图路由 | 能力包内部各有一套关键词判定（`PptIntentRecognizer`、`DeepResearchService#needsMoreInfo`），但选哪个能力全靠前端传 `mode`，后端只有 `"analytics".equals(mode)` 一处比较 | §1.9 |
-| 🟠 P1 | 核心层 | `runId ≡ conversationId` | `RunId.of(conversationId)`——一个会话永远只能有一个 run，历史 run 不可回溯，`snapshot()` 直接抛 `UnsupportedOperationException` | §1.9 |
-| 🟠 P1 | 业务层 | 文件问答两条编排路径并存 | HTTP 上传/查询走 `capability/fileqa` 的 UseCase，Agent 工具 `load_file_content` 走 `capability/file/FileQaService`，共用 `JdbcFileStore` 但各有一套解析/向量化编排——**图片描述只有后者做**。Phase 8 合并 | §2.4 |
-| 🟠 P1 | 核心层 | 超时收尾与锁释放存在竞态（一族计时测试不稳定） | 4 次全量跑挂 2 次、每次挂不同用例、单独跑必过：`AgentLoopExecutorRoundTimeoutTest` 与 `SynchronousLlmCallTest`。真实后果是同一会话紧接着重试可能拿到假的 `CONCURRENT_EXECUTION` | §1.4 |
-| 🔴 P0 | 观测审计层 | Golden Case / 审计接口无角色校验 | 任何登录用户可跨用户浏览会话、改评测用例、查审计哈希链 | §4.1 |
-| 🔴 P0 | 业务层 | PPT 下载接口未登录请求绕过归属校验 + MinIO bucket 公开读 | 任何人拿到/猜到 taskId 就能下载别人的 PPT 产物，不需要登录 | §2.3 |
+| ✅ 已解决 | 核心层 | telescoping constructor 被"修"成了 `Object... options` | `ce9bcca` 换成具名 `Builder`，执行器与工厂的位置槽全部消失，编译期恢复类型检查。原描述只在 `AgentLoopExecutor:171` 的 Javadoc 里作为历史留了一句 | §1.3 |
+| 🟠 P1 | 核心层 | 能力 = 代码分支，不是数据 | **半解决**：`7950176` 把 5 条重复 builder 链收敛成唯一的 `assemble(model, CapabilitySpec)`，差异由 `CapabilitySpec` 数据承载。但 5 个 `forXxx` 方法和 4 个进程内缓存 map 仍在，能力还不是 `AgentDefinition` 驱动的装配。Phase 3 处理剩下这半 | §1.3 |
+| ✅ 已解决 | 核心层 | 提示词零外置、零版本 | `b90a636` 起提示词落到 `resources/prompts/{deepresearch,ppt,runtime}/*.md`，front matter 带版本号，`versions.lock.yml` 锁 `id@version#hash`（改正文不改版本号会 WARN 且 `PromptRegistryLockTest` 失败），`TraceRecord.promptStamps` 把本轮用到的提示词标识写进 trace——Golden 分数变化终于能归因到提示词版本 | §1.9 |
+| 🟠 P1 | 核心层 | 缺**能力级**意图路由 | 能力包内部各有一套关键词判定（`PptIntentRecognizer`、`DeepResearchService#needsMoreInfo`），但选哪个能力全靠前端传 `mode`，后端只有 `"analytics".equals(mode)` 一处比较。**2026-08-17 复核：未变**（Phase 3 的副产品，Phase 3 未开始） | §1.9 |
+| 🟠 P1 | 核心层 | `runId ≡ conversationId` | `RunId.of(conversationId)`——一个会话永远只能有一个 run，历史 run 不可回溯，`snapshot()` 直接抛 `UnsupportedOperationException`。**2026-08-17 复核：一字未变** | §1.9 |
+| 🟠 P1 | 业务层 | 文件问答两条编排路径并存 | HTTP 上传/查询走 `capability/fileqa` 的 UseCase，Agent 工具 `load_file_content` 走 `capability/file/FileQaService`，共用 `JdbcFileStore` 但各有一套解析/向量化编排——**图片描述只有后者做**。Phase 8 合并。**2026-08-17 复核：两条路径与行为差异都还在** | §2.4 |
+| 🟠 P1 | 核心层 | 超时收尾与锁释放存在竞态（一族计时测试不稳定） | 2026-08-16 是 4 次全量跑挂 2 次；**2026-08-17 复现 4 次全绿（699 通过）**。但期间没有任何提交动过锁释放时序，竞态代码原样——症状未复现，缺陷未修复 | §1.4 |
+| ✅ 已解决 | 观测审计层 | Golden Case / 审计接口无角色校验 | `GoldenCaseController`/`GoldenCandidateController`/`TraceAuditController` 七个端点已加 `@SaCheckPermission`，权限点两份 DDL 均已播种，`GoldenCaseControllerSecurityTest` 守着。**残留**：`GoldenEvaluationController` 三个端点仍只校验登录，任何登录用户可触发真金白银的全量评测 | §4.1 |
+| ✅ 已解决 | 业务层 | PPT 下载接口未登录请求绕过归属校验 | `currentUserIdOrLegacyForDirectCall()` 在请求上下文中未登录一律 401，产物查询按 userId 限定，外加全局默认拒绝——两道独立的门。残留的是测试覆盖（无用例断言未登录 401），不是代码 | §2.3 |
+| 🟠 P1 | 业务层 | MinIO 图片 bucket 仍是匿名可读 | 代码里的 `setBucketPolicy` 已删（`publicReadPolicy()` 成死代码），但公开读搬进了部署手册：`deploy/Caddyfile` 要求手动 `mc anonymous set download` + 公网反代。写好的 `presignedUrl()` 零调用方。§4.6"产物默认私有、签名 URL"这条目标未达成 | §2.3 |
 | ✅ 已解决 | 核心层 | V0/V1 双入口同时暴露 | Phase -1 删除 `/agent/chat` 端点与 `AgentRuntimeConfig` 装配；`legacy/V0.java` 保留为不装配的参考实现（8 份文档引用它，且有 AgentScope Golden 证明测试） | §6 |
 | 🟠 P0 | 核心层 | 主 HikariCP 连接池从未显式调参 | 全部 JDBC 存储共用默认 10 连接，次要连接池反而调过参 | §1.5 |
 | 🟠 P0 | 核心层 | 两个后台线程池硬编码 4 线程 + 无界队列 | `PptGenerationConfig`/`DeepResearchConfig`，突发负载下是 OOM 风险点 | §1.5 |
@@ -148,8 +159,8 @@ sequenceDiagram
 | 业务直接依赖 `AgentLoopExecutor` | PPT 策略、DeepResearch、WebSearch 测试直接 `new`/`forModel().call()` | Runtime 无法替换，业务无法独立测试（这条的业务侧后果见 §2.3） |
 | ~~**`runtime/` 整层是空壳**~~ | ✅ **Phase -1 已解决**。当时的证据：62 类 1495 行、零 Spring 注解；`repository`/`outbox`/`task`/`coordinator` 只有 `InMemory*` 实现，**没有任何 Jdbc 实现**；四张表 DDL 主代码零写入；`AgentRouter`/`SubAgentRunner` 只有测试引用 | 这是"不引入自研工作流引擎"这条约束最终被违反的落点。已删除 28 个类 + 四张表 DDL，`runtime/` 降到 25 类 |
 | ~~**`loop` ↔ `runtime` 包循环依赖**~~ | ✅ **Phase -1 已解决**。当时反向 import 有 15 处（`RuntimeModule` 引 `loop.context`/`loop.memory`/`loop.trace`，`RunLifecycleManager` 引 `loop.task.AgentTaskManager`，`AgentRequest` 引 `loop.model.OutputType`……） | 修法不是加接口，而是承认那些类本来就属于 `loop`：搬回 `loop.core`/`loop.profile`，适配器下沉 `infrastructure`，`OutputType` 上提到 `runtime.api`。现由未 `@Disabled` 的 ArchUnit 规则钉死 |
-| **telescoping constructor 被"修"成了 `Object... options`** | 原诊断的 16/12 个构造函数已经不存在了，换成 [AgentLoopExecutor.java:154](../src/main/java/com/agenttrail/loop/core/AgentLoopExecutor.java) 的 `AgentLoopExecutor(ChatModel, List<ToolCallback>, int, Object... options)` **21 个位置槽**、[AgentLoopExecutorFactory.java:131](../src/main/java/com/agenttrail/web/service/AgentLoopExecutorFactory.java) 的 **17 个位置槽**，槽位靠 `option(options, 7, PauseConfig.class, null)` 按下标取 | **比原来更糟**：把编译期类型检查换成了运行时 `ClassCastException`，传错顺序编译器一句话都不说。`Builder` 仍在且是唯一安全入口。附带：`AgentLoopExecutorFactory.java:110-129` 留着 6 个方法体已删、注释还在的孤儿 Javadoc 块 |
-| **能力 = 代码分支而不是数据** | `AgentLoopExecutorFactory` 5 个工厂方法（`forModel`/`forModel(webSearch)`/`forModelWithCharts`/`forAnalytics`/`forInternalOrchestration`）+ 4 个 `ConcurrentHashMap` 缓存，方法体是同一段 builder 链的复制，差别只在工具列表和 `ContextPolicy`；还揉进硬编码模型兼容性绕过（`resolveToolCallingModel()` 把带工具的 `qwen-plus` 悄悄路由到 `deepseek-chat`） | 加第 6 种能力 = 加第 6 个方法 + 第 5 个缓存 map。`runtime/agent/AgentDefinition` 已经把这件事的正确形态写出来了（`id/description/RuntimeProfile/tools/InputContract/OutputContract/AgentPolicy`），只是没人用——**它是重构的落点，不是删除对象** |
+| ~~**telescoping constructor 被"修"成了 `Object... options`**~~ | ✅ **`ce9bcca` 已解决**（2026-08-17 核实）。当时的证据：`AgentLoopExecutor` 21 个位置槽、`AgentLoopExecutorFactory` 17 个，槽位靠 `option(options, 7, PauseConfig.class, null)` 按下标取，把编译期类型检查换成了运行时 `ClassCastException` | 现在两者都是具名 `Builder`。全仓库 `Object... options` 仅剩 `AgentLoopExecutor:171` Javadoc 里一句历史说明。孤儿 Javadoc 块也已在 Phase -1 清掉 |
+| **能力 = 代码分支而不是数据（半解决）** | `7950176` 已把 5 条重复 builder 链收敛成**唯一**的 `assemble(model, CapabilitySpec)`，能力差异由 `CapabilitySpec` 这份数据承载。**仍在的部分**：5 个 `forXxx` 方法（`forModel`/`forModel(webSearch)`/`forModelWithCharts`/`forAnalytics`/`forInternalOrchestration`）和 4 个 `ConcurrentHashMap` 进程内缓存都还在，只是方法体变薄成"拼 spec + 查缓存"；硬编码模型兼容性绕过（`resolveToolCallingModel()` 把带工具的 `qwen-plus` 悄悄路由到 `deepseek-chat`）也还在 | 加第 6 种能力仍要加第 6 个方法 + 第 5 个缓存 map，只是不再复制一遍 builder 链。`runtime/agent/AgentDefinition` 已经把正确形态写出来了（`id/description/profileId/tools/InputContract/OutputContract/AgentPolicy`），仍然没人用——**它是重构的落点，不是删除对象**。Phase 3 收尾 |
 | `profileId` 参数从未被读取 | `RuntimeProfileRegistry.resolve(profileId, modelId, scope)`（[:25](../src/main/java/com/agenttrail/capability/chat/application/RuntimeProfileRegistry.java)）方法体里完全不碰 `profileId`，runtime 实际按 modelId 索引 | "profile"概念只有签名没有实现，读代码的人会以为有一套 profile 机制 |
 | 模型兼容性回退逻辑两处独立实现 | `AgentLoopExecutorFactory:428` 和 `RuntimeProfileRegistry:28` 各自调 `ToolCallingCompatibility.needsFallback` 做同一个决策 | 两处任一改动就会不一致 |
 | Spring AI 类型泄漏到核心和业务 | `ChatModel`、`ToolCallback`、`Message`、`Flux` 出现在核心公开接口和业务构造函数 | 无法做框架迁移或多语言 sidecar |
@@ -164,6 +175,8 @@ sequenceDiagram
   - `SynchronousLlmCallTest.failsWithinTheConfiguredTimeoutInsteadOfHangingForeverWhenTheModelNeverResponds`——同类形状，断言"在配置的超时附近拿回控制权"。
 
   两者共同的问题是**用 200ms 级的墙钟阈值断言异步收尾**，CI/满负载机器上余量不够。修的方向有两个，建议一起做：把锁释放放到调用方拿到异常之前（这是真实的时序缺陷，不是测试问题），以及把测试的时间阈值改成虚拟时钟（Reactor 的 `StepVerifier.withVirtualTime`）而不是 `System.currentTimeMillis()`。与上面的"看门狗定时器不主动释放"是同一处代码。
+
+  **2026-08-17 复现结果：4 次全量跑 4 次全绿**（699 通过 / 3 跳过 / 0 失败），两个类单独连跑 4 次也全过。但**不能据此结案**——`git log` 显示这两个测试类自 2026-08-16 以来只被 `ce9bcca`（位置槽构造改具名 options）碰过，没有任何一个提交动过锁释放的时序；`RunLifecycleManager.cancel()` 至今仍是直接委托 `taskManager.stopTask()` 的三行方法，上面描述的那条竞态路径原封不动。合理解释是这台机器当前负载低于 2026-08-16 那次观察，**症状没复现 ≠ 缺陷已修复**。处置不变：按上面两个方向修，其中"锁释放先于异常返回"那条是真实缺陷，与测试是否稳定无关。
 - **Skill 列表每轮重新查库+读盘**：`SkillManager.buildSkillsTool()` 每一**轮**（不是每次对话开始）都做 JDBC 查询 + 逐个技能读盘解析 + 重建工具描述字符串。语义上只需要按对话粒度缓存+失效钩子。
 
 ### 1.5 高并发支持
@@ -241,19 +254,23 @@ public interface AgentRuntimePort {
 
 事件协议：统一 `EventEnvelope`（eventId/runId/taskId/conversationId/sequence/occurredAt/type/source/visibility/payload），支持 `RunStarted`/`ModelDelta`/`ToolStarted`/`ToolCompleted`/`CheckpointSaved`/`Paused`/`RunCompleted`/`RunFailed`/`RunCancelled`，断线用 `Last-Event-ID`/`afterSequence` 重放。
 
-**对应落地阶段**（完整 Phase 列表见 §6）：Phase -1（先做减法，删空壳层）→ Phase 0（架构护栏）→ Phase 1（冻结 `AgentRuntimePort` 契约）→ Phase 2（切断 Spring AI 泄漏）→ Phase 3（拆分 6 模块、删 `Object... options`、给 `Hook`/`StageOutputProvider`——已定案保留——接上第一个真实实现）→ Phase 4（统一 Run/Task/Checkpoint/Event 基础设施，供业务层使用）。
+**对应落地阶段**（完整 Phase 列表见 §6）：Phase -1（先做减法，删空壳层）→ Phase 0（架构护栏）→ Phase 1（冻结 `AgentRuntimePort` 契约）→ Phase 2（切断 Spring AI 泄漏）→ Phase 3（拆分 6 模块、把能力从 `forXxx` 分支变成 `AgentDefinition` 数据、给 `Hook`/`StageOutputProvider`——已定案保留——接上第一个真实实现；`Object... options` 那半已由 `ce9bcca` 提前完成）→ Phase 4（统一 Run/Task/Checkpoint/Event 基础设施，供业务层使用）。
 
 ### 1.9 Agent 工程能力缺口（2026-08-16 新增）
 
 前面几节讲的是"代码结构"问题。这一节讲的是"作为一个 Agent 平台该有而没有"的能力缺口——这些不是重构能顺手带出来的，需要单独设计。
 
-#### 提示词管理：基本不存在
+#### ✅ 提示词管理：已从"基本不存在"做到版本可归因（`b90a636`，2026-08-17 核实）
 
-`src/main/resources/` 下**零个提示词文件**。全部是 Java 字符串常量：`PptPrompts`（4 个）、`DeepResearchPrompts`（8 个），加上散落在 `ContextCompactor`、`MemoryExtractor`、`PromptInjectionGuard`、`ToolSearchCallback`、`LlmJudge`、以及 `AgentLoopExecutor.buildDateSection/buildMemorySection/buildFileSection` 里的内联文本。
+原问题：`src/main/resources/` 下零个提示词文件，全是 Java 字符串常量（`PptPrompts` 4 个、`DeepResearchPrompts` 8 个，加上散落在 `ContextCompactor`/`MemoryExtractor`/`PromptInjectionGuard`/`ToolSearchCallback`/`LlmJudge` 里的内联文本）。改一句要重编译，`agent_trace` 也不记提示词版本——评测结果无法归因到"是提示词改动还是模型抖动"。
 
-缺的是：版本化、变量契约（哪些占位符必填）、灰度/AB、**与 Golden 评测的联动**。`resources/analytics/golden/*.yml` 评测集已经有了，但改一句提示词仍要重编译部署，`agent_trace` 里也没记本次用的提示词版本——于是评测结果无法归因到"是提示词改动导致的还是模型抖动"。
+落地形态和当初写的最小可行形态一致，且多做了一层锁：
 
-最小可行形态：`resources/prompts/<capability>/<name>.md` + front-matter 版本号，加载时校验占位符，`TraceRecord` 增加 `promptVersion` 字段。业界参照 Langfuse / PromptLayer 的 prompt registry。
+- 提示词落在 `resources/prompts/{deepresearch,ppt,runtime}/*.md`，front matter 带 `version`
+- `versions.lock.yml` 锁住每份提示词的 `id@version#hash`。**改了正文却没升版本号会在启动时 WARN，并让 `PromptRegistryLockTest` 失败**——这道锁防的正是"Golden 分数变化被归因到错误版本"这类最难查的错
+- `TraceRecord.promptStamps` 把本轮用到的提示词标识（`id@version#hash`，多个逗号分隔）写进 trace
+
+配套的 `8de6ed2`（比较两次 golden 跑而不是猜提示词改动）让这条链真正闭环。**剩下没做的**：变量契约（加载时校验占位符必填）和灰度/AB。
 
 #### 会话上下文管理：机制齐，装配散
 
@@ -284,6 +301,8 @@ boolean analyticsEnabled = "analytics".equals(mode);
 
 `mode` 由前端传入，DeepResearch / PPT / FileQA 根本不在这条链上——各有独立 URL，靠用户在界面上点按钮选能力。（Phase -1 前 `runtime/agent/AgentRouter` 里写过一套 rule-match + model-fallback 两级路由，主代码零引用、rule 层只是 `keywords.contains()`，已随空壳层一并删除；重做时不会沿用那个形态。）
 
+**2026-08-17 复核：仍是这一行，全仓库再无第二处能力级路由。** 这符合预期——按下面的结论它是 Phase 3 的副产品，Phase 3 尚未开始。
+
 这件事和 §1.3 的"能力 = 代码分支"是同一个问题的两面：能力一旦变成 `AgentDefinition` 数据，`InputContract` 就是天然的路由依据。所以**不要单独做意图识别，它是 Phase 3 的副产品**；两份能力包内部的关键词判定也应当在那时收敛成一套。
 
 #### Agent 状态管理：run 和 conversation 是同一个身份
@@ -295,6 +314,8 @@ runtime.cancel(RunId.of(conversationId), CancellationReason.USER_REQUESTED);
 ```
 
 `runId ≡ conversationId`。后果：一个会话永远只能有一个 run；历史 run 不可回溯；并发子 run（SubAgent）无法表达；`ChatToolScopeRuntimeAdapter.snapshot()` 直接 `throw new UnsupportedOperationException`。
+
+**2026-08-17 复核：这一条一字未变。** `ChatApplicationService:68,77` 和 `LegacyAgentLoopExecutorAdapter:40,48` 四处 `RunId.of(...)` 都还在，`AgentRuntimePort` 的两个实现类 `snapshot()` 也都还是 `UnsupportedOperationException`——**这意味着端口契约里的 5 个方法有 1 个没有任何可用实现**，接口是照目标态设计的，实现只填了填得上的部分。Phase 4 之前动它的时候，顺带要回答"`snapshot` 是否该留在这个接口上"。
 
 状态持久化仍是互不相干的两套：`loop/pause/JdbcPauseStateStore`（HITL 审批断点，落 MySQL）vs `runtime/repository/CheckpointStore`（DeepResearch 的阶段检查点，只有内存实现）。Phase -1 只删掉了后者**没人用的那部分**（`RunRepository`/outbox/task queue）和它的四张空表；`CheckpointStore`/`RunEventStore` 本身 DeepResearch 真在用，保留。两套的合并留到 Phase 6——那时 DeepResearch 的检查点才需要真正落库。
 
@@ -394,9 +415,12 @@ stateDiagram-v2
 - **业务直接依赖 `AgentLoopExecutor`**：`DeepResearchService`、PPT 策略类都直接 `new`/`call()` 执行器，业务接口绑定了 Runtime 实现，不是一个"文本模型调用端口"（核心层侧的问题描述见 §1.3）。
 - **DeepResearch 用 `UUID` 生成内部 conversationId** 绕过单飞机制，不是清晰的 `runId/taskId` 设计。
 - **任务模型深浅不一**：`DeepResearchTaskRegistry` 是纯内存 `ConcurrentHashMap`，重启丢失所有进行中任务的记录，且从不清理终态任务（不重启也会无限增长）；PPT 有 DB 落的逐状态 checkpoint，重启后还能凭 taskId 继续跑。两条业务线的"任务"语义深浅完全不对等。
-- **PPT 并发与资源风险**：`PptTaskStore` 假设"不会并发推进"但没有分布式租约/幂等键；渲染用本地文件系统和 `ProcessBuilder`，没有独立 render worker、并发上限、磁盘配额；下载接口没有会话/用户权限校验，当前请求模型固定使用 `anonymous`；MinIO 图片 bucket 是公开读。
+- **PPT 并发与资源风险**：`PptTaskStore` 假设"不会并发推进"但没有分布式租约/幂等键；渲染用本地文件系统和 `ProcessBuilder`，没有独立 render worker、并发上限、磁盘配额。（这条原本还包含"下载接口没有权限校验"和"MinIO bucket 公开读"两点，2026-08-17 核实后前者已解决、后者性质变了，各自独立成下面两条。）
 - **`CapabilityConversationService`/`ConversationHistoryService` 位于 `web.service`**：能力历史写入被当成 Web 层的责任，直接手写 SQL 并映射进 `web.dto` 响应对象，任何非 HTTP 入口都无法复用同一套会话事实源。
-- **🔴 PPT 下载接口未登录请求会绕过归属校验**（写票核实时新发现，比原来"下载接口没有会话/用户权限校验"的描述更具体）：`PptGenerationController` 的下载端点只在 `currentUserId()` 非空时才做归属过滤，未登录请求会落到未过滤的查询路径，能拿到任意 `taskId` 的产物。加上 `MinioPptImageStore.ensureBucketReady()` 已确认显式把 bucket 策略设成 `Principal: ["*"]` 公开读——两者叠加意味着任何人只要拿到或猜到 `taskId` 就能下载别人的 PPT 产物，不需要登录。修复方案见 [specs/refactor-remediation/refactor-remediation-ticket-18.md](specs/refactor-remediation/refactor-remediation-ticket-18.md) §6/§7。
+- **✅ PPT 下载接口未登录绕过归属校验**（2026-08-17 复核已解决）：`currentUserIdOrLegacyForDirectCall()` 现在只在**没有 HTTP 请求上下文**时（即测试直接 `new` 出 controller 调用）才返回 null，处在请求上下文里而未登录一律抛 401；登录后 `outputFileOf(userId, taskId)` 按 userId 限定查询。加上 `SaTokenConfig` 对 `/agent/**` 的全局默认拒绝，是两道独立的门。**残留的是测试覆盖，不是代码**：`CapabilityControllersTest` 直接调 `controller.download(9L)`，走的正是那条无请求上下文的 null-userId 分支，没有任何用例断言"未登录 HTTP 请求得到 401"——这正是 §1.9 末尾那条"兼容路径让测试跑偏到生产路径之外"的同型情况，补一个 MockMvc 用例即可。
+- **🟠 MinIO 图片 bucket 仍是匿名可读**（2026-08-17 复核：性质变了，问题没消失）。代码侧的 `setBucketPolicy` 调用已删除（`MinioPptImageStore.publicReadPolicy()` 方法还留着但**零调用方**，是死代码），但公开读并没有被替换成签名 URL，而是搬进了部署手册：[deploy/Caddyfile:22](../deploy/Caddyfile) 要求部署时手动跑一次 `mc anonymous set download`，Caddy 把公网路径 `/agenttrail-charts/*` 反代到内部 MinIO。`presignedUrl()` 方法写了，同样零调用方——`ImageStrategy` 用的是 `downloadAndStore()` 返回的裸 object key。
+
+  这个取舍本身有合理内核（写操作仍需 access key 签名；object key 是 `prefix-UUID`，不可枚举），但要如实记账：**PPT 配图对任何拿到 URL 的人可读**，且这层保护是"部署时别忘了那条 mc 命令"的人工约定，不是代码保证。§4.6 写的"产物默认私有，使用签名 URL"这条目标仍未达成。处置有两条路——要么接上已经写好的 `presignedUrl()` 并撤掉 Caddy 那条公开路由，要么明确记为已接受的风险并删掉 `publicReadPolicy()`/`presignedUrl()` 这两块死代码，不要维持现在"代码看起来私有、部署实际公开"的两不像状态。
 
 ### 2.4 复用与重复代码
 
@@ -408,7 +432,7 @@ stateDiagram-v2
 
 | 重复的东西 | 位置 | 处置 |
 |---|---|---|
-| **文件问答两条编排路径**（2026-08-16 修正） | ~~"`fileqa` 是死的重写，删掉即可"——**这个前提是错的**~~。核实后：`capability/fileqa/*` 在生产**装配并在用**（`FileQaConfig` 建全部 Bean，`FileUploadController` 走 UseCase）；`capability/file/FileQaService` 也在用，是 Agent 工具 `load_file_content` 的实现。两者共用底层 `JdbcFileStore`，但各有一套解析/向量化/检索编排——**已知行为差异：图片描述只有 `FileQaService` 那条做，HTTP 上传的图片在 `contentFor` 里会返回"图片描述尚未生成"** | 合并是行为变更，Phase 8。Phase -1 只删了零消费方的 `FileContextProvider`/`FileContextProviderImpl` |
+| **文件问答两条编排路径**（2026-08-17 复核：仍在，差异也仍在） | ~~"`fileqa` 是死的重写，删掉即可"——**这个前提是错的**~~。核实后：`capability/fileqa/*` 在生产**装配并在用**（`FileQaConfig` 建全部 Bean，`FileUploadController` 走 `FileContentQueryUseCase`）；`capability/file/FileQaService` 也在用，是 Agent 工具 `load_file_content` 的实现。两者共用底层 `JdbcFileStore`，但各有一套解析/向量化/检索编排。**行为差异 2026-08-17 复核仍然成立且方向未变**：`FileQaService.contentForImage()` 现在会在缓存未命中时现调多模态模型补描述（懒生成 + 回写 `parsedText`），而 `FileContentQueryUseCase.contentFor():38` 仍原样返回"图片描述尚未生成"，`FileIngestUseCase` 对 `FileKind.IMAGE` 也只把 `parsedText` 留成 null。于是同一张图，Agent 工具读得到内容、HTTP 接口读不到；只有当 Agent 先读过一次、把描述回写进共享的 `JdbcFileStore` 之后，HTTP 那条才"碰巧"能看到 | 合并是行为变更，Phase 8。Phase -1 只删了零消费方的 `FileContextProvider`/`FileContextProviderImpl` |
 | ✅ `FileUploadController` 双路径 | 兼容构造函数 + 3 处 `legacyService != null ? ... : ...` 三元分支；8 个测试用例（含 2 个 IDOR、1 个 fail-open 回归）全跑在生产不走的分支上 | **Phase -1 已完成**：删构造函数与分支，测试迁到生产路径 |
 | 任务存储三套 | `PptTaskStore`(Jdbc+InMemory)、DeepResearch 的 `Map<Long,Handle>`、`AgentTaskManager`（`runtime/task/*` 已在 Phase -1 删除） | Phase 6/7 统一 |
 | 会话读写三套 | `loop/persistence/JdbcSessionStore`、`conversation/application/JdbcConversationPort`、`web/service/ConversationHistoryService` | Phase 2 尾声收敛到 `conversation` |
@@ -511,15 +535,27 @@ Task 统一模型（解决 §2.3 的"任务模型深浅不一"）：`taskId/capa
 
 管的是"某一次请求发生了什么、谁能看什么、能不能追溯"——单次请求粒度的因果链、权限边界、合规基线。代码对应 `loop/trace`、`loop/security`、`loop/hook`、`web/controller/TraceAuditController`、`GoldenCaseController`/`GoldenCandidateController`，以及测试基础设施（`*IT.java`）。
 
-### 4.1 🔴 权限校验缺失（最高优先级）
+### 4.1 ✅ 权限校验缺失（2026-08-17 复核：主体已解决，留一处残缺）
 
-`GoldenCaseController.java`、`GoldenCandidateController.java`、`TraceAuditController.java` 均无 `@SaCheckRole`/`@SaCheckPermission`，而 `sys.controller.*` 下的管理接口都有对应的角色校验（已交叉确认 `web/controller` 下无一处这类注解）。当前鉴权是"全局默认拒绝未登录"，但登录之后没有二次角色/权限校验——任何已登录的普通用户可以：浏览其他用户的会话列表和详情（`GoldenCandidateController`）、增删改评测用例（`GoldenCaseController`）、调用审计哈希链校验接口（`TraceAuditController`，本该是内部运维用途）。
+原问题：`GoldenCaseController`、`GoldenCandidateController`、`TraceAuditController` 均无 `@SaCheckRole`/`@SaCheckPermission`，鉴权只有"全局默认拒绝未登录"这一层，登录之后任何普通用户都能浏览别人的会话、增删改评测用例、调用审计哈希链校验。
 
-**建议**：这几个接口至少加管理员角色校验，等价于 `sys.controller.*` 已有的做法。这是本文档优先级最高的一项，改动范围小（加注解），应该独立于其它重构工作立即处理。
+**已解决部分**（`ab302e9` 起，2026-08-17 逐个端点核实）：
+
+| Controller | 端点 | 权限 |
+|---|---|---|
+| `GoldenCaseController` | list / create / update / delete | `golden:case:{view,create,update,delete}` |
+| `GoldenCandidateController` | conversations / candidates | `golden:candidate:view` |
+| `TraceAuditController` | `/api/internal/audit/{id}/verify` | `audit:trace:verify` |
+
+六个权限点已在 `db/schema.sql:399-404` 与 `db/migration/V1__init.sql:369-374` 两份 DDL 同时播种；`GoldenCaseControllerSecurityTest` 用反射断言每个方法的注解值，漏加注解会红。
+
+**残留的一处**：`GoldenEvaluationController` 的三个端点（`POST /agent/v1/evaluation/run`、`GET /{taskId}`、`GET /history`）**没有任何 `@SaCheckPermission`**。类注释写着 "Authorization follows the existing admin route policy"，但这条 admin 路由策略并不存在——`SaTokenConfig` 的兜底规则只做 `StpUtil.checkLogin()`。后果比原问题轻（不泄露他人会话内容），但任何登录用户都能触发一次全量 Golden 评测，那是真实的 LLM 调用和真金白银的成本，也能读到全部历史评测结果。
+
+**建议**：补 `golden:evaluation:run` / `golden:evaluation:view` 两个权限点，DDL 两份都要加，并把 `GoldenCaseControllerSecurityTest` 的断言范围扩到这个 Controller——否则同样的疏漏还会再犯一次。
 
 ### 4.2 追踪审计机制现状
 
-`TraceStore`（内存版+JDBC 版）记录每一轮的输入/输出/think/token/耗时/成败；审计哈希链用 `SELECT ... FOR UPDATE` 而不是应用层锁——同一 `conversationId` 的哈希链必须严格有序，多实例部署下应用层锁不跨进程，行锁把"取上一条哈希+写入新哈希"这个临界区下推到数据库自己保证。这部分设计是扎实的，缺口只在 §4.1 的权限校验没跟上——机制做对了，但谁能调用它没有管住。
+`TraceStore`（内存版+JDBC 版）记录每一轮的输入/输出/think/token/耗时/成败；审计哈希链用 `SELECT ... FOR UPDATE` 而不是应用层锁——同一 `conversationId` 的哈希链必须严格有序，多实例部署下应用层锁不跨进程，行锁把"取上一条哈希+写入新哈希"这个临界区下推到数据库自己保证。这部分设计是扎实的。曾经的缺口是"机制做对了、但谁能调用它没管住"，§4.1 的权限校验已经补上（`audit:trace:verify`）。
 
 ### 4.3 安全纵深现状
 
@@ -551,7 +587,12 @@ Task 统一模型（解决 §2.3 的"任务模型深浅不一"）：`taskId/capa
 
 ### 4.6 目标：统一安全边界
 
-所有请求必须有 `userId`，不能继续用生产默认 `anonymous`；工具权限在 Tool Gateway 做服务端校验，不能只依赖 Prompt；系统参数注入使用强类型 `ExecutionPrincipal`，不使用自由 Map；文件/Python/Shell/MCP/下载 URL 都必须有 allowlist、超时和审计；产物默认私有，使用签名 URL；Prompt、工具返回值和错误日志要有 PII/Secret 脱敏策略；管理类接口必须有角色校验（§4.1，这条是目前唯一违反的）。
+所有请求必须有 `userId`，不能继续用生产默认 `anonymous`；工具权限在 Tool Gateway 做服务端校验，不能只依赖 Prompt；系统参数注入使用强类型 `ExecutionPrincipal`，不使用自由 Map；文件/Python/Shell/MCP/下载 URL 都必须有 allowlist、超时和审计；Prompt、工具返回值和错误日志要有 PII/Secret 脱敏策略。
+
+2026-08-17 核实后，这一节还剩两条没达成：
+
+- **产物默认私有、使用签名 URL**：PPT 产物下载已经按 userId 限定（§2.3），但 MinIO 图片 bucket 仍靠部署时手动设匿名只读，`presignedUrl()` 零调用方。
+- **管理类接口必须有角色校验**（§4.1）：七个端点已加，`GoldenEvaluationController` 三个端点还差。
 
 **对应落地任务**：这一层的问题大多是独立的配置/注解改动（§4.1 权限校验、§4.4 CI profile），不依赖 Phase 0-10 的架构大改，应该最先做，见 §9。
 
@@ -641,9 +682,29 @@ flowchart TB
 
 **这一步不是推翻之前的工作**，而是承认 §1.8 那次拆分只落地了模块名。逻辑搬迁仍按 Phase 3 做，只是不再在一个空壳骨架上叠加。
 
+### ✅ 2026-08-17 复现核实（不是一个 Phase，是一次对账）
+
+对 §0 表里六个未决条目逐个回代码验证，结果已就地更新到各章节。这里只记**方法和教训**，事实不在这里重复。
+
+| 条目 | 结论 | 依据 |
+|---|---|---|
+| Golden/审计权限校验（§4.1） | ✅ 主体已解决，`GoldenEvaluationController` 三端点残缺 | 七个端点的 `@SaCheckPermission` + 两份 DDL 的权限点 + `GoldenCaseControllerSecurityTest` |
+| PPT 下载归属校验（§2.3） | ✅ 已解决，缺的是测试覆盖 | `currentUserIdOrLegacyForDirectCall()` 在请求上下文中抛 401 |
+| MinIO bucket 公开读（§2.3） | 🟠 换了形态，问题还在 | 代码侧 `setBucketPolicy` 已删，`deploy/Caddyfile:22` 要求手动 `mc anonymous set download` |
+| `runId ≡ conversationId`（§1.9） | 未变 | 四处 `RunId.of(...)`、两个 `snapshot()` 仍抛 `UnsupportedOperationException` |
+| 能力级意图路由（§1.9） | 未变 | 全仓库仍只有 `"analytics".equals(mode)` 一处 |
+| 文件问答双路径（§2.4） | 未变，行为差异也未变 | `FileContentQueryUseCase:38` 仍返回"图片描述尚未生成" |
+| 计时测试竞态（§1.4） | 症状未复现，缺陷未修复 | 4 次全量跑全绿（699 通过），但期间无提交动过锁释放时序 |
+
+**三条经验**：
+
+- **复核必须回代码，不能沿用上一份审计的结论。** 本文档 2026-08-16 版把两个 🔴 P0 列为未决，而 `2c24379`/`d3045d0` 早在 **2026-08-12** 就修完了——那次复核直接继承了 `refactor-audit-2026-08-11` 的措辞。代价不是"多写了两行"，是**最高优先级那一栏失去了可信度**：一份会把已修项挂着的清单，读的人下次也不会相信它标的其它 🔴。
+- **"没复现"和"已修复"要分开记。** 计时那族测试 4 次全绿很诱人，但竞态代码一行没动。把它记成已解决，等于用一次幸运的采样把一个真实缺陷从清单上抹掉。
+- **安全修复搬进部署手册，等于没有修复，而且更难发现。** MinIO 那条从代码里删掉 `setBucketPolicy` 之后，仓库里搜不到任何"公开读"的痕迹，实际公开性由 `Caddyfile` 注释里一句"部署时手动跑一次"承担。下一个人读代码只会看到一个零调用方的 `presignedUrl()`，合理推断是"已经用签名 URL 了"。这类改动要么真做完，要么在代码注释里写明现状。
+
 ### Phase 0：建立事实基线和架构护栏（跨四层）
 
-1. **权限校验补齐**（§4.1，观测审计层）——安全问题，优先级最高，加注解即可。
+1. ~~**权限校验补齐**（§4.1，观测审计层）~~——2026-08-17 核实主体已完成，只剩 `GoldenEvaluationController` 三个端点补两个权限点。
 2. **CI 接入 Testcontainers 类 IT**（§4.4，观测审计层）——新增不需要密钥的 profile，成本低，立刻有回归保护。
 3. `test`：增加当前 HTTP 契约快照，固定 `/chat`、`/deepresearch`、`/ppt`、`/files` 的请求响应行为。
 4. `test`：增加 ArchUnit 依赖方向测试。
@@ -651,7 +712,7 @@ flowchart TB
 
 ### Phase 1-4：核心层（对应 §1.8）
 
-Phase 1 冻结 `AgentRuntimePort` 契约，不移动实现；Phase 2 切断 Spring AI 从业务向外泄漏；Phase 3 拆分 Runtime 内部 6 模块、删除 `Object... options` 位置槽构造（`AgentLoopExecutor` 和 `AgentLoopExecutorFactory` 一起处理，见 §1.3）、给已定案保留的 `Hook`/`StageOutputProvider` 两套 SPI 接上第一个真实实现（不再是"要不要保留"的开放问题）；Phase 4 统一 Run/Task/Checkpoint/Event 基础设施。
+Phase 1 冻结 `AgentRuntimePort` 契约，不移动实现；Phase 2 切断 Spring AI 从业务向外泄漏；Phase 3 拆分 Runtime 内部 6 模块、把能力从 5 个 `forXxx` 方法 + 4 个缓存 map 收敛成 `AgentDefinition` 驱动的装配（`Object... options` 位置槽已由 `ce9bcca` 提前删掉，`CapabilitySpec` 也已把重复 builder 链收敛，见 §1.3）、给已定案保留的 `Hook`/`StageOutputProvider` 两套 SPI 接上第一个真实实现（不再是"要不要保留"的开放问题）；Phase 4 统一 Run/Task/Checkpoint/Event 基础设施。
 
 **Phase 3 的验收标准必须改**（§1.7 的教训）：不能是"新模块类存在且编译通过"——上一轮正是这么验收的，六个类全建出来了、`AgentLoopExecutor` 一行没少。改成三条硬指标：**① `AgentLoopExecutor` 行数下降到 400 行以内；② 每个新模块有独立单测且断言的是真实行为不是委托；③ 旧路径（`ToolCallExecutor` 之于 `ToolRoundExecutor` 这类）被删除而不是并存**。
 
@@ -687,7 +748,9 @@ Phase 5 迁移普通 Chat；Phase 6 把 DeepResearch 接入 Task 基础设施（
 
 **追问"为什么不让 PPT 直接跑在 Web 请求里？"**："PPT 同时包含多次 LLM 调用、联网搜索、图片转存和 Python 子进程。同步 Web 只能解决 demo 的调用路径，不能解决排队、租约、取消、重试、断点恢复和多实例资源安全。所以我把它建模成 Task + Worker + Artifact，SSE 只订阅事件。"
 
-**追问"监控层和观测审计层有什么区别？"**："监控层回答'系统整体健不健康'——Prometheus/Grafana/SLO 告警，是聚合视角；观测审计层回答'这一次请求发生了什么、谁能看、能不能追溯'——TraceStore、审计哈希链、权限校验，是单次请求粒度的因果链和合规边界。这次审计发现的最高优先级问题（Golden Case 接口无角色校验）就出在观测审计层，说明这层不能只做机制，还要管住谁能调用这些机制。"
+**追问"监控层和观测审计层有什么区别？"**："监控层回答'系统整体健不健康'——Prometheus/Grafana/SLO 告警，是聚合视角；观测审计层回答'这一次请求发生了什么、谁能看、能不能追溯'——TraceStore、审计哈希链、权限校验，是单次请求粒度的因果链和合规边界。审计一度发现的最高优先级问题（Golden Case 接口无角色校验）就出在这一层：审计哈希链本身是用 `SELECT ... FOR UPDATE` 把临界区下推到数据库做的，机制扎实，但一开始没人管住谁能调用它——**机制做对了不等于边界管住了**。"
+
+**追问"你怎么保证问题清单本身是准的？"**（这个例子比前面几个更值得讲）："我踩过一次。2026-08-16 的架构复核把两个标红的安全问题列为未决，我 08-17 逐条回代码验证时发现它们在 08-12 就已经修完了——上一轮复核直接继承了更早那份审计的措辞，没回代码看。代价不是多写两行，是最高优先级那一栏失去可信度：一份会把已修项挂着的清单，别人下次也不会信它标的其它红色。所以现在的规矩是复核只认当前代码，并且把'症状没复现'和'缺陷已修复'分开记——同一次复核里还有一族计时测试连跑四次全绿，但那段竞态代码一行没动，它仍然记在未决里。"
 
 **追问"为什么参考这些框架？"**："我分别吸收了它们解决的不同问题：图状态和 checkpoint、Middleware 和权限、Actor/Message 事件模型、Flow 与 Crew 的分层、API/Worker/Queue 的平台化、Block/Artifact 的能力原子化，而不是把几个框架混成一个基类。"
 
@@ -697,13 +760,15 @@ Phase 5 迁移普通 Chat；Phase 6 把 DeepResearch 接入 Task 基础设施（
 
 **独立于大改动、成本低、马上能做的**（不需要等 Runtime 拆分完成，按层标注）：
 
-1. 【观测审计层】权限校验（§4.1）——安全问题，改注解，优先级最高。
-2. 【观测审计层】CI 接入 Testcontainers 类 IT（§4.4）——新增 profile，立刻有回归保护。
-3. 【核心层】主 HikariCP 连接池显式调参、两个后台线程池的队列/大小改成可配置+有界（§1.5）——纯配置改动。
-4. 【核心层】`AgentLoopExecutor` 看门狗定时器改用 `.timeout(...)` 串联管道（§1.4）——`ToolCallExecutor` 已有先例，照抄即可。
-5. 【业务层】`GoldenCaseService` 去重、`ToolCallExecutor` 构造函数瘦身（§2.4）——低风险机械改动。
-6. 【监控层】补齐 Redis/PgVector/MinIO/DashScope 的 `HealthIndicator`（§3.3）。
-7. 【业务层】DeepResearch 补 `currentStep` 字段打通已经画好的前端进度图（§2.7）——加一个字段、几个 `log.info` 调用点顺手多写一行，不需要等 Phase 6。
+1. 【观测审计层】~~权限校验（§4.1）~~ ✅ 主体已完成（2026-08-17 核实）。**剩下的尾巴**：`GoldenEvaluationController` 三个端点补 `golden:evaluation:{run,view}` 两个权限点（两份 DDL 都要加），并把 `GoldenCaseControllerSecurityTest` 的断言扩到这个 Controller。仍是改注解级别的成本。
+2. 【业务层】给 PPT 下载补一个"未登录 HTTP 请求得到 401"的 MockMvc 用例（§2.3）——代码已经对了，但现有测试直接 `new` controller，走的是无请求上下文那条分支，等于这道门没有测试守着。
+3. 【业务层】MinIO 公开读二选一（§2.3）：接上已写好的 `presignedUrl()` 并撤掉 Caddy 公开路由，或者明确接受风险并删掉 `publicReadPolicy()`/`presignedUrl()` 两块死代码——不要停在"代码看着私有、部署实际公开"。
+4. 【观测审计层】CI 接入 Testcontainers 类 IT（§4.4）——新增 profile，立刻有回归保护。
+5. 【核心层】主 HikariCP 连接池显式调参、两个后台线程池的队列/大小改成可配置+有界（§1.5）——纯配置改动。
+6. 【核心层】`AgentLoopExecutor` 看门狗定时器改用 `.timeout(...)` 串联管道，同时把锁释放挪到调用方拿到异常之前（§1.4）——`ToolCallExecutor` 已有先例，照抄即可。计时测试当前不复现，但竞态代码原样，这一条不因此降级。
+7. 【业务层】`GoldenCaseService` 去重、`ToolCallExecutor` 构造函数瘦身（§2.4）——低风险机械改动。
+8. 【监控层】补齐 Redis/PgVector/MinIO/DashScope 的 `HealthIndicator`（§3.3）。
+9. ~~【业务层】DeepResearch 补 `currentStep` 字段~~ ✅ 已完成（见 §2.7）。
 
 **需要按 Phase -1~10 分阶段做的**（涉及核心执行路径和多个测试文件的调用点，不建议脱离计划单独改）：
 
