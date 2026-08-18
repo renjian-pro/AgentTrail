@@ -256,6 +256,11 @@
 			<artifactId>testcontainers-junit-jupiter</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-mysql</artifactId>
+			<scope>test</scope>
+		</dependency>
 
 		<!-- issue #23 图表生成的 MinIO 上传由 mcp-echarts（独立 Node 进程）内置完成，本来只在集成
 		     测试里用这个 SDK 独立验证图片真的落进了 bucket；issue #31（AI 配图立即转存 MinIO）
@@ -284,16 +289,7 @@
 
 	</dependencies>
 
-	<!--
-		MySQL 集成测试连的是开发机上常驻的实例（见 com.agenttrail.support.SharedMySql），不用
-		Testcontainers 现拉现起容器——这台机器上 Testcontainers 起一个全新 MySQL 要等 initdb
-		初始化数据目录，慢到分钟级；直接连常驻实例更快，隔离靠"各自清自己的库/表"。
-		同样不用 H2：SQL AST 校验、权限改写这些在 H2 上的行为和 MySQL 不一致，会掩盖真实 bug。
-
-		Redis 集成测试反过来用 Testcontainers（见 RedisTaskLockIT）：Redis 镜像没有 initdb 这一步，
-		容器几秒内就绪，起一次性容器的代价不像 MySQL 那么高，换来的是不依赖这台机器上
-		"恰好有一个装好的常驻 Redis"这个前提——issue #11 的验收标准也明确要求真实 Redis 而非内存模拟。
-	-->
+	<!-- 集成测试使用 Testcontainers 提供隔离的真实 MySQL/Redis；不用 H2 掩盖方言和服务端行为差异。 -->
 
 	<build>
 		<plugins>

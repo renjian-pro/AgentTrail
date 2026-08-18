@@ -9,6 +9,8 @@ import com.agenttrail.runtime.api.AgentRequest;
 import com.agenttrail.runtime.api.AgentRunHandle;
 import com.agenttrail.runtime.api.AgentRuntimePort;
 import com.agenttrail.runtime.api.ResumeCommand;
+import com.agenttrail.platform.tools.PendingToolView;
+import com.agenttrail.platform.tools.ToolRiskLevel;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Flux;
@@ -139,6 +141,26 @@ class ChatApplicationServiceTest {
     }
 
     @Test
+    void approveLegacySnapshotUsesTheServerDefaultInsteadOfTrustingTheRequestedModel() {
+        AgentRuntimePort qwen = mock(AgentRuntimePort.class);
+        AgentRuntimePort deepSeek = mock(AgentRuntimePort.class);
+        RunId runId = RunId.of("conversation-1");
+        when(deepSeek.resume(any(), any())).thenReturn(new AgentRunHandle(runId, Flux.empty()));
+        PausedRunPort pausedRuns = id -> java.util.Optional.of(new PausedRunPort.PausedRun(
+                id, "user-1", null, "HITL_APPROVAL", 10L,
+                false, false, List.of()));
+        ChatApplicationService service = new ChatApplicationService(
+                new RuntimeProfileRegistry(Map.of("qwen-plus", qwen, "deepseek-chat", deepSeek), "qwen-plus"),
+                mock(ConversationPort.class), pausedRuns);
+
+        service.approve(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1",
+                "attacker-controlled-model", true, null).collectList().block();
+
+        verify(deepSeek).resume(runId, new ResumeCommand.Approve());
+        verify(qwen, never()).resume(any(), any());
+    }
+
+    @Test
     void approveHidesMissingAndForeignPauseSnapshotsBehindTheSameNotFoundError() {
         AgentRuntimePort runtime = mock(AgentRuntimePort.class);
         RuntimeProfileRegistry profiles = new RuntimeProfileRegistry(Map.of("qwen-plus", runtime), "qwen-plus");
@@ -160,8 +182,8 @@ class ChatApplicationServiceTest {
     void pendingApprovalReturnsOnlyAnOwnedPauseSnapshot() {
         PausedRunPort.PausedRun owned = new PausedRunPort.PausedRun(
                 "conversation-1", "user-1", "qwen-plus", "HITL_APPROVAL", 10L,
-                false, false, List.of(new PausedRunPort.PendingTool(
-                "call-1", "bash", "{\"command\":\"pwd\"}", "HIGH_RISK")));
+                false, false, List.of(new PendingToolView(
+                "call-1", "bash", "{\"command\":\"pwd\"}", ToolRiskLevel.HIGH_RISK)));
         ChatApplicationService service = new ChatApplicationService(
                 new RuntimeProfileRegistry(Map.of("qwen-plus", mock(AgentRuntimePort.class)), "qwen-plus"),
                 mock(ConversationPort.class), id -> java.util.Optional.of(owned));

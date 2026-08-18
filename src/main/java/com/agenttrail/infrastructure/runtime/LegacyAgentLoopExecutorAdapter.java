@@ -70,9 +70,13 @@ public class LegacyAgentLoopExecutorAdapter implements AgentRuntimePort {
     @Override
     public AgentRunHandle resume(RunId runId, ResumeCommand command) {
         ConversationId conversationId = ConversationId.of(runId.value());
-        Flux<AgentEvent> events = delegate.resume(runId.value(), toResumeInstruction(command))
-                .map(event -> toAgentEvent(runId, conversationId, event));
-        return new AgentRunHandle(runId, events);
+        try {
+            Flux<AgentEvent> events = delegate.resume(runId.value(), toResumeInstruction(command))
+                    .map(event -> toAgentEvent(runId, conversationId, event));
+            return new AgentRunHandle(runId, events);
+        } catch (AgentCallException failure) {
+            throw new AgentRuntimeException(mapErrorCode(failure.code()), failure.getMessage());
+        }
     }
 
     private static RunnableParams toRunnableParams(AgentRequest request) {
@@ -93,10 +97,7 @@ public class LegacyAgentLoopExecutorAdapter implements AgentRuntimePort {
                     new AgentEvent.ToolCompleted(runId, end.toolName(), end.toolCallId(), end.result());
             case AgentStreamEvent.Paused paused ->
                     new AgentEvent.Paused(runId, conversationId, paused.reason().name(),
-                            paused.pendingTools().stream()
-                                    .map(tool -> new AgentEvent.PendingTool(tool.toolCallId(), tool.toolName(),
-                                            tool.arguments(), tool.riskLevel()))
-                                    .toList());
+                            paused.pendingTools());
             case AgentStreamEvent.Error error ->
                     new AgentEvent.Failed(runId, mapErrorCode(error.code()), error.message());
             case AgentStreamEvent.Complete complete ->

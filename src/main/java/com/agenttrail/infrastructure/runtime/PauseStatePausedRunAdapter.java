@@ -4,6 +4,7 @@ import com.agenttrail.capability.chat.application.PausedRunPort;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.pause.PauseStateStore;
 import com.agenttrail.loop.pause.ToolArgumentSanitizer;
+import com.agenttrail.platform.tools.PendingToolView;
 
 import java.util.Map;
 import java.util.Objects;
@@ -32,10 +33,10 @@ public final class PauseStatePausedRunAdapter implements PausedRunPort {
                     state.reason().name(), state.pausedAtMillis(),
                     flagEnabled(toolParams, WEB_SEARCH_PARAM), flagEnabled(toolParams, ANALYTICS_PARAM),
                     state.pendingToolCalls().stream()
-                            .map(tool -> new PendingTool(tool.id(), tool.name(),
+                            .map(tool -> new PendingToolView(tool.id(), tool.name(),
                                     ToolArgumentSanitizer.sanitize(tool.arguments()),
-                                    riskRegistry.riskOf(tool.name()).name()))
-                            .toList());
+                                    riskRegistry.riskOf(tool.name())))
+                            .toList(), state.safePoint());
         });
     }
 

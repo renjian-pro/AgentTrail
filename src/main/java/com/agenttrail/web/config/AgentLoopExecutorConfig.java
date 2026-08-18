@@ -12,7 +12,7 @@ import com.agenttrail.capability.analytics.AnalyticsToolProvider;
 import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.conversation.digest.ConversationDigestService;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
-import com.agenttrail.loop.hook.ToolRiskLevel;
+import com.agenttrail.platform.tools.ToolRiskLevel;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.memory.JdbcMemoryStore;
 import com.agenttrail.loop.memory.MemoryStore;
@@ -37,7 +37,10 @@ import com.agenttrail.evaluation.GoldenCaseRepository;
 import com.agenttrail.evaluation.GoldenCaseService;
 import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.tools.FileContentTool;
+import com.agenttrail.loop.tools.FileSystemTools;
 import com.agenttrail.loop.tools.ViewImageTool;
+import com.agenttrail.loop.tools.idempotency.IdempotencyStore;
+import com.agenttrail.loop.tools.idempotency.JdbcIdempotencyStore;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilyWebSearchResultParser;
@@ -55,6 +58,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -142,6 +148,11 @@ public class AgentLoopExecutorConfig {
     @Bean
     public PauseStateStore pauseStateStore(@Qualifier("dataSource") DataSource dataSource) {
         return new JdbcPauseStateStore(dataSource);
+    }
+
+    @Bean
+    public IdempotencyStore idempotencyStore(@Qualifier("dataSource") DataSource dataSource) {
+        return new JdbcIdempotencyStore(dataSource);
     }
 
     @Bean
@@ -337,6 +348,20 @@ public class AgentLoopExecutorConfig {
         return new ChartToolProvider(mcpUrl, Duration.ofSeconds(timeoutSeconds), maxAttempts);
     }
 
+    /**
+     * 普通聊天只拿到专用工作区里的文件能力。工作区先真实创建再交给路径白名单，既让
+     * write_file/edit_file 有可审批的生产入口，也不把应用目录或用户主目录暴露给模型。
+     */
+    @Bean
+    public FileSystemTools chatFileSystemTools(
+            @Value("${agenttrail.filesystem.workspace:}") String configuredWorkspace) throws IOException {
+        Path workspace = configuredWorkspace == null || configuredWorkspace.isBlank()
+                ? Path.of(System.getProperty("java.io.tmpdir"), "agenttrail-workspace")
+                : Path.of(configuredWorkspace);
+        Files.createDirectories(workspace);
+        return FileSystemTools.builder().allowedDirs(workspace.toString()).build();
+    }
+
     @Bean
     public AgentLoopExecutorFactory agentLoopExecutorFactory(
             @Qualifier("deepSeekChatModel") ChatModel deepSeekChatModel,
@@ -346,6 +371,8 @@ public class AgentLoopExecutorConfig {
             ChartToolProvider chartToolProvider,
             TurnPersistenceHook turnPersistenceHook,
             ObjectProvider<FileContentTool> fileContentToolProvider,
+            FileSystemTools chatFileSystemTools,
+            IdempotencyStore idempotencyStore,
             ObjectProvider<ViewImageTool> viewImageToolProvider,
             ObjectProvider<FileStore> fileStoreProvider,
             ObjectProvider<AnalyticsToolProvider> analyticsToolProvider,
@@ -370,6 +397,8 @@ public class AgentLoopExecutorConfig {
                 .charts(chartToolProvider)
                 .persistence(turnPersistenceHook)
                 .fileContentTool(fileContentToolProvider.getIfAvailable())
+                .fileSystemTools(chatFileSystemTools)
+                .idempotency(idempotencyStore)
                 .fileStore(fileStoreProvider.getIfAvailable())
                 .analytics(analyticsToolProvider.getIfAvailable())
                 .pause(pauseConfig)

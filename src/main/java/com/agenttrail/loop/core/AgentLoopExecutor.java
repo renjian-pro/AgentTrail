@@ -21,7 +21,9 @@ import com.agenttrail.loop.pause.PauseReason;
 import com.agenttrail.loop.pause.PauseState;
 import com.agenttrail.loop.pause.PendingToolCall;
 import com.agenttrail.loop.pause.ResumeInstruction;
-import com.agenttrail.loop.pause.SafePoint;
+import com.agenttrail.platform.tools.ResumeSafePoint;
+import com.agenttrail.platform.tools.PendingToolView;
+import com.agenttrail.platform.tools.ToolRiskLevel;
 import com.agenttrail.loop.pause.ToolArgumentSanitizer;
 import com.agenttrail.loop.persistence.TurnPersistenceHook;
 import com.agenttrail.loop.persistence.TurnRecord;
@@ -38,6 +40,7 @@ import com.agenttrail.loop.trace.TraceStore;
 import com.agenttrail.loop.structured.JsonRepair;
 import com.agenttrail.loop.tools.search.ToolCatalog;
 import com.agenttrail.loop.tools.search.ToolSearchSession;
+import com.agenttrail.loop.tools.idempotency.IdempotencyStore;
 import com.agenttrail.loop.profile.RuntimeProfile;
 import com.agenttrail.loop.profile.RuntimeProfileValidator;
 import com.agenttrail.runtime.api.CancellationReason;
@@ -156,6 +159,7 @@ public class AgentLoopExecutor {
     private final PromptInjectionGuard promptInjectionGuard;
     private final PiiMasker piiMasker;
     private final ToolRateLimiter toolRateLimiter;
+    private final IdempotencyStore idempotencyStore;
     private final Duration roundTimeout;
     /**
      * 传 null 表示这套装配完全不提供 Skill 工具，行为与没有这个机制时一致。非 null 时，
@@ -217,6 +221,7 @@ public class AgentLoopExecutor {
         PromptInjectionGuard promptInjectionGuard = options.promptInjectionGuard;
         PiiMasker piiMasker = options.piiMasker;
         ToolRateLimiter toolRateLimiter = options.toolRateLimiter;
+        IdempotencyStore idempotencyStore = options.idempotencyStore;
         Duration roundTimeout = options.roundTimeout;
         SkillManager skillManager = options.skillManager;
         RuntimeProfile runtimeProfile = options.runtimeProfile;
@@ -254,6 +259,7 @@ public class AgentLoopExecutor {
         this.promptInjectionGuard = promptInjectionGuard;
         this.piiMasker = piiMasker;
         this.toolRateLimiter = toolRateLimiter;
+        this.idempotencyStore = idempotencyStore;
         this.roundTimeout = (roundTimeout == null) ? DEFAULT_ROUND_TIMEOUT : roundTimeout;
         this.skillManager = skillManager;
         this.dataProvenancePolicy =
@@ -365,6 +371,7 @@ public class AgentLoopExecutor {
         private PromptInjectionGuard promptInjectionGuard;
         private PiiMasker piiMasker;
         private ToolRateLimiter toolRateLimiter;
+        private IdempotencyStore idempotencyStore;
         private Duration roundTimeout = DEFAULT_ROUND_TIMEOUT;
         private SkillManager skillManager;
         private DataProvenancePolicy dataProvenancePolicy = DataProvenancePolicy.DISABLED;
@@ -466,6 +473,12 @@ public class AgentLoopExecutor {
 
         public Builder toolRateLimiter(ToolRateLimiter toolRateLimiter) {
             this.toolRateLimiter = toolRateLimiter;
+            return this;
+        }
+
+        /** 审批恢复的工具调用跨进程去重；null 表示保持原有至少一次执行语义。 */
+        public Builder idempotencyStore(IdempotencyStore idempotencyStore) {
+            this.idempotencyStore = idempotencyStore;
             return this;
         }
 
@@ -934,14 +947,15 @@ public class AgentLoopExecutor {
                 .map(call -> new PendingToolCall(call.id(), call.name(), call.arguments()))
                 .toList();
         PauseState pauseState = new PauseState(context.conversationId(), context.messages(), pending,
-                PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION, context.question(),
+                PauseReason.HITL_APPROVAL, ResumeSafePoint.BEFORE_TOOL_EXECUTION, context.question(),
                 context.params(), modelName, context.roundCounter().get(), System.currentTimeMillis());
         pauseConfig.store().save(pauseState);
 
-        List<AgentStreamEvent.PendingTool> publicPending = toolCalls.stream()
-                .map(call -> new AgentStreamEvent.PendingTool(call.id(), call.name(),
+        List<PendingToolView> publicPending = toolCalls.stream()
+                .map(call -> new PendingToolView(call.id(), call.name(),
                         ToolArgumentSanitizer.sanitize(call.arguments()),
-                        pauseConfig.requiresApproval(call.name()) ? "HIGH_RISK" : "READ_ONLY"))
+                        pauseConfig.requiresApproval(call.name())
+                                ? ToolRiskLevel.HIGH_RISK : ToolRiskLevel.READ_ONLY))
                 .toList();
         context.emit(new AgentStreamEvent.Paused(
                 context.conversationId(), PauseReason.HITL_APPROVAL, publicPending));
@@ -970,34 +984,43 @@ public class AgentLoopExecutor {
 
         Sinks.Many<AgentStreamEvent> sink = EventSinks.bounded();
         if (!taskManager.registerTask(conversationId, sink)) {
-            EventSinks.emit(sink, new AgentStreamEvent.Error("CONCURRENT_EXECUTION", "该会话正在执行中，请稍后再试"));
-            sink.tryEmitComplete();
+            // 恢复请求必须在 SSE 响应提交前把并发冲突交给 HTTP 层，否则只能得到 200 + RunFailed，
+            // 客户端和网关都无法按标准 409 做重试/告警分类。
+            throw new AgentCallException("CONCURRENT_EXECUTION", "该会话正在执行中，请稍后再试");
+        }
+
+        boolean handedOffToRoundDriver = false;
+        try {
+            List<Message> messages = new ArrayList<>(paused.messages());
+            if (paused.safePoint() == ResumeSafePoint.BEFORE_TOOL_EXECUTION) {
+                List<ToolResponseMessage.ToolResponse> responses = resolvePendingToolResponses(paused, instruction, sink);
+                if (!responses.isEmpty()) {
+                    messages.add(ToolResponseMessage.builder().responses(responses).build());
+                }
+                if (instruction instanceof ResumeInstruction.NewInstruction newInstruction) {
+                    messages.add(new UserMessage(newInstruction.message()));
+                }
+
+                // 工具可能已经产生不可逆副作用。必须先把结果推进到“工具执行后”检查点，再调用模型；
+                // 后续即使 provider 失败或进程重启，重试也只会消费已落盘的结果，不会再次执行工具。
+                pauseConfig.store().save(new PauseState(paused.conversationId(), messages, List.of(),
+                        paused.reason(), ResumeSafePoint.AFTER_TOOL_EXECUTION, paused.question(), paused.params(),
+                        paused.modelId(), paused.roundAtPause(), paused.pausedAtMillis()));
+            }
+
+            // 从暂停时的轮次续数，而不是从 0 重开一整份 maxRounds 预算——否则反复暂停/恢复能绕开轮次上限
+            RunContext context = new RunContext(paused.question(), paused.params(), messages, sink,
+                    new AtomicInteger(paused.roundAtPause()), System.currentTimeMillis(), null, MDC.getCopyOfContextMap(),
+                    true);
+            scheduleRound(context);
+            handedOffToRoundDriver = true;
             return sink.asFlux();
-        }
-
-        List<Message> messages = new ArrayList<>(paused.messages());
-        if (paused.safePoint() == SafePoint.BEFORE_TOOL_EXECUTION) {
-            List<ToolResponseMessage.ToolResponse> responses = resolvePendingToolResponses(paused, instruction, sink);
-            if (!responses.isEmpty()) {
-                messages.add(ToolResponseMessage.builder().responses(responses).build());
+        } finally {
+            // 工具执行或检查点写入若在调度前同步失败，round driver 没机会走 completeRun 清理。
+            if (!handedOffToRoundDriver) {
+                taskManager.removeTask(conversationId);
             }
-            if (instruction instanceof ResumeInstruction.NewInstruction newInstruction) {
-                messages.add(new UserMessage(newInstruction.message()));
-            }
-
-            // 工具可能已经产生不可逆副作用。必须先把结果推进到“工具执行后”检查点，再调用模型；
-            // 后续即使 provider 失败或进程重启，重试也只会消费已落盘的结果，不会再次执行工具。
-            pauseConfig.store().save(new PauseState(paused.conversationId(), messages, List.of(),
-                    paused.reason(), SafePoint.AFTER_TOOL_EXECUTION, paused.question(), paused.params(),
-                    paused.modelId(), paused.roundAtPause(), paused.pausedAtMillis()));
         }
-
-        // 从暂停时的轮次续数，而不是从 0 重开一整份 maxRounds 预算——否则反复暂停/恢复能绕开轮次上限
-        RunContext context = new RunContext(paused.question(), paused.params(), messages, sink,
-                new AtomicInteger(paused.roundAtPause()), System.currentTimeMillis(), null, MDC.getCopyOfContextMap(),
-                true);
-        scheduleRound(context);
-        return sink.asFlux();
     }
 
     /**
@@ -1042,7 +1065,8 @@ public class AgentLoopExecutor {
         // 可用；直接转发到原始 sink，和改造前的行为一致——落库轨迹的记录从下面新建的
         // RunContext 开始才生效，暂停前的工具调用不计入这一轮的 timeline，可接受。
         List<ToolResponseMessage.ToolResponse> responses = toolCallExecutor.execute(
-                approvedCalls, event -> EventSinks.emit(sink, event), paramInjector);
+                approvedCalls, event -> EventSinks.emit(sink, event), paramInjector,
+                null, null, idempotencyStore, paused.conversationId());
         firePostToolUse(hookContext, responses);
         return responses;
     }

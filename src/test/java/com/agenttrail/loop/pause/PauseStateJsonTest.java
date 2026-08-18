@@ -1,5 +1,7 @@
 package com.agenttrail.loop.pause;
 
+import com.agenttrail.platform.tools.ResumeSafePoint;
+
 import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import org.junit.jupiter.api.Test;
@@ -37,7 +39,7 @@ class PauseStateJsonTest {
                 List.of(new SystemMessage("system rules"), new UserMessage("question"), assistant, toolResponses),
                 List.of(new PendingToolCall("call-3", "approve", "{\"amount\":10}")),
                 PauseReason.HITL_APPROVAL,
-                SafePoint.BEFORE_TOOL_EXECUTION,
+                ResumeSafePoint.BEFORE_TOOL_EXECUTION,
                 "question",
                 new RunnableParams("conv-1", "user-1", Map.of("tenantId", "tenant-7"), OutputType.of(Plan.class)),
                 "deepseek-chat",
@@ -48,7 +50,7 @@ class PauseStateJsonTest {
 
         assertThat(restored.conversationId()).isEqualTo("conv-1");
         assertThat(restored.reason()).isEqualTo(PauseReason.HITL_APPROVAL);
-        assertThat(restored.safePoint()).isEqualTo(SafePoint.BEFORE_TOOL_EXECUTION);
+        assertThat(restored.safePoint()).isEqualTo(ResumeSafePoint.BEFORE_TOOL_EXECUTION);
         assertThat(restored.question()).isEqualTo("question");
         assertThat(restored.modelId()).isEqualTo("deepseek-chat");
         assertThat(restored.roundAtPause()).isEqualTo(4);

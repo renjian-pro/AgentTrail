@@ -1,5 +1,7 @@
 package com.agenttrail.loop.pause;
 
+import com.agenttrail.platform.tools.ResumeSafePoint;
+
 import com.agenttrail.loop.model.RunnableParams;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -59,7 +61,7 @@ class InMemoryPauseStateStoreTest {
     private static PauseState pauseStateFor(String conversationId) {
         return new PauseState(conversationId, List.of(new UserMessage("hi")),
                 List.of(new PendingToolCall("call-1", "charge", "{}")),
-                PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION,
+                PauseReason.HITL_APPROVAL, ResumeSafePoint.BEFORE_TOOL_EXECUTION,
                 "hi", new RunnableParams(conversationId, "user-1"), 1, System.currentTimeMillis());
     }
 }

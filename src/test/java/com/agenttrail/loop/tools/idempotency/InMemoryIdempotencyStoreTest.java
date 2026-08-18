@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -24,46 +23,46 @@ class InMemoryIdempotencyStoreTest {
 
     @Test
     void firstClaimWins() {
-        assertThat(store.claim("k", LEASE)).isEmpty();
+        assertThat(store.claim("k", LEASE).acquired()).isTrue();
     }
 
     @Test
     void secondClaimLosesAndSeesTheInFlightRecord() {
         store.claim("k", LEASE);
 
-        Optional<IdempotencyRecord> existing = store.claim("k", LEASE);
+        IdempotencyClaim existing = store.claim("k", LEASE);
 
-        assertThat(existing).isPresent();
-        assertThat(existing.get().status()).isEqualTo(IdempotencyRecord.Status.IN_FLIGHT);
+        assertThat(existing.acquired()).isFalse();
+        assertThat(existing.existing().status()).isEqualTo(IdempotencyRecord.Status.IN_FLIGHT);
     }
 
     @Test
     void completedRecordIsReplayedToLaterClaims() {
-        store.claim("k", LEASE);
-        store.complete("k", "结果", TTL);
+        IdempotencyClaim owner = store.claim("k", LEASE);
+        store.complete("k", owner.ownerToken(), "结果", TTL);
 
-        Optional<IdempotencyRecord> existing = store.claim("k", LEASE);
+        IdempotencyClaim existing = store.claim("k", LEASE);
 
-        assertThat(existing).isPresent();
-        assertThat(existing.get().isCompleted()).isTrue();
-        assertThat(existing.get().result()).isEqualTo("结果");
+        assertThat(existing.acquired()).isFalse();
+        assertThat(existing.existing().isCompleted()).isTrue();
+        assertThat(existing.existing().result()).isEqualTo("结果");
     }
 
     @Test
     void releasedKeyCanBeClaimedAgain() {
-        store.claim("k", LEASE);
-        store.release("k");
+        IdempotencyClaim owner = store.claim("k", LEASE);
+        store.release("k", owner.ownerToken());
 
-        assertThat(store.claim("k", LEASE)).isEmpty();
+        assertThat(store.claim("k", LEASE).acquired()).isTrue();
     }
 
     /** release 只针对"还没完成"的占位，不能把已完成的结果也删掉——那等于把去重窗口清零。 */
     @Test
     void releaseDoesNotDropACompletedRecord() {
-        store.claim("k", LEASE);
-        store.complete("k", "结果", TTL);
+        IdempotencyClaim owner = store.claim("k", LEASE);
+        store.complete("k", owner.ownerToken(), "结果", TTL);
 
-        store.release("k");
+        store.release("k", owner.ownerToken());
 
         assertThat(store.find("k")).isPresent();
     }
@@ -78,18 +77,18 @@ class InMemoryIdempotencyStoreTest {
 
         clock.advance(LEASE.plusSeconds(1));
 
-        assertThat(store.claim("k", LEASE)).isEmpty();
+        assertThat(store.claim("k", LEASE).acquired()).isTrue();
     }
 
     @Test
     void expiredCompletedRecordIsGoneAndTheKeyBecomesExecutableAgain() {
-        store.claim("k", LEASE);
-        store.complete("k", "结果", TTL);
+        IdempotencyClaim owner = store.claim("k", LEASE);
+        store.complete("k", owner.ownerToken(), "结果", TTL);
 
         clock.advance(TTL.plusSeconds(1));
 
         assertThat(store.find("k")).isEmpty();
-        assertThat(store.claim("k", LEASE)).isEmpty();
+        assertThat(store.claim("k", LEASE).acquired()).isTrue();
     }
 
     @Test
@@ -106,7 +105,7 @@ class InMemoryIdempotencyStoreTest {
         int contenders = 64;
         try (ExecutorService pool = Executors.newFixedThreadPool(contenders)) {
             List<Callable<Boolean>> attempts = IntStream.range(0, contenders)
-                    .<Callable<Boolean>>mapToObj(i -> () -> store.claim("k", LEASE).isEmpty())
+                    .<Callable<Boolean>>mapToObj(i -> () -> store.claim("k", LEASE).acquired())
                     .toList();
 
             List<Future<Boolean>> results = pool.invokeAll(attempts);

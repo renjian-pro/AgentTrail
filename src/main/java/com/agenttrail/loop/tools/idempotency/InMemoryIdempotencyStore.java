@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.UUID;
 
 /**
  * 单进程内存版 {@link IdempotencyStore}。
@@ -57,24 +58,32 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
      * 在里面做慢操作会把同键甚至同 bin 的其它线程一起拖住。真正的工具执行在装饰器里、锁外进行。
      */
     @Override
-    public Optional<IdempotencyRecord> claim(String key, Duration leaseTimeout) {
+    public IdempotencyClaim claim(String key, Duration leaseTimeout) {
         Instant now = clock.instant();
-        AtomicReference<IdempotencyRecord> alreadyThere = new AtomicReference<>();
+        AtomicReference<IdempotencyClaim> result = new AtomicReference<>();
         entries.compute(key, (existingKey, existing) -> {
             if (existing != null && !existing.isExpired(now)) {
-                alreadyThere.set(existing.record());
+                result.set(IdempotencyClaim.occupied(existing.record()));
                 return existing;
             }
             // 没有记录，或者记录已过期（执行者死了 / 去重窗口到期）——本次调用抢到占位
-            return new Entry(IdempotencyRecord.inFlight(existingKey, now), now.plus(leaseTimeout));
+            String ownerToken = UUID.randomUUID().toString();
+            result.set(IdempotencyClaim.acquired(ownerToken));
+            return new Entry(IdempotencyRecord.inFlight(existingKey, now), now.plus(leaseTimeout), ownerToken);
         });
-        return Optional.ofNullable(alreadyThere.get());
+        return result.get();
     }
 
     @Override
-    public void complete(String key, String result, Duration recordTtl) {
+    public void complete(String key, String ownerToken, String result, Duration recordTtl) {
         Instant now = clock.instant();
-        entries.put(key, new Entry(IdempotencyRecord.completed(key, result, now), now.plus(recordTtl)));
+        entries.compute(key, (existingKey, existing) -> {
+            if (existing == null || existing.record().isCompleted()
+                    || !existing.ownerToken().equals(ownerToken)) {
+                throw new IllegalStateException("幂等键 " + key + " 的租约所有权已失效");
+            }
+            return new Entry(IdempotencyRecord.completed(key, result, now), now.plus(recordTtl), ownerToken);
+        });
     }
 
     /**
@@ -84,9 +93,9 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
      * 结果记录一起删掉，去重窗口被清零，下一次重放就真的会再执行一遍工具。
      */
     @Override
-    public void release(String key) {
+    public void release(String key, String ownerToken) {
         entries.computeIfPresent(key, (existingKey, existing) ->
-                existing.record().isCompleted() ? existing : null);
+                existing.record().isCompleted() || !existing.ownerToken().equals(ownerToken) ? existing : null);
     }
 
     @Override
@@ -105,7 +114,7 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
     }
 
     /** 记录 + 绝对过期时刻；IN_FLIGHT 的过期时刻是租约到期，COMPLETED 的是去重窗口到期。 */
-    private record Entry(IdempotencyRecord record, Instant expiresAt) {
+    private record Entry(IdempotencyRecord record, Instant expiresAt, String ownerToken) {
 
         boolean isExpired(Instant now) {
             return !now.isBefore(expiresAt);

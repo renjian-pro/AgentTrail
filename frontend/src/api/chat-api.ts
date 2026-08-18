@@ -8,11 +8,13 @@ export type HistoryPage = { conversationId: string; page: number; size: number; 
 export type ConversationSummary = { conversationId: string; title: string; lastActiveAtMillis: number }
 export type ConversationPage = { page: number; size: number; hasMore: boolean; sessions: ConversationSummary[] }
 export type ApprovalRequest = { approved: boolean; rejectionReason?: string | null }
+export type ResumeSafePoint = 'BEFORE_TOOL_EXECUTION' | 'AFTER_TOOL_EXECUTION'
 export type PendingApprovalResponse = {
   conversationId: string
   reason: string
   pausedAtMillis: number
   pendingTools: PendingToolCall[]
+  safePoint?: ResumeSafePoint
 }
 const eventTypes = new Set<StreamEvent['type']>(['RunStarted', 'ModelDelta', 'ThinkingDelta', 'ToolStarted', 'ToolCompleted', 'Paused', 'RunFailed', 'RunCompleted'])
 

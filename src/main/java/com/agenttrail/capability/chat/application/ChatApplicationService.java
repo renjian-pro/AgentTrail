@@ -67,8 +67,10 @@ public final class ChatApplicationService {
     public Flux<EventEnvelope> approve(ExecutionPrincipal principal, String conversationId,
                                        String modelId, boolean approved, String rejectionReason) {
         PausedRunPort.PausedRun paused = requireOwnedPause(principal, conversationId);
+        // 旧快照没有 modelId 时也不能相信恢复请求重传的值；传 null 让服务端注册表选择默认模型，
+        // 否则客户端能把同一份服务端上下文切到任意模型上继续执行。
         String originalModelId = paused.modelId() == null || paused.modelId().isBlank()
-                ? modelId : paused.modelId();
+                ? null : paused.modelId();
         ToolScope originalScope = new ToolScope(paused.webSearchEnabled(), true, java.util.Set.of());
         AgentRuntimePort runtime = profiles.resolve("chat-default", originalModelId, originalScope);
         ResumeCommand command = approved ? new ResumeCommand.Approve()

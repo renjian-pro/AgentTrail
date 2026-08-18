@@ -3,7 +3,7 @@ package com.agenttrail.loop.core;
 import com.agenttrail.loop.core.support.RecordingToolCallback;
 import com.agenttrail.loop.core.support.ScriptedChatModel;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
-import com.agenttrail.loop.hook.ToolRiskLevel;
+import com.agenttrail.platform.tools.ToolRiskLevel;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.memory.JdbcMemoryStore;
 import com.agenttrail.loop.memory.MemoryItem;

@@ -4,7 +4,7 @@ import { useChatStore } from './chat'
 import { chatApi, streamApproval } from '../api/chat-api'
 
 vi.mock('../api/chat-api', () => ({
-  chatApi: { history: vi.fn(), sessions: vi.fn() },
+  chatApi: { history: vi.fn(), sessions: vi.fn(), getPendingApproval: vi.fn() },
   streamApproval: vi.fn()
 }))
 
@@ -12,6 +12,8 @@ describe('chat store', () => {
   beforeEach(() => {
     localStorage.clear()
     setActivePinia(createPinia())
+    vi.mocked(chatApi.getPendingApproval).mockReset()
+        .mockRejectedValue(new Error('no pending approval'))
   })
 
   it('starts a clean conversation without losing the known session list', () => {
@@ -128,6 +130,34 @@ describe('chat store', () => {
     await store.hydrateSessions()
 
     expect(store.sessions).toEqual([{ id: 'persisted', title: '从服务端恢复的标题' }])
+  })
+
+  it('keeps a first-turn paused local session when the server has no completed history yet', async () => {
+    const store = useChatStore()
+    store.acceptConversation('paused-first-turn', '创建文件')
+    vi.mocked(chatApi.sessions).mockResolvedValue({ page: 0, size: 20, hasMore: false, sessions: [] })
+    vi.mocked(chatApi.getPendingApproval).mockResolvedValue({
+      conversationId: 'paused-first-turn', reason: 'HITL_APPROVAL', pausedAtMillis: 1,
+      pendingTools: [], safePoint: 'BEFORE_TOOL_EXECUTION'
+    })
+
+    await store.hydrateSessions()
+
+    expect(store.sessions).toEqual([{ id: 'paused-first-turn', title: '创建文件' }])
+  })
+
+  it('opens a first-turn pause even when conversation history returns not found', async () => {
+    vi.mocked(chatApi.history).mockRejectedValue(new Error('not found'))
+    vi.mocked(chatApi.getPendingApproval).mockResolvedValue({
+      conversationId: 'paused-first-turn', reason: 'HITL_APPROVAL', pausedAtMillis: 1,
+      pendingTools: [], safePoint: 'BEFORE_TOOL_EXECUTION'
+    })
+    const store = useChatStore()
+
+    await store.openSession('paused-first-turn')
+
+    expect(store.conversationId).toBe('paused-first-turn')
+    expect(store.hasPendingApproval).toBe(true)
   })
 
   it('appends the next server-side page instead of replacing existing history', async () => {

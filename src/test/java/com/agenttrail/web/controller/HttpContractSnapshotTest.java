@@ -6,12 +6,15 @@ import com.agenttrail.capability.file.IngestedFile;
 import com.agenttrail.capability.chat.application.ChatApplicationService;
 import com.agenttrail.capability.chat.application.RuntimeProfileRegistry;
 import com.agenttrail.capability.chat.application.PausedRunPort;
+import com.agenttrail.platform.tools.PendingToolView;
+import com.agenttrail.platform.tools.ToolRiskLevel;
 import com.agenttrail.conversation.application.ConversationPort;
 import com.agenttrail.platform.events.EventEnvelope;
 import com.agenttrail.platform.ids.ConversationId;
 import com.agenttrail.platform.ids.RunId;
 import com.agenttrail.runtime.api.AgentEvent;
 import com.agenttrail.runtime.api.AgentRunHandle;
+import com.agenttrail.runtime.api.AgentRuntimeException;
 import com.agenttrail.runtime.api.AgentRuntimePort;
 import com.agenttrail.runtime.api.ResumeCommand;
 import com.agenttrail.platform.error.ErrorCode;
@@ -96,8 +99,8 @@ class HttpContractSnapshotTest {
         when(runtime.start(any())).thenReturn(new AgentRunHandle(RunId.of("conv-1"), Flux.just(
                 new AgentEvent.Started(RunId.of("conv-1"), ConversationId.of("conv-1")),
                 new AgentEvent.Paused(RunId.of("conv-1"), ConversationId.of("conv-1"), "HITL_APPROVAL",
-                        List.of(new AgentEvent.PendingTool("call-1", "chargeCard",
-                                "{\"amount\":100,\"api_token\":\"***\"}", "HIGH_RISK"))))));
+                        List.of(new PendingToolView("call-1", "chargeCard",
+                                "{\"amount\":100,\"api_token\":\"***\"}", ToolRiskLevel.HIGH_RISK))))));
         ConversationPort conversations = mock(ConversationPort.class);
         AgentLoopController controller = new AgentLoopController(new ChatApplicationService(
                 new RuntimeProfileRegistry(Map.of("qwen-plus", runtime), "qwen-plus"), conversations));
@@ -125,7 +128,7 @@ class HttpContractSnapshotTest {
         PausedRunPort pausedRuns = conversationId -> "conv-1".equals(conversationId)
                 ? Optional.of(new PausedRunPort.PausedRun("conv-1", "user-1", "deepseek-chat",
                 "HITL_APPROVAL", 7L, true, false,
-                List.of(new PausedRunPort.PendingTool("call-1", "chargeCard", "{}", "HIGH_RISK"))))
+                List.of(new PendingToolView("call-1", "chargeCard", "{}", ToolRiskLevel.HIGH_RISK))))
                 : Optional.empty();
         AgentLoopController controller = new AgentLoopController(new ChatApplicationService(
                 new RuntimeProfileRegistry(Map.of(
@@ -159,10 +162,10 @@ class HttpContractSnapshotTest {
     }
 
     @Test
-    void concurrentResumeRemainsAnExplicitSseFailureInsteadOfAFalseSuccess() {
+    void concurrentResumeReturnsHttpConflictBeforeOpeningAnSseStream() {
         AgentRuntimePort runtime = mock(AgentRuntimePort.class);
-        when(runtime.resume(any(), any())).thenReturn(new AgentRunHandle(RunId.of("conv-1"), Flux.just(
-                new AgentEvent.Failed(RunId.of("conv-1"), ErrorCode.CONCURRENT_EXECUTION, "正在恢复"))));
+        when(runtime.resume(any(), any())).thenThrow(
+                new AgentRuntimeException(ErrorCode.CONCURRENT_EXECUTION, "正在恢复"));
         PausedRunPort pausedRuns = conversationId -> Optional.of(new PausedRunPort.PausedRun(
                 "conv-1", "user-1", "qwen-plus", "HITL_APPROVAL", 1L,
                 false, false, List.of()));
@@ -172,10 +175,10 @@ class HttpContractSnapshotTest {
 
         try (var ignored = mockStatic(StpUtil.class)) {
             ignored.when(StpUtil::getLoginIdAsString).thenReturn("user-1");
-            EventEnvelope failure = controller.approve("conv-1",
-                    new AgentApprovalRequest(true, null, null, false, null)).blockFirst().data();
-            assertThat(failure.type()).isEqualTo("RunFailed");
-            assertThat(failure.payload()).contains("CONCURRENT_EXECUTION");
+            assertThatThrownBy(() -> controller.approve("conv-1",
+                    new AgentApprovalRequest(true, null, null, false, null)))
+                    .isInstanceOfSatisfying(ResponseStatusException.class,
+                            failure -> assertThat(failure.getStatusCode().value()).isEqualTo(409));
         }
     }
 

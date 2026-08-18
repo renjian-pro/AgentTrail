@@ -1,5 +1,7 @@
 package com.agenttrail.runtime.api;
 
+import com.agenttrail.platform.tools.PendingToolView;
+
 import com.agenttrail.platform.error.ErrorCode;
 import com.agenttrail.platform.ids.ConversationId;
 import com.agenttrail.platform.ids.RunId;
@@ -25,7 +27,7 @@ public sealed interface AgentEvent {
     }
 
     record Paused(RunId runId, ConversationId conversationId, String reason,
-                  List<PendingTool> pendingTools) implements AgentEvent {
+                  List<PendingToolView> pendingTools) implements AgentEvent {
 
         public Paused {
             pendingTools = pendingTools == null ? List.of() : List.copyOf(pendingTools);
@@ -34,9 +36,6 @@ public sealed interface AgentEvent {
         public Paused(RunId runId, ConversationId conversationId, String reason) {
             this(runId, conversationId, reason, List.of());
         }
-    }
-
-    record PendingTool(String toolCallId, String toolName, String arguments, String riskLevel) {
     }
 
     record Failed(RunId runId, ErrorCode errorCode, String message) implements AgentEvent {

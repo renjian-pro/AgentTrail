@@ -1,5 +1,7 @@
 package com.agenttrail.loop.hook;
 
+import com.agenttrail.platform.tools.ToolRiskLevel;
+
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;

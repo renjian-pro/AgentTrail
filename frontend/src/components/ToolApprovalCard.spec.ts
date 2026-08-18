@@ -1,8 +1,9 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import ToolApprovalCard from './ToolApprovalCard.vue'
+import type { ApprovalCardState } from '../stores/chat'
 
-const approval = {
+const approval: ApprovalCardState = {
   conversationId: 'c1',
   reason: 'HITL_APPROVAL',
   pausedAtMillis: 1,
@@ -41,6 +42,18 @@ describe('ToolApprovalCard', () => {
     })
 
     expect(wrapper.text()).toContain('provider unavailable')
+    await wrapper.get('.retry-button').trigger('click')
+    expect(wrapper.emitted('decide')).toEqual([[true, undefined]])
+  })
+
+  it('uses neutral wording and does not offer a second decision after the tool stage was handled', async () => {
+    const wrapper = mount(ToolApprovalCard, {
+      props: { approval: { ...approval, pendingTools: [], safePoint: 'AFTER_TOOL_EXECUTION' as const } }
+    })
+
+    expect(wrapper.text()).toContain('工具阶段已处理')
+    expect(wrapper.text()).not.toContain('工具已执行')
+    expect(wrapper.find('.reject-button').exists()).toBe(false)
     await wrapper.get('.retry-button').trigger('click')
     expect(wrapper.emitted('decide')).toEqual([[true, undefined]])
   })

@@ -85,6 +85,18 @@ function toChatSession(session: ConversationSummary): ChatSession {
   return { id: session.conversationId, title: truncateTitle(session.title) }
 }
 
+function readStoredSessions(): ChatSession[] {
+  const raw = localStorage.getItem(STORAGE_KEY)
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as ChatSession[]
+    return parsed.filter(item => item.id && item.title)
+  } catch {
+    localStorage.removeItem(STORAGE_KEY)
+    return []
+  }
+}
+
 /** 对话状态由侧栏和 ChatView 共同消费，不能留在任一组件的本地 ref 中。 */
 export const useChatStore = defineStore('chat', () => {
   const conversationId = ref<string>()
@@ -198,7 +210,8 @@ export const useChatStore = defineStore('chat', () => {
           conversationId: event.conversationId,
           reason: event.reason,
           pausedAtMillis: Date.now(),
-          pendingTools: event.pendingTools
+          pendingTools: event.pendingTools,
+          safePoint: 'BEFORE_TOOL_EXECUTION'
         }, assistant)
         return undefined
       case 'RunCompleted':
@@ -239,11 +252,14 @@ export const useChatStore = defineStore('chat', () => {
    */
   async function submitApproval(approved: boolean, rejectionReason?: string,
       signal?: AbortSignal): Promise<string | undefined> {
-    if (!beginApproval(approved)) return undefined
+    // AFTER 只代表批准/拒绝/跳过这一工具阶段已经处理；刷新后只能继续生成，不能再提交第二次决定。
+    const effectiveApproval = pendingApproval.value?.safePoint === 'AFTER_TOOL_EXECUTION' ? true : approved
+    if (!beginApproval(effectiveApproval)) return undefined
     const approval = pendingApproval.value!
     let failureMessage: string | undefined
     try {
-      for await (const event of streamApproval(approval.conversationId, { approved, rejectionReason }, signal)) {
+      for await (const event of streamApproval(approval.conversationId,
+          { approved: effectiveApproval, rejectionReason: effectiveApproval ? undefined : rejectionReason }, signal)) {
         failureMessage = applyStreamEvent(event, approval.assistant, '') ?? failureMessage
       }
     } catch (failure) {
@@ -319,7 +335,15 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function openSession(id: string) {
-    const page = await chatApi.history(id)
+    // 首轮就在工具前暂停时还没有 agent_session；暂停快照和历史必须并行查询，只要任一存在，
+    // 这个会话入口就有效，不能让 history 的 404 把随后可成功的 pause 查询短路掉。
+    const [historyResult, pauseResult] = await Promise.allSettled([
+      chatApi.history(id), chatApi.getPendingApproval(id)
+    ])
+    if (historyResult.status === 'rejected' && pauseResult.status === 'rejected') throw historyResult.reason
+    const page = historyResult.status === 'fulfilled'
+      ? historyResult.value
+      : { conversationId: id, page: 0, size: 20, hasMore: false, turns: [] }
     conversationId.value = id
     // 切回历史会话要恢复它自己的 Agent，不能沿用上一个会话的——否则在分析会话里点开一个
     // 普通会话，界面会显示"数据分析"而请求实际走普通对话
@@ -331,35 +355,37 @@ export const useChatStore = defineStore('chat', () => {
     if (!sessions.value.some(session => session.id === id)) {
       acceptConversation(id, page.turns.at(0)?.question ?? '新对话')
     }
-    try {
-      const paused = await chatApi.getPendingApproval(id)
-      if (!paused) return
+    if (pauseResult.status === 'fulfilled') {
+      const paused = pauseResult.value
       const assistant = reactive<ChatTurn>({ kind: 'chat', role: 'assistant', content: '', tools: [] })
       messages.value.push(assistant)
       restorePendingApproval(paused, assistant)
-    } catch {
-      // 404 表示这条会话没有暂停；服务暂不可用时也不阻断已经成功载入的历史。
     }
   }
 
   async function hydrateSessions() {
+    const stored = readStoredSessions()
     try {
       const page = await chatApi.sessions()
-      sessions.value = page.sessions.map(toChatSession)
+      const serverSessions = page.sessions.map(toChatSession)
+      const serverIds = new Set(serverSessions.map(session => session.id))
+      const missingLocal = stored.filter(session => !serverIds.has(session.id))
+      // 服务端正常返回时只保留确实仍有暂停快照的本地入口，避免把已删除的普通旧会话复活。
+      const pausedLocal = (await Promise.all(missingLocal.map(async session => {
+        try {
+          await chatApi.getPendingApproval(session.id)
+          return session
+        } catch {
+          return undefined
+        }
+      }))).filter((session): session is ChatSession => session !== undefined)
+      sessions.value = [...pausedLocal, ...serverSessions]
       sessionPage.value = page.page
       sessionsHasMore.value = page.hasMore
       persistSessions()
     } catch {
       // 服务暂不可用时仍保留上次已知的会话入口；恢复后下一次刷新会重新以服务端为准。
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return
-      try {
-        const parsed = JSON.parse(raw) as ChatSession[]
-        sessions.value = parsed.filter(item => item.id && item.title)
-      } catch {
-        localStorage.removeItem(STORAGE_KEY)
-        sessions.value = []
-      }
+      sessions.value = stored
     }
   }
 

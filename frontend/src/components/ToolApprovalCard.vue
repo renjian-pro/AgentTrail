@@ -8,8 +8,10 @@ const rejectionReason = ref('')
 
 const deciding = computed(() => props.approval.status === 'submitting')
 const terminal = computed(() => props.approval.status === 'approved' || props.approval.status === 'rejected')
+const afterToolExecution = computed(() => props.approval.safePoint === 'AFTER_TOOL_EXECUTION')
 const statusText = computed(() => {
-  if (props.approval.status === 'submitting') return '正在提交审批决定…'
+  if (props.approval.status === 'submitting') return afterToolExecution.value ? '正在继续生成回答…' : '正在提交审批决定…'
+  if (afterToolExecution.value && props.approval.status === 'approved') return '已继续生成回答，工具阶段不会重复处理'
   if (props.approval.status === 'approved') return '已批准，工具执行和回答已继续'
   if (props.approval.status === 'rejected') return '已拒绝，工具未执行，回答已继续'
   return ''
@@ -28,10 +30,11 @@ function decide(approved: boolean) {
   <section class="tool-approval-card" aria-live="polite">
     <header>
       <div>
-        <strong>需要你的确认</strong>
-        <p>以下工具可能产生外部影响，确认后才会执行。</p>
+        <strong>{{ afterToolExecution ? '工具阶段已处理，等待继续' : '需要你的确认' }}</strong>
+        <p v-if="afterToolExecution">恢复点已记录工具阶段的处理结果；继续操作不会重复批准、拒绝或跳过。</p>
+        <p v-else>以下工具可能产生外部影响，确认后才会执行。</p>
       </div>
-      <span class="risk-badge">高风险</span>
+      <span v-if="!afterToolExecution" class="risk-badge">高风险</span>
     </header>
     <div v-for="tool in approval.pendingTools" :key="tool.toolCallId" class="approval-tool">
       <div class="tool-heading"><b>{{ tool.toolName }}</b><small>{{ tool.riskLevel }}</small></div>
@@ -40,12 +43,14 @@ function decide(approved: boolean) {
     <p v-if="statusText" class="approval-status">{{ statusText }}</p>
     <p v-if="approval.status === 'failed'" class="approval-error">恢复失败：{{ approval.error }}</p>
     <template v-if="!terminal">
-      <label v-if="approval.status !== 'failed'">
+      <label v-if="!afterToolExecution && approval.status !== 'failed'">
         拒绝原因（可选）
         <textarea v-model="rejectionReason" rows="2" :disabled="deciding" placeholder="例如：金额或收件人不正确" />
       </label>
       <div class="approval-actions">
-        <button v-if="approval.status === 'failed'" class="retry-button" type="button"
+        <button v-if="afterToolExecution" class="retry-button" type="button" :disabled="deciding"
+            @click="decide(true)">继续生成</button>
+        <button v-else-if="approval.status === 'failed'" class="retry-button" type="button"
             @click="decide(approval.decision !== 'rejected')">
           重试{{ approval.decision === 'rejected' ? '拒绝' : '批准' }}
         </button>

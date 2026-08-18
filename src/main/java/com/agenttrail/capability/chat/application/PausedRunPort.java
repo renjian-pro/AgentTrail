@@ -1,5 +1,8 @@
 package com.agenttrail.capability.chat.application;
 
+import com.agenttrail.platform.tools.PendingToolView;
+import com.agenttrail.platform.tools.ResumeSafePoint;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -22,13 +25,19 @@ public interface PausedRunPort {
             long pausedAtMillis,
             boolean webSearchEnabled,
             boolean analyticsEnabled,
-            List<PendingTool> pendingTools) {
+            List<PendingToolView> pendingTools,
+            ResumeSafePoint safePoint) {
 
         public PausedRun {
             pendingTools = pendingTools == null ? List.of() : List.copyOf(pendingTools);
         }
+
+        public PausedRun(String conversationId, String userId, String modelId, String reason,
+                         long pausedAtMillis, boolean webSearchEnabled, boolean analyticsEnabled,
+                         List<PendingToolView> pendingTools) {
+            this(conversationId, userId, modelId, reason, pausedAtMillis, webSearchEnabled,
+                    analyticsEnabled, pendingTools, ResumeSafePoint.BEFORE_TOOL_EXECUTION);
+        }
     }
 
-    record PendingTool(String toolCallId, String toolName, String arguments, String riskLevel) {
-    }
 }

@@ -178,6 +178,22 @@ CREATE TABLE IF NOT EXISTS agent_pause_state
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT 'HITL 暂停快照，同一会话只保留最新一份';
 
+-- 高风险工具执行成功、AFTER 检查点尚未落库时进程可能崩溃。这个表把首次结果留在 MySQL，
+-- 重启后按“工具名 + 会话 id + tool_call id”回放结果，避免同一审批再次产生副作用。
+CREATE TABLE IF NOT EXISTS agent_tool_idempotency
+(
+    idempotency_key VARCHAR(300) NOT NULL COMMENT '工具名、会话与 tool_call 组成的幂等键',
+    owner_token     CHAR(36)     NOT NULL COMMENT '当前租约所有者；迟到执行者不能完成或释放新租约',
+    status          VARCHAR(20)  NOT NULL COMMENT 'IN_FLIGHT 或 COMPLETED',
+    result          LONGTEXT     NULL COMMENT '首次成功执行的工具结果，重复恢复时直接回放',
+    expires_at      DATETIME(6)  NOT NULL COMMENT '执行租约或已完成记录的过期时刻',
+    updated_at      DATETIME(6)  NOT NULL COMMENT '最后状态变更时刻',
+    PRIMARY KEY (idempotency_key),
+    KEY idx_tool_idempotency_expiry (expires_at)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT '工具调用跨进程幂等记录';
+
 -- 文件问答（issue #21）：上传文件的元数据 + Tika 解析出的全量文本。
 --
 -- 沿用 agent_session 已验证过的双 key 设计（见文件开头的说明和踩坑点 #49）：

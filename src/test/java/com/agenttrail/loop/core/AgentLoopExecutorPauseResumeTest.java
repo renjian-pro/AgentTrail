@@ -11,8 +11,10 @@ import com.agenttrail.loop.pause.PauseReason;
 import com.agenttrail.loop.pause.PauseState;
 import com.agenttrail.loop.pause.PendingToolCall;
 import com.agenttrail.loop.pause.ResumeInstruction;
-import com.agenttrail.loop.pause.SafePoint;
+import com.agenttrail.platform.tools.ResumeSafePoint;
 import com.agenttrail.loop.task.AgentTaskManager;
+import com.agenttrail.platform.tools.PendingToolView;
+import com.agenttrail.platform.tools.ToolRiskLevel;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -53,12 +55,12 @@ class AgentLoopExecutorPauseResumeTest {
         // 工具从未被执行——审批之前不能有任何副作用
         assertThat(chargeTool.recordedArguments()).isEmpty();
         assertThat(events).contains(new AgentStreamEvent.Paused("conv-1", PauseReason.HITL_APPROVAL,
-                List.of(new AgentStreamEvent.PendingTool("call-1", APPROVAL_REQUIRED_TOOL,
-                        "{\"amount\":100,\"api_token\":\"***\"}", "HIGH_RISK"))));
+                List.of(new PendingToolView("call-1", APPROVAL_REQUIRED_TOOL,
+                        "{\"amount\":100,\"api_token\":\"***\"}", ToolRiskLevel.HIGH_RISK))));
 
         PauseState snapshot = store.find("conv-1").orElseThrow();
         assertThat(snapshot.reason()).isEqualTo(PauseReason.HITL_APPROVAL);
-        assertThat(snapshot.safePoint()).isEqualTo(SafePoint.BEFORE_TOOL_EXECUTION);
+        assertThat(snapshot.safePoint()).isEqualTo(ResumeSafePoint.BEFORE_TOOL_EXECUTION);
         assertThat(snapshot.pendingToolCalls())
                 .containsExactly(new PendingToolCall("call-1", APPROVAL_REQUIRED_TOOL,
                         "{\"amount\":100,\"api_token\":\"server-secret\"}"));
@@ -135,7 +137,7 @@ class AgentLoopExecutorPauseResumeTest {
         assertThat(failed).contains(new AgentStreamEvent.Error("LLM_CALL_FAILED", "provider unavailable"));
         assertThat(chargeTool.recordedArguments()).containsExactly("{\"amount\":100}");
         PauseState recoveryCheckpoint = store.find("conv-1").orElseThrow();
-        assertThat(recoveryCheckpoint.safePoint()).isEqualTo(SafePoint.AFTER_TOOL_EXECUTION);
+        assertThat(recoveryCheckpoint.safePoint()).isEqualTo(ResumeSafePoint.AFTER_TOOL_EXECUTION);
         assertThat(recoveryCheckpoint.pendingToolCalls()).isEmpty();
         assertThat(recoveryCheckpoint.messages())
                 .filteredOn(ToolResponseMessage.class::isInstance)
