@@ -28,6 +28,9 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		<!-- 跳过前端构建（node 安装 / npm install / vite build 三条一起跳）。默认打开，让
+		     `mvn spring-boot:run` 起来的就是最新前端；纯后端迭代用 -Dfrontend.skip=true 关掉。 -->
+		<frontend.skip>false</frontend.skip>
 		<agentscope.version>2.0.0</agentscope.version>
 		<spring-ai.version>2.0.0</spring-ai.version>
 		<jsonschema-generator.version>5.0.0</jsonschema-generator.version>
@@ -293,7 +296,23 @@
 
 	<build>
 		<plugins>
-			<!-- 前端与后端一起进入同一个 JAR；开发时仍可在 frontend/ 内独立执行 vite。 -->
+			<!--
+				前端与后端一起进入同一个 JAR；开发时仍可在 frontend/ 内独立执行 vite。
+
+				npm-build 绑在 generate-resources，**不是 prepare-package**。两条约束把它钉在这个阶段：
+
+				一、必须早于 process-resources。vite 的 outDir 是 `src/main/resources/static`（源码树，
+				不是 target/classes），产物要靠 maven-resources-plugin 在 process-resources 复制进
+				target/classes。排在它之后打包，这一轮进 JAR 的就还是上一次的旧产物。
+
+				二、必须早于 test-compile，否则 `mvn spring-boot:run` 够不着。spring-boot:run 只 fork
+				到 test-compile 就开始跑，原来绑 prepare-package 时它整个被跳过——表现是改完前端重启
+				后端，页面还是旧的，而 mvn package 又一切正常，很难往构建阶段上想。
+
+				代价是 `mvn test` 这类纯后端命令也会跟着跑一遍 `vue-tsc -b && vite build`。纯后端迭代时
+				用 `-Dfrontend.skip=true` 关掉（skip 放在插件级 configuration 上，三条执行一起跳过，
+				不会出现"装了 node 却没打包"的半截状态）。
+			-->
 			<plugin>
 				<groupId>com.github.eirslett</groupId>
 				<artifactId>frontend-maven-plugin</artifactId>
@@ -301,11 +320,12 @@
 				<configuration>
 					<workingDirectory>frontend</workingDirectory>
 					<installDirectory>frontend/.mvn-node</installDirectory>
+					<skip>${frontend.skip}</skip>
 				</configuration>
 				<executions>
-					<execution><id>install-node-and-npm</id><goals><goal>install-node-and-npm</goal></goals><configuration><nodeVersion>v22.18.0</nodeVersion><npmVersion>10.9.3</npmVersion></configuration></execution>
-					<execution><id>npm-install</id><goals><goal>npm</goal></goals><configuration><arguments>install</arguments></configuration></execution>
-					<execution><id>npm-build</id><phase>prepare-package</phase><goals><goal>npm</goal></goals><configuration><arguments>run build</arguments></configuration></execution>
+					<execution><id>install-node-and-npm</id><phase>generate-resources</phase><goals><goal>install-node-and-npm</goal></goals><configuration><nodeVersion>v22.18.0</nodeVersion><npmVersion>10.9.3</npmVersion></configuration></execution>
+					<execution><id>npm-install</id><phase>generate-resources</phase><goals><goal>npm</goal></goals><configuration><arguments>install</arguments></configuration></execution>
+					<execution><id>npm-build</id><phase>generate-resources</phase><goals><goal>npm</goal></goals><configuration><arguments>run build</arguments></configuration></execution>
 				</executions>
 			</plugin>
 			<plugin>
