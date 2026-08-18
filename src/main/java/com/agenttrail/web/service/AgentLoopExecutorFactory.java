@@ -19,6 +19,8 @@ import com.agenttrail.loop.trace.TraceStore;
 import io.micrometer.core.instrument.MeterRegistry;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.FileContentTool;
+import com.agenttrail.loop.tools.FileSystemTools;
+import com.agenttrail.loop.tools.idempotency.IdempotencyStore;
 import com.agenttrail.loop.tools.ViewImageTool;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.search.ToolCatalog;
@@ -101,6 +103,8 @@ public class AgentLoopExecutorFactory {
     private final PromptInjectionGuard promptInjectionGuard;
     private final PiiMasker piiMasker;
     private final ToolRateLimiter toolRateLimiter;
+    /** 审批恢复在工具执行后、AFTER 落库前崩溃时，用它跨进程回放首次工具结果。 */
+    private final IdempotencyStore idempotencyStore;
     /**
      * 传 null 表示这套装配完全不提供 Skill 工具——只接进"普通对话"这一路（{@link #buildExecutor}
      * 服务的 plain/webSearch/chart 三种变体），不接 {@link #forAnalytics}（DataAgent 明确"不复用
@@ -140,6 +144,8 @@ public class AgentLoopExecutorFactory {
         private ChartToolProvider chartToolProvider;
         private TurnPersistenceHook persistenceHook;
         private FileContentTool fileContentTool;
+        private FileSystemTools fileSystemTools;
+        private IdempotencyStore idempotencyStore;
         private FileStore fileStore;
         private com.agenttrail.loop.persistence.TurnCommitter turnCommitter;
         private AnalyticsToolProvider analyticsToolProvider;
@@ -164,6 +170,8 @@ public class AgentLoopExecutorFactory {
         public Builder charts(ChartToolProvider value) { this.chartToolProvider = value; return this; }
         public Builder persistence(TurnPersistenceHook value) { this.persistenceHook = value; return this; }
         public Builder fileContentTool(FileContentTool value) { this.fileContentTool = value; return this; }
+        public Builder fileSystemTools(FileSystemTools value) { this.fileSystemTools = value; return this; }
+        public Builder idempotency(IdempotencyStore value) { this.idempotencyStore = value; return this; }
         public Builder fileStore(FileStore value) { this.fileStore = value; return this; }
         public Builder turnCommitter(com.agenttrail.loop.persistence.TurnCommitter value) { this.turnCommitter = value; return this; }
         public Builder analytics(AnalyticsToolProvider value) { this.analyticsToolProvider = value; return this; }
@@ -202,6 +210,8 @@ public class AgentLoopExecutorFactory {
         ChartToolProvider chartToolProvider = options.chartToolProvider;
         TurnPersistenceHook persistenceHook = options.persistenceHook;
         FileContentTool fileContentTool = options.fileContentTool;
+        FileSystemTools fileSystemTools = options.fileSystemTools;
+        IdempotencyStore idempotencyStore = options.idempotencyStore;
         FileStore fileStore = options.fileStore;
         com.agenttrail.loop.persistence.TurnCommitter turnCommitter = options.turnCommitter;
         AnalyticsToolProvider analyticsToolProvider = options.analyticsToolProvider;
@@ -248,6 +258,7 @@ public class AgentLoopExecutorFactory {
         this.promptInjectionGuard = promptInjectionGuard;
         this.piiMasker = piiMasker;
         this.toolRateLimiter = toolRateLimiter;
+        this.idempotencyStore = idempotencyStore;
         this.skillManager = skillManager;
         this.memoryStore = memoryStore;
         ViewImageTool viewImageTool = options.viewImageTool;
@@ -255,6 +266,9 @@ public class AgentLoopExecutorFactory {
         List<ToolCallback> assembledBaseTools = new ArrayList<>();
         if (fileContentTool != null) {
             assembledBaseTools.add(fileContentTool.toolCallback());
+        }
+        if (fileSystemTools != null) {
+            assembledBaseTools.addAll(fileSystemTools.toolCallbacks());
         }
         if (viewImageTool != null) {
             assembledBaseTools.add(viewImageTool.toolCallback());
@@ -317,6 +331,7 @@ public class AgentLoopExecutorFactory {
                 .promptInjectionGuard(promptInjectionGuard)
                 .piiMasker(piiMasker)
                 .toolRateLimiter(toolRateLimiter)
+                .idempotencyStore(idempotencyStore)
                 .dataProvenancePolicy(spec.dataProvenancePolicy())
                 .maxConsecutiveToolFailures(spec.maxConsecutiveToolFailures())
                 .contextPolicy(contextPolicy)

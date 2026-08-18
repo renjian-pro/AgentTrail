@@ -1,14 +1,19 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChatStore } from './chat'
-import { chatApi } from '../api/chat-api'
+import { chatApi, streamApproval } from '../api/chat-api'
 
-vi.mock('../api/chat-api', () => ({ chatApi: { history: vi.fn(), sessions: vi.fn() } }))
+vi.mock('../api/chat-api', () => ({
+  chatApi: { history: vi.fn(), sessions: vi.fn(), getPendingApproval: vi.fn() },
+  streamApproval: vi.fn()
+}))
 
 describe('chat store', () => {
   beforeEach(() => {
     localStorage.clear()
     setActivePinia(createPinia())
+    vi.mocked(chatApi.getPendingApproval).mockReset()
+        .mockRejectedValue(new Error('no pending approval'))
   })
 
   it('starts a clean conversation without losing the known session list', () => {
@@ -23,6 +28,58 @@ describe('chat store', () => {
     expect(store.messages).toEqual([])
     expect(store.todos).toEqual([])
     expect(store.sessions).toEqual([{ id: 'saved-conversation', title: '上一轮问题' }])
+  })
+
+  it('keeps a failed approval retryable and clears it only after RunCompleted', () => {
+    const store = useChatStore()
+    const assistant = { kind: 'chat' as const, role: 'assistant' as const, content: '', tools: [] }
+
+    store.applyStreamEvent({
+      type: 'Paused', conversationId: 'c1', reason: 'HITL_APPROVAL',
+      pendingTools: [{ toolCallId: 't1', toolName: 'chargeCard', arguments: '{"amount":100}', riskLevel: 'HIGH_RISK' }]
+    }, assistant, '充值')
+
+    expect(store.pendingApproval?.status).toBe('pending')
+    expect(store.hasPendingApproval).toBe(true)
+    expect(store.beginApproval(true)).toBe(true)
+    expect(store.beginApproval(true)).toBe(false)
+    expect(store.pendingApproval?.status).toBe('submitting')
+
+    store.applyStreamEvent({ type: 'RunFailed', code: 'LLM_CALL_FAILED', message: 'provider unavailable' }, assistant, '充值')
+    expect(store.pendingApproval).toEqual(expect.objectContaining({
+      status: 'failed', decision: 'approved', error: 'provider unavailable'
+    }))
+    expect(store.beginApproval(true)).toBe(true)
+
+    store.applyStreamEvent({ type: 'RunCompleted', conversationId: 'c1', turnId: 9 }, assistant, '充值')
+    expect(store.pendingApproval).toBeUndefined()
+    expect(store.hasPendingApproval).toBe(false)
+  })
+
+  it('consumes approval SSE into the original assistant message and suppresses duplicate submits', async () => {
+    const store = useChatStore()
+    const assistant = { kind: 'chat' as const, role: 'assistant' as const, content: '', tools: [] }
+    store.restorePendingApproval({
+      conversationId: 'c1', reason: 'HITL_APPROVAL', pausedAtMillis: 1,
+      pendingTools: [{ toolCallId: 't1', toolName: 'chargeCard', arguments: '{}', riskLevel: 'HIGH_RISK' }]
+    }, assistant)
+    let release!: () => void
+    vi.mocked(streamApproval).mockImplementation(async function * () {
+      yield { type: 'ModelDelta', content: '已批准，' }
+      await new Promise<void>(resolve => { release = resolve })
+      yield { type: 'ModelDelta', content: '执行成功' }
+      yield { type: 'RunCompleted', conversationId: 'c1', turnId: 3 }
+    })
+
+    const first = store.submitApproval(true)
+    await vi.waitFor(() => expect(assistant.content).toBe('已批准，'))
+    await expect(store.submitApproval(true)).resolves.toBeUndefined()
+    expect(streamApproval).toHaveBeenCalledTimes(1)
+
+    release()
+    await expect(first).resolves.toBeUndefined()
+    expect(assistant.content).toBe('已批准，执行成功')
+    expect(store.pendingApproval).toBeUndefined()
   })
 
   /**
@@ -89,6 +146,34 @@ describe('chat store', () => {
     await store.hydrateSessions()
 
     expect(store.sessions).toEqual([{ id: 'persisted', title: '从服务端恢复的标题' }])
+  })
+
+  it('keeps a first-turn paused local session when the server has no completed history yet', async () => {
+    const store = useChatStore()
+    store.acceptConversation('paused-first-turn', '创建文件')
+    vi.mocked(chatApi.sessions).mockResolvedValue({ page: 0, size: 20, hasMore: false, sessions: [] })
+    vi.mocked(chatApi.getPendingApproval).mockResolvedValue({
+      conversationId: 'paused-first-turn', reason: 'HITL_APPROVAL', pausedAtMillis: 1,
+      pendingTools: [], safePoint: 'BEFORE_TOOL_EXECUTION'
+    })
+
+    await store.hydrateSessions()
+
+    expect(store.sessions).toEqual([{ id: 'paused-first-turn', title: '创建文件' }])
+  })
+
+  it('opens a first-turn pause even when conversation history returns not found', async () => {
+    vi.mocked(chatApi.history).mockRejectedValue(new Error('not found'))
+    vi.mocked(chatApi.getPendingApproval).mockResolvedValue({
+      conversationId: 'paused-first-turn', reason: 'HITL_APPROVAL', pausedAtMillis: 1,
+      pendingTools: [], safePoint: 'BEFORE_TOOL_EXECUTION'
+    })
+    const store = useChatStore()
+
+    await store.openSession('paused-first-turn')
+
+    expect(store.conversationId).toBe('paused-first-turn')
+    expect(store.hasPendingApproval).toBe(true)
   })
 
   it('appends the next server-side page instead of replacing existing history', async () => {

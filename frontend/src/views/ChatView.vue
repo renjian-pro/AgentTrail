@@ -12,6 +12,7 @@ import PptTaskCard from '../components/PptTaskCard.vue'
 import ResearchReportCard from '../components/ResearchReportCard.vue'
 import SwitchAgentHint from '../components/SwitchAgentHint.vue'
 import TodoProgressBar from '../components/TodoProgressBar.vue'
+import ToolApprovalCard from '../components/ToolApprovalCard.vue'
 import { chatApi, streamChat } from '../api/chat-api'
 import { fileApi, type AttachedFile } from '../api/file-api'
 import { toErrorMessage } from '../api/http'
@@ -45,7 +46,7 @@ import { useChatStore, type AgentKind, type ChatTurn, type PptEntry, type Resear
  */
 
 const chat = useChatStore()
-const { conversationId, messages, todos, navigationSeq, agentKind } = storeToRefs(chat)
+const { conversationId, messages, todos, navigationSeq, agentKind, hasPendingApproval } = storeToRefs(chat)
 const busy = ref(false)
 const error = ref('')
 const webSearch = ref(false)
@@ -94,6 +95,8 @@ watch(navigationSeq, () => {
 // cannot be cancelled by the chat stop endpoint, so showing that control there
 // would promise an action the backend cannot perform.
 const canStop = computed(() => busy.value && aborter !== undefined)
+/** 暂停中的同一会话必须先做出审批决定，不能并行塞入一条新的普通消息破坏恢复快照。 */
+const interactionBusy = computed(() => busy.value || hasPendingApproval.value)
 /**
  * 联网搜索与模式**不正交**，四个模式各不相同（requirements.md §7.2 / R14a）：
  *
@@ -107,7 +110,7 @@ const canStop = computed(() => busy.value && aborter !== undefined)
  * </ul>
  */
 const webSearchApplies = computed(() => agentKind.value === 'chat' || agentKind.value === 'analytics')
-const webSearchDisabled = computed(() => busy.value || agentKind.value === 'analytics')
+const webSearchDisabled = computed(() => interactionBusy.value || agentKind.value === 'analytics')
 /** 查表而不是链式 if：后者的第二个分支要靠"前一个分支已经排除了 analytics"才成立，
  *  等于把正确性押在两个 computed 的求值顺序上。和上面的 PLACEHOLDERS 同一种写法。 */
 const BAR_NOTES: Partial<Record<AgentKind, string>> = {
@@ -149,6 +152,7 @@ const toolLabel = (name: string) => TOOL_LABELS[name] ?? name
  * 静默掉回普通对话、模型没有数据库工具就去编数据（issue #92）。模式一直保持到用户显式切换。
  */
 async function send(message: string) {
+  if (hasPendingApproval.value) return
   error.value = ''
   // 异步任务链路：不推 user 气泡，问题/主题就在各自的卡片里，推一条只会重复显示。
   if (agentKind.value === 'research') return runResearch(message)
@@ -185,6 +189,21 @@ async function send(message: string) {
     // 附件已经绑到这一轮了，输入框上的挂件该清空——它表达的是"下一条消息要带什么"。
     // 只在成功路径清：失败时保留着，用户重发一次就行，不用重新上传一遍。
     files.value = []
+  } catch (failure) {
+    if ((failure as Error).name !== 'AbortError') error.value = toErrorMessage(failure)
+  } finally {
+    busy.value = false
+    aborter = undefined
+  }
+}
+
+async function decideApproval(approved: boolean, rejectionReason?: string) {
+  error.value = ''
+  aborter = new AbortController()
+  busy.value = true
+  try {
+    const failureMessage = await chat.submitApproval(approved, rejectionReason, aborter.signal)
+    if (failureMessage) error.value = failureMessage
   } catch (failure) {
     if ((failure as Error).name !== 'AbortError') error.value = toErrorMessage(failure)
   } finally {
@@ -337,6 +356,7 @@ async function removeFile(fileId: number) {
               <ChartToolCard v-else-if="chartImageUrl(tool.result)" :name="tool.name" :arguments-text="tool.argumentsText" :result="tool.result" />
               <CollapsibleChip v-else :label="toolLabel(tool.name)" :content="tool.detail" />
             </template>
+            <ToolApprovalCard v-if="message.approval" :approval="message.approval" @decide="decideApproval" />
           </div>
         </article>
         <SwitchAgentHint v-else-if="message.kind === 'switch-hint'" @switch-to-analytics="switchToAnalytics" />
@@ -369,7 +389,7 @@ async function removeFile(fileId: number) {
         <span v-if="barNote" class="bar-notes">{{ barNote }}</span>
         <span v-else class="bar-notes drop-note">也可拖放文件</span>
       </div>
-      <MessageInput :busy="busy" :initial-value="initialMessage" :placeholder="PLACEHOLDERS[agentKind]" @send="send" />
+      <MessageInput :busy="interactionBusy" :initial-value="initialMessage" :placeholder="PLACEHOLDERS[agentKind]" @send="send" />
       <div class="controls">
         <span>当前模型</span>
         <select v-model="modelId" aria-label="当前模型"><option>qwen-plus</option><option>deepseek-chat</option></select>

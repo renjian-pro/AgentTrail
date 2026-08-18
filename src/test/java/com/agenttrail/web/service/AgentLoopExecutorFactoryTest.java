@@ -10,6 +10,7 @@ import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.loop.model.ThinkingMode;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.loop.tools.FileContentTool;
+import com.agenttrail.loop.tools.FileSystemTools;
 import com.agenttrail.loop.tools.chart.ChartToolCallback;
 import com.agenttrail.loop.tools.chart.ChartToolProvider;
 import com.agenttrail.loop.tools.websearch.TavilySearchToolProvider;
@@ -216,6 +217,22 @@ class AgentLoopExecutorFactoryTest {
 
         assertThat(answer).isEqualTo("from deepseek");
         assertThat(qwen.roundCount()).isZero();
+    }
+
+    @Test
+    void mountsSandboxedFileMutationToolsInTheProductionChatToolSet() {
+        ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("done")));
+        FileSystemTools fileSystemTools = FileSystemTools.builder().build();
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(
+                        twoModels(deepSeek, new ScriptedChatModel(List.of())), "deepseek-chat")
+                .fileSystemTools(fileSystemTools)
+                .build();
+
+        factory.forModel("deepseek-chat").call("创建一个文件", new RunnableParams("conv-1", "user-1"));
+
+        assertThat(deepSeek.toolNamesAtRound(0))
+                .contains("write_file", "edit_file")
+                .doesNotContain("bash");
     }
 
     @Test

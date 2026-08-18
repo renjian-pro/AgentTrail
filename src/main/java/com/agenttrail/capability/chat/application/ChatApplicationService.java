@@ -25,10 +25,17 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class ChatApplicationService {
     private final RuntimeProfileRegistry profiles;
     private final ConversationPort conversations;
+    private final PausedRunPort pausedRuns;
 
     public ChatApplicationService(RuntimeProfileRegistry profiles, ConversationPort conversations) {
+        this(profiles, conversations, PausedRunPort.NONE);
+    }
+
+    public ChatApplicationService(RuntimeProfileRegistry profiles, ConversationPort conversations,
+                                  PausedRunPort pausedRuns) {
         this.profiles = profiles;
         this.conversations = conversations;
+        this.pausedRuns = pausedRuns;
     }
 
     public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId, String modelId,
@@ -74,14 +81,28 @@ public final class ChatApplicationService {
 
     public Flux<EventEnvelope> approve(ExecutionPrincipal principal, String conversationId,
                                        String modelId, boolean approved, String rejectionReason) {
-        if (!conversations.belongsTo(conversationId, principal)) {
-            throw new IllegalArgumentException("Conversation does not belong to user");
-        }
-        AgentRuntimePort runtime = profiles.resolve("chat-default", modelId, ToolScope.none());
+        PausedRunPort.PausedRun paused = requireOwnedPause(principal, conversationId);
+        // 旧快照没有 modelId 时也不能相信恢复请求重传的值；传 null 让服务端注册表选择默认模型，
+        // 否则客户端能把同一份服务端上下文切到任意模型上继续执行。
+        String originalModelId = paused.modelId() == null || paused.modelId().isBlank()
+                ? null : paused.modelId();
+        ToolScope originalScope = new ToolScope(paused.webSearchEnabled(), true, java.util.Set.of());
+        AgentRuntimePort runtime = profiles.resolve("chat-default", originalModelId, originalScope);
         ResumeCommand command = approved ? new ResumeCommand.Approve()
                 : new ResumeCommand.Reject(rejectionReason);
         AgentRunHandle handle = runtime.resume(RunId.of(conversationId), command);
         return toEvents(handle, ConversationId.of(conversationId));
+    }
+
+    public PausedRunPort.PausedRun pendingApproval(ExecutionPrincipal principal, String conversationId) {
+        return requireOwnedPause(principal, conversationId);
+    }
+
+    private PausedRunPort.PausedRun requireOwnedPause(ExecutionPrincipal principal, String conversationId) {
+        return pausedRuns.find(conversationId)
+                .filter(paused -> java.util.Objects.equals(paused.userId(), principal.userId()))
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Paused conversation does not exist: " + conversationId));
     }
 
     public boolean stop(ExecutionPrincipal principal, String conversationId) {
@@ -161,7 +182,10 @@ public final class ChatApplicationService {
                     "arguments", e.arguments());
             case AgentEvent.ToolCompleted e -> Map.of("toolName", e.toolName(), "toolCallId", e.toolCallId(),
                     "result", e.result());
-            case AgentEvent.Paused e -> Map.of("conversationId", e.conversationId().value(), "reason", e.reason());
+            case AgentEvent.Paused e -> Map.of(
+                    "conversationId", e.conversationId().value(),
+                    "reason", e.reason(),
+                    "pendingTools", e.pendingTools());
             case AgentEvent.Failed e -> Map.of("code", e.errorCode().code(), "message", e.message());
             case AgentEvent.Completed e -> {
                 Map<String, Object> completed = new LinkedHashMap<>();

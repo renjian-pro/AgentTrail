@@ -1,6 +1,7 @@
 package com.agenttrail.loop.pause;
 
 import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.platform.tools.ResumeSafePoint;
 import org.springframework.ai.chat.messages.Message;
 
 import java.util.List;
@@ -29,14 +30,23 @@ public record PauseState(
         List<Message> messages,
         List<PendingToolCall> pendingToolCalls,
         PauseReason reason,
-        SafePoint safePoint,
+        ResumeSafePoint safePoint,
         String question,
         RunnableParams params,
+        String modelId,
         int roundAtPause,
         long pausedAtMillis) {
 
     public PauseState {
         messages = List.copyOf(messages);
         pendingToolCalls = List.copyOf(pendingToolCalls);
+    }
+
+    /** 兼容旧调用方和旧测试；历史快照没有 modelId 时由恢复入口回退到请求值或默认模型。 */
+    public PauseState(String conversationId, List<Message> messages, List<PendingToolCall> pendingToolCalls,
+                      PauseReason reason, ResumeSafePoint safePoint, String question, RunnableParams params,
+                      int roundAtPause, long pausedAtMillis) {
+        this(conversationId, messages, pendingToolCalls, reason, safePoint, question, params,
+                null, roundAtPause, pausedAtMillis);
     }
 }

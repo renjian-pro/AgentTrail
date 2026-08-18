@@ -2,6 +2,8 @@ package com.agenttrail.loop.core;
 
 import com.agenttrail.loop.model.AgentStreamEvent;
 import com.agenttrail.loop.tools.TodoWriteTool;
+import com.agenttrail.loop.tools.idempotency.IdempotencyStore;
+import com.agenttrail.loop.tools.idempotency.IdempotentToolCallback;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -19,6 +21,7 @@ import reactor.core.scheduler.Schedulers;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -128,11 +131,23 @@ class ToolCallExecutor {
     List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
                                ToolParamInjector paramInjector, ToolCallback sessionScopedTool,
                                Map<String, String> mdcSnapshot) {
+        return execute(toolCalls, emit, paramInjector, sessionScopedTool, mdcSnapshot, null, null);
+    }
+
+    /**
+     * 审批恢复专用入口：幂等键必须带会话和原始 tool_call id，不能只按参数摘要去重——
+     * 两个用户写入相同内容是两次合法调用，而同一暂停快照跨进程重放才是同一次调用。
+     */
+    List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> emit,
+                               ToolParamInjector paramInjector, ToolCallback sessionScopedTool,
+                               Map<String, String> mdcSnapshot, IdempotencyStore idempotencyStore,
+                               String idempotencyScope) {
         try {
             return Flux.fromIterable(toolCalls)
                     .flatMapSequential(toolCall -> Mono
                             .fromCallable(() -> MdcPropagation.call(mdcSnapshot,
-                                    () -> executeOne(toolCall, emit, paramInjector, sessionScopedTool)))
+                                    () -> executeOne(toolCall, emit, paramInjector, sessionScopedTool,
+                                            idempotencyStore, idempotencyScope)))
                             .subscribeOn(TOOL_EXECUTION_SCHEDULER))
                     .collectList()
                     .timeout(roundTimeout)
@@ -176,7 +191,8 @@ class ToolCallExecutor {
     }
 
     private ToolResponse executeOne(ToolCall toolCall, Consumer<AgentStreamEvent> emit,
-                                    ToolParamInjector paramInjector, ToolCallback sessionScopedTool) {
+                                    ToolParamInjector paramInjector, ToolCallback sessionScopedTool,
+                                    IdempotencyStore idempotencyStore, String idempotencyScope) {
         Timer.Sample sample = meterRegistry == null ? null : Timer.start(meterRegistry);
         ToolCallback tool = resolve(toolCall.name(), sessionScopedTool);
         if (tool == null) {
@@ -195,7 +211,12 @@ class ToolCallExecutor {
         String result;
         boolean success = true;
         try {
-            result = tool.call(arguments);
+            ToolCallback effectiveTool = idempotencyStore == null ? tool : IdempotentToolCallback.builder(tool)
+                    .store(idempotencyStore)
+                    .keyStrategy((ignoredInput, ignoredDefinition) -> Optional.of(
+                            idempotencyScope + ":" + toolCall.id()))
+                    .build();
+            result = effectiveTool.call(arguments);
             success = !looksLikeFailure(result);
         } catch (Exception failure) {
             // MCP 超时、远端 5xx、参数校验异常都只是这一项工具调用失败。把错误作为

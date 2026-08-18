@@ -1,5 +1,7 @@
 package com.agenttrail.loop.pause;
 
+import com.agenttrail.platform.tools.ResumeSafePoint;
+
 import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
 import com.agenttrail.support.SharedMySql;
@@ -58,7 +60,7 @@ class JdbcPauseStateStoreIT {
                 List.of(new UserMessage("帮我查一下天气")),
                 List.of(new PendingToolCall("call-1", "getWeather", "{\"city\":\"北京\"}")),
                 PauseReason.HITL_APPROVAL,
-                SafePoint.BEFORE_TOOL_EXECUTION,
+                ResumeSafePoint.BEFORE_TOOL_EXECUTION,
                 "帮我查一下天气",
                 new RunnableParams("conv-1", "user-1"),
                 2,
@@ -83,7 +85,7 @@ class JdbcPauseStateStoreIT {
                 List.of(new UserMessage("天气怎么样"), assistantWithToolCall, toolResult),
                 List.of(),
                 PauseReason.USER_INTERRUPT,
-                SafePoint.BEFORE_TOOL_EXECUTION,
+                ResumeSafePoint.BEFORE_TOOL_EXECUTION,
                 "天气怎么样",
                 new RunnableParams("conv-1", "user-1"),
                 1,
@@ -109,7 +111,7 @@ class JdbcPauseStateStoreIT {
         RunnableParams params = new RunnableParams("conv-1", "user-1",
                 Map.of("tenantId", "t-1"), OutputType.of(Plan.class));
         PauseState original = new PauseState("conv-1", List.of(new UserMessage("问题")), List.of(),
-                PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION, "问题", params, 1, 1L);
+                PauseReason.HITL_APPROVAL, ResumeSafePoint.BEFORE_TOOL_EXECUTION, "问题", params, 1, 1L);
 
         store.save(original);
 
@@ -121,10 +123,10 @@ class JdbcPauseStateStoreIT {
     @Test
     void savingTwiceForTheSameConversationOverwritesTheEarlierSnapshot() {
         PauseState first = new PauseState("conv-1", List.of(new UserMessage("第一次")), List.of(),
-                PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION, "第一次",
+                PauseReason.HITL_APPROVAL, ResumeSafePoint.BEFORE_TOOL_EXECUTION, "第一次",
                 new RunnableParams("conv-1", "user-1"), 1, 1L);
         PauseState second = new PauseState("conv-1", List.of(new UserMessage("第二次")), List.of(),
-                PauseReason.USER_INTERRUPT, SafePoint.BEFORE_TOOL_EXECUTION, "第二次",
+                PauseReason.USER_INTERRUPT, ResumeSafePoint.BEFORE_TOOL_EXECUTION, "第二次",
                 new RunnableParams("conv-1", "user-1"), 2, 2L);
 
         store.save(first);
@@ -136,7 +138,7 @@ class JdbcPauseStateStoreIT {
     @Test
     void deleteRemovesTheSnapshotAndReturnsTrueOnlyWhenSomethingWasThere() {
         store.save(new PauseState("conv-1", List.of(new UserMessage("问题")), List.of(),
-                PauseReason.HITL_APPROVAL, SafePoint.BEFORE_TOOL_EXECUTION, "问题",
+                PauseReason.HITL_APPROVAL, ResumeSafePoint.BEFORE_TOOL_EXECUTION, "问题",
                 new RunnableParams("conv-1", "user-1"), 1, 1L));
 
         assertThat(store.delete("conv-1")).isTrue();

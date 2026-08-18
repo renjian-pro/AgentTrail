@@ -7,7 +7,7 @@ import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.pause.PauseReason;
 import com.agenttrail.loop.pause.PauseState;
 import com.agenttrail.loop.pause.PauseStateStore;
-import com.agenttrail.loop.pause.SafePoint;
+import com.agenttrail.platform.tools.ResumeSafePoint;
 import com.agenttrail.loop.task.AgentTaskManager;
 import com.agenttrail.platform.identity.Principal;
 import com.agenttrail.platform.ids.ConversationId;
@@ -115,7 +115,7 @@ class ChatToolScopeRuntimeAdapterTest {
     private static PauseConfig pauseConfigHolding(String conversationId, Map<String, Object> toolParams) {
         PauseStateStore store = new InMemoryPauseStateStore();
         store.save(new PauseState(conversationId, List.of(), List.of(), PauseReason.HITL_APPROVAL,
-                SafePoint.BEFORE_TOOL_EXECUTION, "上个月的订单量是多少",
+                ResumeSafePoint.BEFORE_TOOL_EXECUTION, "上个月的订单量是多少",
                 new RunnableParams(conversationId, "user-1", toolParams), 1, 0L));
         return new PauseConfig(Set.of(), store);
     }

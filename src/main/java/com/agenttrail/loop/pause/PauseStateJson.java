@@ -2,6 +2,7 @@ package com.agenttrail.loop.pause;
 
 import com.agenttrail.runtime.api.OutputType;
 import com.agenttrail.loop.model.RunnableParams;
+import com.agenttrail.platform.tools.ResumeSafePoint;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -44,6 +45,7 @@ final class PauseStateJson {
         root.put("safePoint", state.safePoint().name());
         root.put("question", state.question());
         root.put("params", toParamsMap(state.params()));
+        root.put("modelId", state.modelId());
         root.put("roundAtPause", state.roundAtPause());
         root.put("pausedAtMillis", state.pausedAtMillis());
         try {
@@ -69,9 +71,10 @@ final class PauseStateJson {
                     messages,
                     pendingToolCalls,
                     PauseReason.valueOf((String) root.get("reason")),
-                    SafePoint.valueOf((String) root.get("safePoint")),
+                    ResumeSafePoint.valueOf((String) root.get("safePoint")),
                     (String) root.get("question"),
                     params,
+                    (String) root.get("modelId"),
                     ((Number) root.get("roundAtPause")).intValue(),
                     ((Number) root.get("pausedAtMillis")).longValue());
         } catch (Exception deserializationFailed) {

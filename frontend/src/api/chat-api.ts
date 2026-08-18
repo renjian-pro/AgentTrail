@@ -1,4 +1,4 @@
-import type { StreamEvent } from '../types/stream-event'
+import type { PendingToolCall, StreamEvent } from '../types/stream-event'
 import { jsonInit, request } from './http'
 import { clearToken, readToken } from './auth-token'
 
@@ -20,6 +20,15 @@ export type HistoryTurn = { id: number; question: string; answer: string; think:
 export type HistoryPage = { conversationId: string; page: number; size: number; hasMore: boolean; turns: HistoryTurn[] }
 export type ConversationSummary = { conversationId: string; title: string; lastActiveAtMillis: number }
 export type ConversationPage = { page: number; size: number; hasMore: boolean; sessions: ConversationSummary[] }
+export type ApprovalRequest = { approved: boolean; rejectionReason?: string | null }
+export type ResumeSafePoint = 'BEFORE_TOOL_EXECUTION' | 'AFTER_TOOL_EXECUTION'
+export type PendingApprovalResponse = {
+  conversationId: string
+  reason: string
+  pausedAtMillis: number
+  pendingTools: PendingToolCall[]
+  safePoint?: ResumeSafePoint
+}
 const eventTypes = new Set<StreamEvent['type']>(['RunStarted', 'ModelDelta', 'ThinkingDelta', 'ToolStarted', 'ToolCompleted', 'Paused', 'RunFailed', 'RunCompleted'])
 
 /**
@@ -41,11 +50,11 @@ export function decodeSseFrame(frame: string): StreamEvent | null {
   return decodeStreamEvent(data)
 }
 
-export async function* streamChat(body: ChatRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+async function* streamSse(path: string, body: object, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
   const headers = new Headers({ Accept: 'text/event-stream', 'Content-Type': 'application/json' })
   const token = readToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
-  const response = await fetch('/agent/v1/chat', { ...jsonInit(body), signal, headers })
+  const response = await fetch(path, { ...jsonInit(body), signal, headers })
   if (response.status === 401) {
     clearToken()
     if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
@@ -64,7 +73,18 @@ export async function* streamChat(body: ChatRequest, signal?: AbortSignal): Asyn
   }
 }
 
+export function streamChat(body: ChatRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+  return streamSse('/agent/v1/chat', body, signal)
+}
+
+export function streamApproval(conversationId: string, body: ApprovalRequest,
+    signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+  return streamSse(`/agent/v1/chat/${encodeURIComponent(conversationId)}/approve`, body, signal)
+}
+
 export const chatApi = {
+  getPendingApproval: (conversationId: string) => request<PendingApprovalResponse>(
+    `/agent/v1/chat/${encodeURIComponent(conversationId)}/pause`),
   stop: (conversationId: string) => request<{ stopped: boolean }>('/agent/v1/chat/stop?conversationId=' + encodeURIComponent(conversationId), { method: 'POST' }),
   history: (conversationId: string, page = 0) => request<HistoryPage>(`/agent/v1/conversations/${encodeURIComponent(conversationId)}/history?page=${page}`),
   sessions: (page = 0) => request<ConversationPage>(`/agent/v1/conversations?page=${page}`)

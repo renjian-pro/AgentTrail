@@ -5,11 +5,14 @@ import com.agenttrail.capability.chat.application.ChatApplicationService;
 import com.agenttrail.capability.chat.application.ExecutionPrincipal;
 import com.agenttrail.capability.chat.application.ToolScope;
 import com.agenttrail.platform.events.EventEnvelope;
+import com.agenttrail.platform.error.ErrorCode;
+import com.agenttrail.runtime.api.AgentRuntimeException;
 import com.agenttrail.web.dto.AgentApprovalRequest;
 import com.agenttrail.web.dto.AgentChatRequest;
 import com.agenttrail.web.dto.ConversationHistoryResponse;
 import com.agenttrail.web.dto.ConversationPageResponse;
 import com.agenttrail.web.dto.StopChatResponse;
+import com.agenttrail.web.dto.PendingApprovalResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -24,6 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.CONFLICT;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
 
 @RestController
@@ -58,8 +62,22 @@ public class AgentLoopController {
                     request.rejectionReason()));
         } catch (IllegalArgumentException failure) {
             throw new ResponseStatusException(NOT_FOUND, failure.getMessage(), failure);
+        } catch (AgentRuntimeException failure) {
+            if (ErrorCode.CONCURRENT_EXECUTION.equals(failure.errorCode())) {
+                throw new ResponseStatusException(CONFLICT, failure.getMessage(), failure);
+            }
+            throw new ResponseStatusException(BAD_REQUEST, failure.getMessage(), failure);
         } catch (IllegalStateException failure) {
             throw new ResponseStatusException(BAD_REQUEST, failure.getMessage(), failure);
+        }
+    }
+
+    @GetMapping("/agent/v1/chat/{conversationId}/pause")
+    public PendingApprovalResponse pendingApproval(@PathVariable String conversationId) {
+        try {
+            return PendingApprovalResponse.from(chatService.pendingApproval(principal(), conversationId));
+        } catch (IllegalArgumentException failure) {
+            throw new ResponseStatusException(NOT_FOUND, failure.getMessage(), failure);
         }
     }
 

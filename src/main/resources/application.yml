@@ -97,6 +97,9 @@ agenttrail:
   cors:
     # 生产部署必须覆盖成真实前端域名（逗号分隔多个源），默认值只覆盖本机开发。
     allowed-origins: http://localhost:5173
+  filesystem:
+    # 为空时使用系统临时目录下的 agenttrail-workspace；生产可覆盖成专用持久目录。
+    workspace: ""
   pgvector:
     maximum-pool-size: 4
   multimodal:

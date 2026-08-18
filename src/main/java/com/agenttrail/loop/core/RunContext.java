@@ -64,7 +64,8 @@ record RunContext(
          * <p>注意 §6.2 豁免的是**系统提示词的条件拼接代码**（日期/记忆/文件那几个区块），
          * 不是角色提示词本身——后者是 `resources/prompts/` 里的纯文本，纳管、有版本、进 stamp。
          */
-        Set<String> usedPromptStamps) {
+        Set<String> usedPromptStamps,
+        boolean resumedFromPause) {
 
     private static final Logger log = LoggerFactory.getLogger(RunContext.class);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -74,7 +75,15 @@ record RunContext(
                Map<String, String> mdcSnapshot) {
         this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
                 new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>(),
-                java.util.concurrent.ConcurrentHashMap.newKeySet());
+                java.util.concurrent.ConcurrentHashMap.newKeySet(), false);
+    }
+
+    RunContext(String question, RunnableParams params, List<Message> messages, Sinks.Many<AgentStreamEvent> sink,
+               AtomicInteger roundCounter, long startTimeMillis, ToolSearchSession toolSearchSession,
+               Map<String, String> mdcSnapshot, boolean resumedFromPause) {
+        this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
+                new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>(),
+                java.util.concurrent.ConcurrentHashMap.newKeySet(), resumedFromPause);
     }
 
     String conversationId() {

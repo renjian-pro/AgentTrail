@@ -96,7 +96,7 @@ public class IdempotentToolCallback implements ToolCallback {
     private static final Duration DEFAULT_RECORD_TTL = Duration.ofHours(24);
 
     /** 默认租约：5 分钟。必须大于工具的最坏执行耗时，否则执行中的调用会被别人抢走重复执行。 */
-    private static final Duration DEFAULT_LEASE_TIMEOUT = Duration.ofMinutes(5);
+    private static final Duration DEFAULT_LEASE_TIMEOUT = Duration.ofMinutes(10);
 
     /** 默认等待时长：30 秒。等的是"别人正在执行的同一次调用"，超时就报冲突而不是自己再执行一遍。 */
     private static final Duration DEFAULT_WAIT_TIMEOUT = Duration.ofSeconds(30);
@@ -165,12 +165,12 @@ public class IdempotentToolCallback implements ToolCallback {
         long waitDeadlineNanos = System.nanoTime() + waitTimeout.toNanos();
 
         while (true) {
-            Optional<IdempotencyRecord> existing = store.claim(key, leaseTimeout);
-            if (existing.isEmpty()) {
-                return executeAndRecord(key, execution);
+            IdempotencyClaim claim = store.claim(key, leaseTimeout);
+            if (claim.acquired()) {
+                return executeAndRecord(key, claim.ownerToken(), execution);
             }
 
-            IdempotencyRecord record = existing.get();
+            IdempotencyRecord record = claim.existing();
             if (record.isCompleted()) {
                 log.debug("幂等键 {} 命中已完成记录，回放首次执行结果，跳过工具执行", key);
                 return record.result();
@@ -190,7 +190,7 @@ public class IdempotentToolCallback implements ToolCallback {
         }
     }
 
-    private String executeAndRecord(String key, Supplier<String> execution) {
+    private String executeAndRecord(String key, String ownerToken, Supplier<String> execution) {
         String result;
         try {
             result = execution.get();
@@ -199,10 +199,10 @@ public class IdempotentToolCallback implements ToolCallback {
             // 注意这换来的是"至少一次"语义：异常也可能发生在副作用已经产生之后（比如写库成功、
             // 读返回值时超时），此时重试会真的重复执行——所以本模式要求副作用本身尽量是一次
             // 原子写入，而不是一串没有事务保护的外部调用。
-            store.release(key);
+            store.release(key, ownerToken);
             throw failure;
         }
-        store.complete(key, result, recordTtl);
+        store.complete(key, ownerToken, result, recordTtl);
         return result;
     }
 

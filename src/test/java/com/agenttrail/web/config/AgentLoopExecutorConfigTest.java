@@ -5,7 +5,7 @@ import com.agenttrail.web.service.CapabilityConversationService;
 import com.agenttrail.capability.file.FileQaService;
 import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
-import com.agenttrail.loop.hook.ToolRiskLevel;
+import com.agenttrail.platform.tools.ToolRiskLevel;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
 import com.agenttrail.loop.pause.PauseConfig;
 import com.agenttrail.loop.pause.PauseStateStore;

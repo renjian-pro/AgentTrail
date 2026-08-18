@@ -41,19 +41,21 @@ public interface IdempotencyStore {
      * @param leaseTimeout 占位租约时长：超过这个时间还停在 IN_FLIGHT，视为执行者已死，
      *                     下一个调用方可以重新抢占。设太短会导致真正在执行的调用被重复执行，
      *                     设太长会让崩溃后的键长时间不可用——按"工具最坏执行耗时"取值
-     * @return 空表示<b>抢到了</b>（本次调用是首次执行者）；非空表示没抢到，返回当前已存在的记录
+     * @return 抢到时返回不可伪造的 owner token；没抢到时返回当前已存在的记录。租约被新执行者
+     *         接管后，旧 token 不能完成或释放新租约，避免迟到写覆盖当前所有者。
      */
-    Optional<IdempotencyRecord> claim(String key, Duration leaseTimeout);
+    IdempotencyClaim claim(String key, Duration leaseTimeout);
 
     /**
      * 把占位记录改写成"已完成 + 结果"，此后同键调用直接回放 {@code result}。
      *
-     * @param recordTtl 去重窗口：多久之后这条记录过期、同一个键重新变得可执行
+     * @param ownerToken {@link #claim} 返回的租约所有权 token
+     * @param recordTtl  去重窗口：多久之后这条记录过期、同一个键重新变得可执行
      */
-    void complete(String key, String result, Duration recordTtl);
+    void complete(String key, String ownerToken, String result, Duration recordTtl);
 
-    /** 释放占位（仅当记录还处于 IN_FLIGHT 时生效），让失败的调用可以被重试。 */
-    void release(String key);
+    /** 只释放 ownerToken 自己仍持有的 IN_FLIGHT 占位，让失败调用可重试且不伤到接管者。 */
+    void release(String key, String ownerToken);
 
     /** 查询当前记录；已过期的记录视为不存在。 */
     Optional<IdempotencyRecord> find(String key);
