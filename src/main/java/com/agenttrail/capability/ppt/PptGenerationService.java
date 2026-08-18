@@ -16,7 +16,7 @@ import java.time.Duration;
 /**
  * PPT 生成状态机的编排入口（issue #24）——把 Spring 自动收集的全部 {@link PptGenerationStrategy}
  * bean 按 {@link PptGenerationStrategy#handledState()} 建成一张分发表，{@link #run(long)}
- * 沿着固定顺序 {@code INIT→REQUIREMENT→SEARCH→TEMPLATE→OUTLINE→SCHEMA→IMAGE→RENDER→SUCCESS}
+ * 沿着固定顺序 {@code INIT→REQUIREMENT→SEARCH→TEMPLATE→OUTLINE→SCHEMA→IMAGE→RENDER→VERIFY→SUCCESS}
  * （{@code IMAGE} 是 issue #31 新增的状态：立即把文生图 API 返回的临时图片链接下载转存进 MinIO）
  * 逐个状态推进，不是散落的 if-else 链。
  *
@@ -40,7 +40,8 @@ public class PptGenerationService {
     /** {@link PptState#AWAITING_INPUT} 刻意不在这条链路里：它是等人的暂停态，不是流程里的一环。 */
     private static final List<PptState> ORDER = List.of(
             PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-            PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER, PptState.SUCCESS);
+            PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER, PptState.VERIFY,
+            PptState.SUCCESS);
 
     private final PptTaskStore taskStore;
     private final Map<PptState, PptGenerationStrategy> strategiesByState;
@@ -73,7 +74,9 @@ public class PptGenerationService {
         this.strategiesByState = strategies.stream()
                 .collect(Collectors.toMap(PptGenerationStrategy::handledState, strategy -> strategy));
         for (PptState state : ORDER) {
-            if (state != PptState.SUCCESS && !strategiesByState.containsKey(state)) {
+            // VERIFY 是新协议的可选升级点：旧测试/旧装配没有对象存储时仍可跑到 SUCCESS；生产配置
+            // 会提供 VerifyStrategy，此时 SUCCESS 必须经过硬门禁和上传。
+            if (state != PptState.SUCCESS && state != PptState.VERIFY && !strategiesByState.containsKey(state)) {
                 throw new IllegalStateException("缺少状态 " + state + " 对应的 PptGenerationStrategy 实现");
             }
         }
@@ -186,7 +189,8 @@ public class PptGenerationService {
         PptGenerationContext modifyContext = new PptGenerationContext(conversationId, userMessage,
                 previous.requirement(), previous.searchMaterials(), previous.templatePath(), previous.outline(),
                 previous.schema(), previous.outputPath(), null, PptGenerationContext.CURRENT_CONTEXT_VERSION,
-                previous.warnings(), previous.visualPlan(), previous.assetTasks(), previous.templateRef());
+                previous.warnings(), previous.visualPlan(), previous.assetTasks(), previous.templateRef(),
+                previous.artifactRef());
 
         PptTaskCreation creation = taskStore.createIdempotent(userId, conversationId, modifyContext,
                 "MODIFY", idempotencyKey);
@@ -410,9 +414,16 @@ public class PptGenerationService {
                 .map(PptGenerationContext::outputPath).orElse(null);
     }
 
-    private static PptState nextState(PptState current) {
+    private PptState nextState(PptState current) {
         int index = ORDER.indexOf(current);
-        return ORDER.get(index + 1);
+        for (int i = index + 1; i < ORDER.size(); i++) {
+            PptState candidate = ORDER.get(i);
+            if (candidate == PptState.VERIFY && !strategiesByState.containsKey(candidate)) {
+                continue;
+            }
+            return candidate;
+        }
+        throw new IllegalStateException("状态没有后继: " + current);
     }
 
     private static String describeFailure(Exception e) {

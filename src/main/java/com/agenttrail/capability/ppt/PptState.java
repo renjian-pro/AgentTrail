@@ -2,7 +2,7 @@ package com.agenttrail.capability.ppt;
 
 /**
  * PPT 生成状态机的状态（issue #24 骨架 + issue #31 新增 IMAGE + 需求澄清新增 CLARIFY/AWAITING_INPUT）：
- * {@code INIT→CLARIFY→REQUIREMENT→SEARCH→TEMPLATE→OUTLINE→SCHEMA→IMAGE→RENDER→SUCCESS}。
+ * {@code INIT→CLARIFY→REQUIREMENT→SEARCH→TEMPLATE→OUTLINE→SCHEMA→IMAGE→RENDER→VERIFY→SUCCESS}。
  *
  * <p>顺序固定、单向推进，不支持跳转/回退——{@link PptGenerationService} 里的
  * {@code ORDER} 列表就是这条链路本身，新增状态时只改那一处。
@@ -26,6 +26,8 @@ public enum PptState {
     SCHEMA,
     IMAGE,
     RENDER,
+    /** 重新打开并校验产物、通过后才允许进入 SUCCESS。 */
+    VERIFY,
     SUCCESS,
     /** 由用户取消，终态，不参与正常状态推进。 */
     CANCELLED,

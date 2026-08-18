@@ -12,6 +12,8 @@ import com.agenttrail.capability.ppt.InMemoryPptTemplateRegistry;
 import com.agenttrail.capability.ppt.PptTemplateChecksum;
 import com.agenttrail.capability.ppt.PptTemplateRegistry;
 import com.agenttrail.capability.ppt.PptTemplateVersion;
+import com.agenttrail.capability.ppt.PptArtifactStore;
+import com.agenttrail.capability.ppt.LocalPptArtifactStore;
 import com.agenttrail.capability.ppt.image.DashScopeImageClient;
 import com.agenttrail.capability.ppt.image.MinioPptImageStore;
 import com.agenttrail.capability.ppt.image.PptImageStore;
@@ -25,6 +27,7 @@ import com.agenttrail.capability.ppt.strategy.RequirementStrategy;
 import com.agenttrail.capability.ppt.strategy.SchemaStrategy;
 import com.agenttrail.capability.ppt.strategy.SearchStrategy;
 import com.agenttrail.capability.ppt.strategy.TemplateStrategy;
+import com.agenttrail.capability.ppt.strategy.VerifyStrategy;
 import com.agenttrail.runtime.lifecycle.InMemoryLeaseManager;
 import com.agenttrail.runtime.lifecycle.LeaseManager;
 import com.agenttrail.infrastructure.lease.RedisLeaseManager;
@@ -212,6 +215,21 @@ public class PptGenerationConfig {
             @Value("${agenttrail.ppt.output-dir:target/ppt-output}") String outputDir) {
         return new RenderStrategy(new com.agenttrail.capability.ppt.ProcessBuilderRenderPort(pptPythonRenderer),
                 outputDir, pptRenderExecutor);
+    }
+
+    /**
+     * 产物先通过统一端口保存。默认开发实现把对象放入 target/ppt-artifacts 并用稳定 key 复用；
+     * 生产部署可将该 Bean 替换为 MinIO/S3 实现，任务上下文无需改动。
+     */
+    @Bean
+    public PptArtifactStore pptArtifactStore(
+            @Value("${agenttrail.ppt.artifact-root:target/ppt-artifacts}") String artifactRoot) {
+        return new LocalPptArtifactStore(java.nio.file.Path.of(artifactRoot));
+    }
+
+    @Bean
+    public VerifyStrategy pptVerifyStrategy(PptArtifactStore pptArtifactStore) {
+        return new VerifyStrategy(pptArtifactStore);
     }
 
     /**

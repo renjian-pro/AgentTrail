@@ -88,7 +88,9 @@ public class RenderStrategy implements PptGenerationStrategy {
         }
 
         try {
-            Runnable render = () -> renderPort.render(Path.of(context.templatePath()).toAbsolutePath().normalize(),
+            String fixedTemplatePath = context.templateRef() == null
+                    ? context.templatePath() : context.templateRef().templatePath();
+            Runnable render = () -> renderPort.render(Path.of(fixedTemplatePath).toAbsolutePath().normalize(),
                     schemaFile, outputFile, cancellationToken);
             if (renderExecutor == null) {
                 render.run();
