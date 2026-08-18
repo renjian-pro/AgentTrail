@@ -10,6 +10,9 @@ import com.agenttrail.web.service.CapabilityConversationService;
 import com.agenttrail.capability.ppt.PptGenerationService;
 import com.agenttrail.conversation.digest.ConversationDigestService;
 import com.agenttrail.capability.ppt.PptTask;
+import com.agenttrail.capability.ppt.PptArtifact;
+import com.agenttrail.capability.ppt.PptArtifactRef;
+import com.agenttrail.capability.ppt.PptArtifactStore;
 import cn.dev33.satoken.stp.StpUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +20,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
+import org.springframework.core.io.UrlResource;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -37,6 +41,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -63,6 +69,7 @@ public class PptGenerationController {
     private final PptGenerationService pptGenerationService;
     private final CapabilityConversationService conversationService;
     private final Executor pptGenerationExecutor;
+    private final PptArtifactStore artifactStore;
     /**
      * 已有会话里发起 PPT 时带上上下文摘要（issue #103）。此前只传当次那一句话，用户说
      * "根据前面的会话做个 PPT" 会得到一份题为"前面的会话"的幻灯片，而且不报错。
@@ -74,11 +81,12 @@ public class PptGenerationController {
     public PptGenerationController(PptGenerationService pptGenerationService,
             CapabilityConversationService conversationService,
             @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor,
-            ConversationDigestService digestService) {
+            ConversationDigestService digestService, PptArtifactStore artifactStore) {
         this.pptGenerationService = pptGenerationService;
         this.conversationService = conversationService;
         this.pptGenerationExecutor = pptGenerationExecutor;
         this.digestService = digestService;
+        this.artifactStore = artifactStore;
     }
 
     /** 兼容旧签名：不带摘要服务时退化成"不带上下文"，行为与 issue #103 之前一致。 */
@@ -91,7 +99,15 @@ public class PptGenerationController {
                     public String withContext(String conversationId, String userMessage, String consumer) {
                         return userMessage;
                     }
-                });
+                }, null);
+    }
+
+    /** 兼容没有对象存储的旧测试/装配，仍支持本机 outputPath 下载。 */
+    public PptGenerationController(PptGenerationService pptGenerationService,
+            CapabilityConversationService conversationService,
+            @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor,
+            ConversationDigestService digestService) {
+        this(pptGenerationService, conversationService, pptGenerationExecutor, digestService, null);
     }
 
     /** 触发条件是会话状态（已有历史就带），不解析用户有没有说"根据前面的"——踩坑点 #52 的既有结论。 */
@@ -287,7 +303,21 @@ public class PptGenerationController {
     @GetMapping(value = "/agent/v1/ppt/{taskId}/download",
             produces = "application/vnd.openxmlformats-officedocument.presentationml.presentation")
     public ResponseEntity<Resource> download(@PathVariable long taskId) {
-        Path output = outputFileOf(currentUserIdOrLegacyForDirectCall(), taskId);
+        String userId = currentUserIdOrLegacyForDirectCall();
+        Optional<PptTask> described = (userId == null ? pptGenerationService.describe(taskId)
+                : pptGenerationService.describe(userId, taskId))
+                ;
+        // 仅保留无 HTTP 上下文的旧单测 seam；真实请求没有任务记录必须统一 404，不能退化成 IDOR。
+        if (described.isEmpty() && userId != null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
+        }
+        PptTask task = described.orElse(null);
+        com.agenttrail.capability.ppt.PptGenerationContext context = task == null ? null : safeContext(task);
+        PptArtifactRef artifactRef = context == null ? null : context.artifactRef();
+        if (artifactRef != null && artifactStore != null && !hasOutputFile(userId, taskId)) {
+            return downloadFromArtifactStore(taskId, artifactRef);
+        }
+        Path output = outputFileOf(userId, taskId);
         try {
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(
@@ -299,6 +329,27 @@ public class PptGenerationController {
                     .body(new FileSystemResource(output));
         } catch (IOException readFailure) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 文件不可读取: " + taskId, readFailure);
+        }
+    }
+
+    /**
+     * 多实例场景下本机临时 outputPath 可能已经被清理，回退到已校验归属的稳定 artifact 引用。
+     * 对 MinIO 返回的 HTTPS 签名地址使用服务端 UrlResource 代理读取；本地实现则读取 file URI，
+     * 签名地址本身不写入任务快照，也不返回给前端长期保存。
+     */
+    private ResponseEntity<Resource> downloadFromArtifactStore(long taskId, PptArtifactRef artifactRef) {
+        try {
+            String signedUrl = artifactStore.signedDownloadUrl(artifactRef.artifactId(), Duration.ofMinutes(5));
+            Resource resource = new UrlResource(signedUrl);
+            Optional<PptArtifact> artifact = artifactStore.find(artifactRef.artifactId());
+            ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(artifactRef.contentType()))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename("ppt-" + taskId + ".pptx", StandardCharsets.UTF_8).build().toString());
+            if (artifact.isPresent()) response.contentLength(artifact.get().sizeBytes());
+            return response.body(resource);
+        } catch (Exception failure) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 产物不可读取: " + taskId, failure);
         }
     }
 
