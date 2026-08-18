@@ -8,6 +8,10 @@ import com.agenttrail.web.service.CapabilityConversationService;
 import com.agenttrail.capability.deepresearch.DeepResearchReport;
 import com.agenttrail.capability.deepresearch.DeepResearchService;
 import com.agenttrail.capability.ppt.PptGenerationService;
+import com.agenttrail.capability.ppt.PptArtifact;
+import com.agenttrail.capability.ppt.PptArtifactRef;
+import com.agenttrail.capability.ppt.PptArtifactStore;
+import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptState;
 import com.agenttrail.capability.ppt.PptTask;
 import org.junit.jupiter.api.Test;
@@ -23,6 +27,8 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -101,6 +107,40 @@ class CapabilityControllersTest {
             assertThat(response.getBody()).isNotNull();
         } finally {
             Files.deleteIfExists(generatedPpt);
+        }
+    }
+
+    @Test
+    void downloadsStableArtifactWhenTheLocalRenderFileWasCleaned() throws IOException {
+        PptGenerationService pptService = org.mockito.Mockito.mock(PptGenerationService.class);
+        CapabilityConversationService conversationService = org.mockito.Mockito.mock(CapabilityConversationService.class);
+        PptArtifactStore artifactStore = org.mockito.Mockito.mock(PptArtifactStore.class);
+        Path artifactFile = Files.createTempFile("agenttrail-artifact-", ".pptx");
+        Files.writeString(artifactFile, "stored-pptx");
+        PptArtifactRef ref = new PptArtifactRef("artifact-9", "ppt/artifacts/artifact-9.pptx", "checksum", 11,
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        PptGenerationContext context = PptGenerationContext.initial("conversation-2", "生成季度汇报")
+                .withArtifactRef(ref);
+        when(pptService.describe(9L)).thenReturn(Optional.of(new PptTask(9L, "conversation-2", PptState.SUCCESS,
+                null, "{}", 1L, 2L)));
+        when(pptService.contextOf(any(PptTask.class))).thenReturn(context);
+        when(pptService.outputPathOf(9L)).thenReturn(null);
+        when(artifactStore.signedDownloadUrl("artifact-9", java.time.Duration.ofMinutes(5)))
+                .thenReturn(artifactFile.toUri().toString());
+        when(artifactStore.find("artifact-9")).thenReturn(Optional.of(new PptArtifact("artifact-9", "legacy", 9,
+                ref.objectKey(), ref.checksum(), ref.sizeBytes(), ref.contentType(), 1L, "ACTIVE")));
+        PptGenerationController controller = new PptGenerationController(pptService, conversationService,
+                DIRECT_EXECUTOR, new com.agenttrail.conversation.digest.ConversationDigestService(null), artifactStore);
+
+        try {
+            ResponseEntity<Resource> response = controller.download(9L);
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(response.getBody()).isNotNull();
+            try (var input = response.getBody().getInputStream()) {
+                assertThat(input.readAllBytes()).containsExactly("stored-pptx".getBytes());
+            }
+        } finally {
+            Files.deleteIfExists(artifactFile);
         }
     }
 }
