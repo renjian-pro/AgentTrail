@@ -370,6 +370,11 @@ button { cursor: pointer; }
    下面 .clarify-question / .clarify-form 两套则是两张卡片共用——同一件事（追问 + 回答框）
    在两处长得不一样，是这类"能力各自实现一遍"最先漂起来的地方。 */
 .ppt-clarify { grid-column: 1 / -1; }
+/* 统一任务视图提供进度和阶段标签，卡片只负责展示，不复制后端状态机。 */
+.ppt-progress { display: grid; gap: 5px; margin-top: 12px; }
+.ppt-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--line); }
+.ppt-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .25s ease; }
+.ppt-progress small { color: var(--faint); font-size: 11px; }
 .clarify-question { margin: 0 0 12px; color: var(--fg); line-height: 1.6; }
 .clarify-form { display: flex; align-items: flex-start; gap: 9px; }
 .clarify-form textarea { flex: 1; min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: inherit; font: inherit; line-height: 1.5; resize: vertical; }
