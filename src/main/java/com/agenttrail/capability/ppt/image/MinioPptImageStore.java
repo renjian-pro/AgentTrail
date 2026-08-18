@@ -13,6 +13,7 @@ import java.io.ByteArrayInputStream;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.UUID;
+import com.agenttrail.capability.ppt.PptCancellationToken;
 
 /**
  * issue #31 的核心落地：把文生图 API 返回的临时 URL 立即下载、转存进自建 MinIO，返回永久可访问的
@@ -49,11 +50,21 @@ public class MinioPptImageStore implements PptImageStore {
 
     @Override
     public String downloadAndStore(String temporaryImageUrl, String objectKeyPrefix) {
+        return downloadAndStore(temporaryImageUrl, objectKeyPrefix, null, PptCancellationToken.never());
+    }
+
+    @Override
+    public String downloadAndStore(String temporaryImageUrl, String objectKeyPrefix, String stableObjectKey,
+            PptCancellationToken cancellationToken) {
+        cancellationToken.throwIfCancellationRequested();
         ensureBucketReady();
         TemporaryImageDownloader.DownloadedImage image =
                 TemporaryImageDownloader.download(downloadClient, temporaryImageUrl, timeout);
+        cancellationToken.throwIfCancellationRequested();
 
-        String objectKey = safePrefix(objectKeyPrefix) + "-" + UUID.randomUUID() + extensionFor(image.contentType());
+        String objectKey = stableObjectKey == null || stableObjectKey.isBlank()
+                ? safePrefix(objectKeyPrefix) + "-" + UUID.randomUUID() + extensionFor(image.contentType())
+                : safePrefix(stableObjectKey) + extensionFor(image.contentType());
         try {
             minioClient.putObject(PutObjectArgs.builder()
                     .bucket(bucket)

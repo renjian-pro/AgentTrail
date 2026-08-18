@@ -30,4 +30,14 @@ public interface PptImageStore {
         cancellationToken.throwIfCancellationRequested();
         return result;
     }
+
+    /**
+     * 使用稳定 object key 的入口。默认实现委托旧 API，生产对象存储应覆盖它以保证同一页面字段
+     * 重试时覆盖/复用同一对象，而不是每次生成一个随机垃圾对象。
+     */
+    default String downloadAndStore(String temporaryImageUrl, String objectKeyPrefix, String stableObjectKey,
+            PptCancellationToken cancellationToken) {
+        // 旧实现只理解 prefix；保留它的调用语义，真正需要稳定 object key 的生产实现覆盖此方法。
+        return downloadAndStore(temporaryImageUrl, objectKeyPrefix, cancellationToken);
+    }
 }

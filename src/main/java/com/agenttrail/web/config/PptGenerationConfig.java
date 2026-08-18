@@ -8,6 +8,10 @@ import com.agenttrail.capability.ppt.PptGenerationStrategy;
 import com.agenttrail.capability.ppt.PptRecoveryCoordinator;
 import com.agenttrail.capability.ppt.PptPythonRenderer;
 import com.agenttrail.capability.ppt.PptTaskStore;
+import com.agenttrail.capability.ppt.InMemoryPptTemplateRegistry;
+import com.agenttrail.capability.ppt.PptTemplateChecksum;
+import com.agenttrail.capability.ppt.PptTemplateRegistry;
+import com.agenttrail.capability.ppt.PptTemplateVersion;
 import com.agenttrail.capability.ppt.image.DashScopeImageClient;
 import com.agenttrail.capability.ppt.image.MinioPptImageStore;
 import com.agenttrail.capability.ppt.image.PptImageStore;
@@ -171,8 +175,23 @@ public class PptGenerationConfig {
     public TemplateStrategy pptTemplateStrategy(
             @Value("${agenttrail.ppt.template-path:src/main/resources/ppt-templates/default-template.pptx}")
             String templatePath,
-            @Value("${agenttrail.ppt.template-allowlist-dir:src/main/resources/ppt-templates}") String allowlistDir) {
-        return new TemplateStrategy(templatePath, allowlistDir);
+            @Value("${agenttrail.ppt.template-allowlist-dir:src/main/resources/ppt-templates}") String allowlistDir,
+            PptTemplateRegistry pptTemplateRegistry) {
+        return new TemplateStrategy(templatePath, allowlistDir, pptTemplateRegistry);
+    }
+
+    /**
+     * 启动时注册默认模板的不可变版本。模板文件缺失或 checksum 无法计算会让应用启动失败，
+     * 而不是等到用户请求时才发现“当前最新版”不可用。
+     */
+    @Bean
+    public PptTemplateRegistry pptTemplateRegistry(
+            @Value("${agenttrail.ppt.template-path:src/main/resources/ppt-templates/default-template.pptx}")
+            String templatePath) {
+        java.nio.file.Path path = java.nio.file.Path.of(templatePath).toAbsolutePath().normalize();
+        InMemoryPptTemplateRegistry registry = new InMemoryPptTemplateRegistry();
+        registry.register(PptTemplateVersion.defaultContract(path.toString(), PptTemplateChecksum.sha256(path)));
+        return registry;
     }
 
     @Bean

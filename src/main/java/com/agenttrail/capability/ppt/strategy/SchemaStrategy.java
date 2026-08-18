@@ -11,6 +11,7 @@ import com.agenttrail.capability.ppt.PptOutlineSlide;
 import com.agenttrail.capability.ppt.PptPrompts;
 import com.agenttrail.capability.ppt.PptSchema;
 import com.agenttrail.capability.ppt.PptState;
+import com.agenttrail.capability.ppt.PptSchemaValidator;
 
 /**
  * SCHEMA 状态（issue #24）：把 {@link com.agenttrail.capability.ppt.PptOutline} 翻译成"填进这份具体
@@ -44,6 +45,7 @@ public class SchemaStrategy implements PptGenerationStrategy {
         String rawJson = executor.call(prompt, params);
         try {
             PptSchema schema = StructuredLlmCall.parse(rawJson, PptSchema.class);
+            PptSchemaValidator.validate(schema);
             return context.withSchema(schema);
         } catch (Exception malformed) {
             throw new PptGenerationException(

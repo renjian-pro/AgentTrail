@@ -4,6 +4,10 @@ import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptGenerationException;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
 import com.agenttrail.capability.ppt.PptState;
+import com.agenttrail.capability.ppt.PptTemplateRegistry;
+import com.agenttrail.capability.ppt.PptTemplateVersion;
+import com.agenttrail.capability.ppt.PptVisualPlan;
+import com.agenttrail.capability.ppt.PptTemplateRef;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,14 +25,31 @@ public class TemplateStrategy implements PptGenerationStrategy {
 
     private final String templatePath;
     private final Path allowlistDir;
+    private final PptTemplateRegistry templateRegistry;
+    private final String templateId;
+    private final String templateVersion;
 
     public TemplateStrategy(String templatePath) {
-        this(templatePath, Path.of(templatePath).toAbsolutePath().normalize().getParent().toString());
+        this(templatePath, Path.of(templatePath).toAbsolutePath().normalize().getParent().toString(), null,
+                "default", "1");
     }
 
     public TemplateStrategy(String templatePath, String allowlistDir) {
+        this(templatePath, allowlistDir, null, "default", "1");
+    }
+
+    /** 生产装配使用注册表；旧测试/调用方可以继续使用不带 registry 的构造函数。 */
+    public TemplateStrategy(String templatePath, String allowlistDir, PptTemplateRegistry templateRegistry) {
+        this(templatePath, allowlistDir, templateRegistry, "default", "1");
+    }
+
+    public TemplateStrategy(String templatePath, String allowlistDir, PptTemplateRegistry templateRegistry,
+            String templateId, String templateVersion) {
         this.templatePath = templatePath;
         this.allowlistDir = Path.of(allowlistDir).toAbsolutePath().normalize();
+        this.templateRegistry = templateRegistry;
+        this.templateId = templateId;
+        this.templateVersion = templateVersion;
     }
 
     @Override
@@ -42,6 +63,17 @@ public class TemplateStrategy implements PptGenerationStrategy {
         if (!candidate.startsWith(allowlistDir) || !Files.isRegularFile(candidate)) {
             throw new PptGenerationException("PPT 模板文件不存在: " + templatePath);
         }
-        return context.withTemplatePath(candidate.toString());
+        PptGenerationContext next = context.withTemplatePath(candidate.toString());
+        if (templateRegistry == null) {
+            // 兼容旧配置：没有注册表时仍固定当前路径，但不会伪造一个版本写进上下文。
+            return next;
+        }
+        PptTemplateVersion registered = templateRegistry.validate(templateId, templateVersion);
+        if (!candidate.equals(Path.of(registered.templatePath()).toAbsolutePath().normalize())) {
+            throw new PptGenerationException("PPT 模板路径与注册版本不一致: " + templateId + "/" + templateVersion);
+        }
+        return next.withTemplateRef(PptTemplateRef.from(registered))
+                .withVisualPlan(context.visualPlan() == null
+                        ? PptVisualPlan.defaultFor(context.requirement()) : context.visualPlan());
     }
 }

@@ -186,7 +186,7 @@ public class PptGenerationService {
         PptGenerationContext modifyContext = new PptGenerationContext(conversationId, userMessage,
                 previous.requirement(), previous.searchMaterials(), previous.templatePath(), previous.outline(),
                 previous.schema(), previous.outputPath(), null, PptGenerationContext.CURRENT_CONTEXT_VERSION,
-                previous.warnings());
+                previous.warnings(), previous.visualPlan(), previous.assetTasks(), previous.templateRef());
 
         PptTaskCreation creation = taskStore.createIdempotent(userId, conversationId, modifyContext,
                 "MODIFY", idempotencyKey);
