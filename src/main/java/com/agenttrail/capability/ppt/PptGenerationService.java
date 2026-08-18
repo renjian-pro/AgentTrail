@@ -185,14 +185,37 @@ public class PptGenerationService {
                 .filter(task -> task.status() == PptState.SUCCESS)
                 .orElseThrow(() -> new IllegalStateException(
                         "会话 " + conversationId + " 下没有已经生成完成的 PPT，无法在其基础上修改"));
+        return prepareModifyFromBase(userId, existing, userMessage, idempotencyKey);
+    }
+
+    /**
+     * 卡片修改入口按 baseTaskId 精确指定基线，不能因为会话里出现了新任务就悄悄换基线。
+     * 归属和 SUCCESS 校验在这里集中完成，HTTP、异步消息和内部调用共享同一安全边界。
+     */
+    public long prepareModify(String userId, long baseTaskId, String userMessage, String idempotencyKey) {
+        if (userMessage == null || userMessage.isBlank()) {
+            throw new IllegalArgumentException("修改指令不能为空");
+        }
+        PptTask existing = (userId == null ? taskStore.findById(baseTaskId) : taskStore.findById(userId, baseTaskId))
+                .orElseThrow(() -> new IllegalArgumentException("PPT 基线任务不存在: " + baseTaskId));
+        if (existing.status() != PptState.SUCCESS) {
+            throw new IllegalStateException("PPT 基线任务 " + baseTaskId + " 尚未成功，不能创建修改版本");
+        }
+        return prepareModifyFromBase(userId, existing, userMessage, idempotencyKey);
+    }
+
+    private long prepareModifyFromBase(String userId, PptTask existing, String userMessage,
+            String idempotencyKey) {
         PptGenerationContext previous = PptContextJson.fromJson(existing.contextJson());
-        PptGenerationContext modifyContext = new PptGenerationContext(conversationId, userMessage,
+        PptGenerationContext modifyContext = new PptGenerationContext(existing.conversationId(), userMessage,
                 previous.requirement(), previous.searchMaterials(), previous.templatePath(), previous.outline(),
                 previous.schema(), previous.outputPath(), null, PptGenerationContext.CURRENT_CONTEXT_VERSION,
                 previous.warnings(), previous.visualPlan(), previous.assetTasks(), previous.templateRef(),
-                previous.artifactRef());
+                previous.artifactRef())
+                .withOperationMetadata("MODIFY", existing.id(),
+                        previous.artifactRef() == null ? null : previous.artifactRef().artifactId());
 
-        PptTaskCreation creation = taskStore.createIdempotent(userId, conversationId, modifyContext,
+        PptTaskCreation creation = taskStore.createIdempotent(userId, existing.conversationId(), modifyContext,
                 "MODIFY", idempotencyKey);
         long newTaskId = creation.taskId();
         if (creation.replay()) {
@@ -361,6 +384,44 @@ public class PptGenerationService {
 
     public Optional<PptTask> describe(String userId, long taskId) {
         return taskStore.findById(userId, taskId);
+    }
+
+    /** 会话历史查询只读且带用户归属条件，返回结果已按最新版本在前排序。 */
+    public List<PptTask> describeConversation(String userId, String conversationId) {
+        if (userId == null || userId.isBlank()) return List.of();
+        if (conversationId == null || conversationId.isBlank()) return List.of();
+        return taskStore.findAllByConversationId(userId, conversationId);
+    }
+
+    /** 批量状态查询有明确上限，防止把 taskId 接口变成无界数据库扫描。 */
+    public List<PptTask> describeMany(String userId, List<Long> taskIds) {
+        if (userId == null || userId.isBlank() || taskIds == null || taskIds.isEmpty()) return List.of();
+        if (taskIds.size() > 100) throw new IllegalArgumentException("一次最多查询 100 个 PPT 任务");
+        return taskIds.stream().filter(java.util.Objects::nonNull).distinct()
+                .map(id -> taskStore.findById(userId, id).orElse(null))
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
+    /** 统一任务视图装配使用的只读元数据入口；不驱动状态机。 */
+    public List<PptCheckpointEvent> eventsOf(long taskId) {
+        return taskStore.eventsForTask(taskId);
+    }
+
+    public PptGenerationContext contextOf(PptTask task) {
+        return PptContextJson.fromJson(task.contextJson());
+    }
+
+    public PptFailure failureOf(PptTask task) {
+        return task.failureJson() == null || task.failureJson().isBlank()
+                ? null : PptFailureJson.fromJson(task.failureJson());
+    }
+
+    public List<PptWarning> warningsOf(PptTask task) {
+        if (task.warningsJson() != null && !task.warningsJson().isBlank()) {
+            return PptWarningsJson.fromJson(task.warningsJson());
+        }
+        return contextOf(task).warnings();
     }
 
     /** 请求在下一个状态边界停止；实际终态由 {@link #run(long)} 写入。 */

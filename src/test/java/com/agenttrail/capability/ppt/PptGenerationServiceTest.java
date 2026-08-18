@@ -227,6 +227,25 @@ class PptGenerationServiceTest {
     }
 
     @Test
+    void explicitModifyUsesTheRequestedBaseTaskAndPersistsVersionMetadata() {
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        PptGenerationService service = new PptGenerationService(taskStore, allStates(new ArrayList<>()));
+        PptGenerationContext baseContext = PptGenerationContext.initial("conv-1", "初始 PPT")
+                .withArtifactRef(new PptArtifactRef("ppt-artifact-base", "ppt/artifacts/base.pptx", "checksum", 10,
+                        "application/vnd.openxmlformats-officedocument.presentationml.presentation"));
+        long baseTaskId = taskStore.create("user-a", "conv-1", baseContext);
+        taskStore.advance(baseTaskId, PptState.SUCCESS, baseContext);
+
+        long modifiedTaskId = service.prepareModify("user-a", baseTaskId, "改第二页", "modify-key");
+        PptGenerationContext modified = PptContextJson.fromJson(taskStore.findById(modifiedTaskId).orElseThrow().contextJson());
+
+        assertThat(modified.operation()).isEqualTo("MODIFY");
+        assertThat(modified.baseTaskId()).isEqualTo(baseTaskId);
+        assertThat(modified.baseArtifactId()).isEqualTo("ppt-artifact-base");
+        assertThat(modified.schema()).isEqualTo(baseContext.schema());
+    }
+
+    @Test
     void checkpointStaysOnTheFailingStateAndDoesNotAdvanceOptimistically() {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();

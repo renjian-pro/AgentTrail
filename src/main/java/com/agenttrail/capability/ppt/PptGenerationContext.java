@@ -25,10 +25,24 @@ public record PptGenerationContext(
         PptVisualPlan visualPlan,
         List<PptAssetTask> assetTasks,
         PptTemplateRef templateRef,
-        PptArtifactRef artifactRef) {
+        PptArtifactRef artifactRef,
+        String operation,
+        Long baseTaskId,
+        String baseArtifactId) {
 
     /** 当前快照版本；旧 JSON 缺失版本时按此版本兼容读取。 */
     public static final int CURRENT_CONTEXT_VERSION = 1;
+
+    /** 兼容已有 15 字段快照；没有操作元数据的旧任务视为 CREATE。 */
+    public PptGenerationContext(String conversationId, String userRequirement, PptRequirement requirement,
+            List<String> searchMaterials, String templatePath, PptOutline outline, PptSchema schema,
+            String outputPath, String clarifyingQuestion, Integer contextVersion,
+            List<PptWarning> warnings, PptVisualPlan visualPlan, List<PptAssetTask> assetTasks,
+            PptTemplateRef templateRef, PptArtifactRef artifactRef) {
+        this(conversationId, userRequirement, requirement, searchMaterials, templatePath, outline, schema,
+                outputPath, clarifyingQuestion, contextVersion, warnings, visualPlan, assetTasks,
+                templateRef, artifactRef, "CREATE", null, null);
+    }
 
     @Override
     public Integer contextVersion() {
@@ -57,6 +71,12 @@ public record PptGenerationContext(
     @Override
     public PptArtifactRef artifactRef() {
         return artifactRef;
+    }
+
+    /** 旧快照缺字段时保持稳定的 CREATE 语义。 */
+    @Override
+    public String operation() {
+        return operation == null || operation.isBlank() ? "CREATE" : operation;
     }
 
     /** 兼容 issue #24 时期的 8 参数上下文。 */
@@ -102,10 +122,21 @@ public record PptGenerationContext(
             PptVisualPlan nextVisualPlan, List<PptAssetTask> nextAssetTasks, PptTemplateRef nextTemplateRef,
             PptArtifactRef nextArtifactRef,
             PptRequirement nextRequirement, String nextUserRequirement) {
+        return copyWithMetadata(nextSearchMaterials, nextTemplatePath, nextOutline, nextSchema, nextOutputPath,
+                nextClarifyingQuestion, nextWarnings, nextVisualPlan, nextAssetTasks, nextTemplateRef,
+                nextArtifactRef, nextRequirement, nextUserRequirement, operation(), baseTaskId, baseArtifactId);
+    }
+
+    private PptGenerationContext copyWithMetadata(List<String> nextSearchMaterials, String nextTemplatePath,
+            PptOutline nextOutline, PptSchema nextSchema, String nextOutputPath,
+            String nextClarifyingQuestion, List<PptWarning> nextWarnings,
+            PptVisualPlan nextVisualPlan, List<PptAssetTask> nextAssetTasks, PptTemplateRef nextTemplateRef,
+            PptArtifactRef nextArtifactRef, PptRequirement nextRequirement, String nextUserRequirement,
+            String nextOperation, Long nextBaseTaskId, String nextBaseArtifactId) {
         return new PptGenerationContext(conversationId, nextUserRequirement, nextRequirement,
                 nextSearchMaterials, nextTemplatePath, nextOutline, nextSchema, nextOutputPath,
                 nextClarifyingQuestion, contextVersion(), nextWarnings, nextVisualPlan, nextAssetTasks,
-                nextTemplateRef, nextArtifactRef);
+                nextTemplateRef, nextArtifactRef, nextOperation, nextBaseTaskId, nextBaseArtifactId);
     }
 
     public PptGenerationContext withRequirement(PptRequirement requirement) {
@@ -201,5 +232,12 @@ public record PptGenerationContext(
     public PptGenerationContext withArtifactRef(PptArtifactRef artifactRef) {
         return copy(searchMaterials, templatePath, outline, schema, outputPath, clarifyingQuestion,
                 warnings(), visualPlan, assetTasks(), templateRef, artifactRef, requirement, userRequirement);
+    }
+
+    /** MODIFY 任务记录其操作类型和基线版本，供统一任务视图和历史版本关联使用。 */
+    public PptGenerationContext withOperationMetadata(String operation, Long baseTaskId, String baseArtifactId) {
+        return copyWithMetadata(searchMaterials, templatePath, outline, schema, outputPath, clarifyingQuestion,
+                warnings(), visualPlan, assetTasks(), templateRef, artifactRef, requirement, userRequirement,
+                operation, baseTaskId, baseArtifactId);
     }
 }

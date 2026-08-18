@@ -59,6 +59,31 @@ public class JdbcPptTaskStore implements PptTaskStore {
             LIMIT 1
             """;
 
+    private static final String SELECT_LATEST_BY_USER_CONVERSATION_SQL = """
+            SELECT id, user_id, conversation_id, status, run_status, error_msg, context_version, revision,
+                   failure_json, warnings_json, attempt, next_retry_at, context_json, created_at, updated_at
+            FROM ppt_generation_task
+            WHERE user_id = ? AND conversation_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """;
+
+    private static final String SELECT_ALL_BY_CONVERSATION_SQL = """
+            SELECT id, user_id, conversation_id, status, run_status, error_msg, context_version, revision,
+                   failure_json, warnings_json, attempt, next_retry_at, context_json, created_at, updated_at
+            FROM ppt_generation_task
+            WHERE conversation_id = ?
+            ORDER BY id DESC
+            """;
+
+    private static final String SELECT_ALL_BY_USER_CONVERSATION_SQL = """
+            SELECT id, user_id, conversation_id, status, run_status, error_msg, context_version, revision,
+                   failure_json, warnings_json, attempt, next_retry_at, context_json, created_at, updated_at
+            FROM ppt_generation_task
+            WHERE user_id = ? AND conversation_id = ?
+            ORDER BY id DESC
+            """;
+
     private static final String CONDITIONAL_ADVANCE_SQL = """
             UPDATE ppt_generation_task
             SET status = ?, run_status = ?, error_msg = NULL, context_version = ?, revision = revision + 1,
@@ -216,6 +241,30 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 .param(conversationId)
                 .query(JdbcPptTaskStore::mapRow)
                 .optional();
+    }
+
+    @Override
+    public Optional<PptTask> findLatestByConversationId(String userId, String conversationId) {
+        return jdbcClient.sql(SELECT_LATEST_BY_USER_CONVERSATION_SQL)
+                .param(userId).param(conversationId)
+                .query(JdbcPptTaskStore::mapRow)
+                .optional();
+    }
+
+    @Override
+    public List<PptTask> findAllByConversationId(String conversationId) {
+        return jdbcClient.sql(SELECT_ALL_BY_CONVERSATION_SQL)
+                .param(conversationId)
+                .query(JdbcPptTaskStore::mapRow)
+                .list();
+    }
+
+    @Override
+    public List<PptTask> findAllByConversationId(String userId, String conversationId) {
+        return jdbcClient.sql(SELECT_ALL_BY_USER_CONVERSATION_SQL)
+                .param(userId).param(conversationId)
+                .query(JdbcPptTaskStore::mapRow)
+                .list();
     }
 
     @Override

@@ -10,10 +10,16 @@ import com.agenttrail.capability.ppt.PptState;
  * 前端据此渲染一个回答框（{@code POST /agent/v1/ppt/clarify/{taskId}}）而不是一条报错。
  */
 public record PptGenerationResponse(long taskId, PptState status, String errorMsg, String outputPath,
-                                    String clarifyingQuestion) {
+                                    String clarifyingQuestion, PptTaskView taskView) {
 
     /** 兼容早于需求澄清的四参数调用（测试与旧装配），语义等价于"这条任务没有待回答的追问"。 */
     public PptGenerationResponse(long taskId, PptState status, String errorMsg, String outputPath) {
-        this(taskId, status, errorMsg, outputPath, null);
+        this(taskId, status, errorMsg, outputPath, null, null);
+    }
+
+    /** 兼容澄清功能上线后的五参数调用。 */
+    public PptGenerationResponse(long taskId, PptState status, String errorMsg, String outputPath,
+            String clarifyingQuestion) {
+        this(taskId, status, errorMsg, outputPath, clarifyingQuestion, null);
     }
 }

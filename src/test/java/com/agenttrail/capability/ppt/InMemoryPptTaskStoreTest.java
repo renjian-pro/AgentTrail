@@ -150,4 +150,18 @@ class InMemoryPptTaskStoreTest {
 
         assertThat(store.findLatestByConversationId("conv-从来没有过任务")).isEmpty();
     }
+
+    @Test
+    void conversationHistoryAndLatestLookupAreScopedToTheOwningUser() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        long userATask = store.create("user-a", "shared-conversation", PptGenerationContext.initial("shared-conversation", "A"));
+        long userBTask = store.create("user-b", "shared-conversation", PptGenerationContext.initial("shared-conversation", "B"));
+
+        assertThat(store.findLatestByConversationId("user-a", "shared-conversation"))
+                .get().extracting(PptTask::id).isEqualTo(userATask);
+        assertThat(store.findAllByConversationId("user-a", "shared-conversation"))
+                .extracting(PptTask::id).containsExactly(userATask);
+        assertThat(store.findAllByConversationId("user-b", "shared-conversation"))
+                .extracting(PptTask::id).containsExactly(userBTask);
+    }
 }

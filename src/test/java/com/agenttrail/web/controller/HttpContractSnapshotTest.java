@@ -67,7 +67,8 @@ class HttpContractSnapshotTest {
     @Test
     void pptResponseCarriesClarifyingQuestionAlongsideTheOriginalFour() {
         assertThat(fieldNames(new PptGenerationResponse(9L, null, null, null)))
-                .containsExactlyInAnyOrder("taskId", "status", "errorMsg", "outputPath", "clarifyingQuestion");
+                .containsExactlyInAnyOrder("taskId", "status", "errorMsg", "outputPath", "clarifyingQuestion",
+                        "taskView");
     }
 
     @Test

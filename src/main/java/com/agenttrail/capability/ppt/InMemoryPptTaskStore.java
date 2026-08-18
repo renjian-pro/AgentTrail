@@ -59,6 +59,31 @@ public class InMemoryPptTaskStore implements PptTaskStore {
     }
 
     @Override
+    public Optional<PptTask> findLatestByConversationId(String userId, String conversationId) {
+        return tasks.values().stream()
+                .filter(task -> java.util.Objects.equals(task.userId(), userId))
+                .filter(task -> java.util.Objects.equals(task.conversationId(), conversationId))
+                .max(java.util.Comparator.comparingLong(PptTask::id));
+    }
+
+    @Override
+    public List<PptTask> findAllByConversationId(String conversationId) {
+        return tasks.values().stream()
+                .filter(task -> java.util.Objects.equals(task.conversationId(), conversationId))
+                .sorted(java.util.Comparator.comparingLong(PptTask::id).reversed())
+                .toList();
+    }
+
+    @Override
+    public List<PptTask> findAllByConversationId(String userId, String conversationId) {
+        return tasks.values().stream()
+                .filter(task -> java.util.Objects.equals(task.userId(), userId))
+                .filter(task -> java.util.Objects.equals(task.conversationId(), conversationId))
+                .sorted(java.util.Comparator.comparingLong(PptTask::id).reversed())
+                .toList();
+    }
+
+    @Override
     public boolean conditionalAdvance(long id, PptState expectedState, long expectedRevision,
             PptState newState, PptRunStatus newRunStatus, PptGenerationContext context) {
         AtomicBoolean updated = new AtomicBoolean();

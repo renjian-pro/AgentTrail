@@ -50,4 +50,16 @@ class PptContextJsonTest {
 
         assertThat(PptContextJson.fromJson(PptContextJson.toJson(original))).isEqualTo(original);
     }
+
+    @Test
+    void roundTripsModifyOperationAndBaseArtifactMetadata() {
+        PptGenerationContext original = PptGenerationContext.initial("conv-1", "改第二页")
+                .withOperationMetadata("MODIFY", 42L, "ppt-artifact-42-old");
+
+        PptGenerationContext restored = PptContextJson.fromJson(PptContextJson.toJson(original));
+
+        assertThat(restored.operation()).isEqualTo("MODIFY");
+        assertThat(restored.baseTaskId()).isEqualTo(42L);
+        assertThat(restored.baseArtifactId()).isEqualTo("ppt-artifact-42-old");
+    }
 }

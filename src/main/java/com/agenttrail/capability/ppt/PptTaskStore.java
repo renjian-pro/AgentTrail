@@ -48,6 +48,21 @@ public interface PptTaskStore {
     }
 
     /**
+     * 查询会话下的全部任务，按创建顺序倒序返回，供历史版本卡片使用。
+     * 默认实现兼容旧存储实现，但生产实现应在查询条件中直接带 userId，避免先读出他人任务再过滤。
+     */
+    default List<PptTask> findAllByConversationId(String conversationId) {
+        return findLatestByConversationId(conversationId).stream().toList();
+    }
+
+    /** 只返回当前用户拥有的会话任务；conversationId 本身不是鉴权凭证。 */
+    default List<PptTask> findAllByConversationId(String userId, String conversationId) {
+        return findAllByConversationId(conversationId).stream()
+                .filter(task -> userId == null || userId.equals(task.userId()))
+                .toList();
+    }
+
+    /**
      * 兼容旧调用方的推进入口：先读取当前 checkpoint，再执行条件推进。
      * 新代码必须使用带 expected state/revision 的重载，避免迟到 worker 覆盖新快照。
      */
