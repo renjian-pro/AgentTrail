@@ -3,6 +3,7 @@ package com.agenttrail.capability.ppt;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import com.agenttrail.platform.error.RetryClass;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,6 +45,35 @@ class InMemoryPptTaskStoreTest {
             assertThat(event.revisionBefore()).isZero();
             assertThat(event.revisionAfter()).isEqualTo(1);
         });
+    }
+
+    @Test
+    void idempotentCreationReturnsTheSameTaskAcrossRetries() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        PptGenerationContext context = PptGenerationContext.initial("conv-1", "问题");
+
+        PptTaskCreation first = store.createIdempotent("user-1", "conv-1", context, "CREATE", "key-1");
+        PptTaskCreation replay = store.createIdempotent("user-1", "conv-1", context, "CREATE", "key-1");
+
+        assertThat(first.replay()).isFalse();
+        assertThat(replay.replay()).isTrue();
+        assertThat(replay.taskId()).isEqualTo(first.taskId());
+    }
+
+    @Test
+    void claimAndRetryMetadataArePersistedAndRecoveryOnlyReturnsDueTasks() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        long id = store.create("user-1", "conv-1", PptGenerationContext.initial("conv-1", "问题"));
+
+        assertThat(store.claim(id, PptState.INIT, 0)).isTrue();
+        PptFailure failure = new PptFailure("PPT_TIMEOUT", PptState.INIT, true,
+                RetryClass.RETRIABLE, 1, "请求超时，请稍后重试", System.currentTimeMillis());
+        long retryAt = System.currentTimeMillis() + 60_000;
+        assertThat(store.recordFailureIfCurrent(id, PptState.INIT, 1, failure,
+                PptRunStatus.RETRY_WAIT, retryAt)).isTrue();
+        assertThat(store.findById(id).orElseThrow().attempt()).isEqualTo(1);
+        assertThat(store.recoverableTaskIds(System.currentTimeMillis(), 10)).isEmpty();
+        assertThat(store.recoverableTaskIds(retryAt, 10)).containsExactly(id);
     }
 
     @Test

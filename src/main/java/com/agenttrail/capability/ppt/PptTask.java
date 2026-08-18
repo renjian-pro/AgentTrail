@@ -15,22 +15,29 @@ package com.agenttrail.capability.ppt;
  *                    表已经验证过的取舍（拆列存储没有额外的查询收益）
  * @param contextVersion 快照格式版本；读取旧数据时由上下文兼容逻辑补齐
  * @param revision    单调递增版本，条件推进必须同时匹配 expected 状态和 revision
+ * @param failureJson  脱敏结构化失败对象；保留 errorMsg 作为旧客户端兼容文本
+ * @param warningsJson 成功但有降级时的结构化 warning 列表 JSON
+ * @param attempt      当前业务阶段的执行次数，阶段之间独立计数
+ * @param nextRetryAtMillis RETRY_WAIT 的最早重试时刻；非重试状态为 0
  */
 public record PptTask(long id, String userId, String conversationId, PptState status, PptRunStatus runStatus,
                        String errorMsg, String contextJson, int contextVersion, long revision,
+                       String failureJson, String warningsJson, int attempt, long nextRetryAtMillis,
                        long createdAtMillis, long updatedAtMillis) {
 
     /** 旧调用方构造的任务仍按尚未入队处理，版本与 revision 使用安全初始值。 */
     public PptTask(long id, String conversationId, PptState status, String errorMsg, String contextJson,
             long createdAtMillis, long updatedAtMillis) {
         this(id, null, conversationId, status, PptRunStatus.QUEUED, errorMsg, contextJson,
-                PptGenerationContext.CURRENT_CONTEXT_VERSION, 0, createdAtMillis, updatedAtMillis);
+                PptGenerationContext.CURRENT_CONTEXT_VERSION, 0, null, null, 0, 0,
+                createdAtMillis, updatedAtMillis);
     }
 
     /** 兼容带 userId 的旧调用方。 */
     public PptTask(long id, String userId, String conversationId, PptState status, String errorMsg,
             String contextJson, long createdAtMillis, long updatedAtMillis) {
         this(id, userId, conversationId, status, PptRunStatus.QUEUED, errorMsg, contextJson,
-                PptGenerationContext.CURRENT_CONTEXT_VERSION, 0, createdAtMillis, updatedAtMillis);
+                PptGenerationContext.CURRENT_CONTEXT_VERSION, 0, null, null, 0, 0,
+                createdAtMillis, updatedAtMillis);
     }
 }

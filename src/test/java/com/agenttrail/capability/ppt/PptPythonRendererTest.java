@@ -7,6 +7,7 @@ import org.springframework.core.io.ClassPathResource;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,6 +69,27 @@ class PptPythonRendererTest {
         long elapsed = System.currentTimeMillis() - start;
 
         assertThat(elapsed).as("应该在超时附近就返回，不是等脚本自己跑完 30s").isLessThan(20_000);
+    }
+
+    @Test
+    void cancellationTerminatesThePythonProcessBeforeItsNaturalExit(@TempDir Path tempDir) throws Exception {
+        PptPythonRenderer renderer = new PptPythonRenderer("python", scriptPath("sleep_script.py"), 30);
+        Path schema = tempDir.resolve("schema.json");
+        Files.writeString(schema, "{}");
+        Path output = tempDir.resolve("output.pptx");
+        AtomicBoolean cancelled = new AtomicBoolean();
+        Thread cancel = Thread.ofVirtual().start(() -> {
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            cancelled.set(true);
+        });
+
+        assertThatThrownBy(() -> renderer.render("unused-template.pptx", schema, output,
+                cancelled::get)).isInstanceOf(PptCancellationException.class);
+        cancel.join();
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.capability.ppt.JdbcPptTaskStore;
 import com.agenttrail.capability.ppt.PptGenerationService;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
+import com.agenttrail.capability.ppt.PptRecoveryCoordinator;
 import com.agenttrail.capability.ppt.PptPythonRenderer;
 import com.agenttrail.capability.ppt.PptTaskStore;
 import com.agenttrail.capability.ppt.image.DashScopeImageClient;
@@ -93,6 +94,20 @@ public class PptGenerationConfig {
                 poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(queueCapacity), namedDaemonThreads,
                 new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /**
+     * 启动和定时恢复只扫描有限 taskId，再复用同一执行器；恢复器不直接改状态，
+     * 防止与正常请求产生两套不一致的状态推进逻辑。
+     */
+    @Bean
+    public PptRecoveryCoordinator pptRecoveryCoordinator(PptTaskStore pptTaskStore,
+            PptGenerationService pptGenerationService,
+            @Qualifier("pptGenerationExecutor") ExecutorService pptGenerationExecutor,
+            @Value("${agenttrail.ppt.recovery.batch-size:20}") int batchSize,
+            @Value("${agenttrail.ppt.recovery.jitter-ms:250}") long jitterMillis) {
+        return new PptRecoveryCoordinator(pptTaskStore, pptGenerationService, pptGenerationExecutor,
+                batchSize, jitterMillis);
     }
 
     @Bean(name = "pptRenderExecutor", destroyMethod = "shutdown")

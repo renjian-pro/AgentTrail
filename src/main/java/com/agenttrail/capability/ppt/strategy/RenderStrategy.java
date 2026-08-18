@@ -4,6 +4,7 @@ import com.agenttrail.capability.ppt.PptContentSlidePayload;
 import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptGenerationException;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
+import com.agenttrail.capability.ppt.PptCancellationToken;
 import com.agenttrail.capability.ppt.ProcessBuilderRenderPort;
 import com.agenttrail.capability.ppt.PptPythonRenderer;
 import com.agenttrail.capability.ppt.RenderPort;
@@ -21,6 +22,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 
 /**
@@ -59,6 +61,12 @@ public class RenderStrategy implements PptGenerationStrategy {
 
     @Override
     public PptGenerationContext execute(PptGenerationContext context) {
+        return execute(context, PptCancellationToken.never());
+    }
+
+    @Override
+    public PptGenerationContext execute(PptGenerationContext context, PptCancellationToken cancellationToken) {
+        cancellationToken.throwIfCancellationRequested();
         try {
             Files.createDirectories(outputDir);
         } catch (IOException createDirFailed) {
@@ -81,11 +89,18 @@ public class RenderStrategy implements PptGenerationStrategy {
 
         try {
             Runnable render = () -> renderPort.render(Path.of(context.templatePath()).toAbsolutePath().normalize(),
-                    schemaFile, outputFile);
+                    schemaFile, outputFile, cancellationToken);
             if (renderExecutor == null) {
                 render.run();
             } else {
-                CompletableFuture.runAsync(render, renderExecutor).join();
+                try {
+                    CompletableFuture.runAsync(render, renderExecutor).join();
+                } catch (CompletionException wrapped) {
+                    if (wrapped.getCause() instanceof com.agenttrail.capability.ppt.PptCancellationException cancelled) {
+                        throw cancelled;
+                    }
+                    throw wrapped;
+                }
             }
         } finally {
             try {
@@ -95,6 +110,7 @@ public class RenderStrategy implements PptGenerationStrategy {
             }
         }
 
+        cancellationToken.throwIfCancellationRequested();
         return context.withOutputPath(outputFile.toAbsolutePath().toString());
     }
 

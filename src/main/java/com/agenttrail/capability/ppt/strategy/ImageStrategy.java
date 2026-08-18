@@ -1,6 +1,8 @@
 package com.agenttrail.capability.ppt.strategy;
 
 import com.agenttrail.capability.ppt.PptGenerationContext;
+import com.agenttrail.capability.ppt.PptCancellationException;
+import com.agenttrail.capability.ppt.PptCancellationToken;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
 import com.agenttrail.capability.ppt.PptSchema;
 import com.agenttrail.capability.ppt.PptState;
@@ -43,18 +45,28 @@ public class ImageStrategy implements PptGenerationStrategy {
 
     @Override
     public PptGenerationContext execute(PptGenerationContext context) {
+        return execute(context, PptCancellationToken.never());
+    }
+
+    @Override
+    public PptGenerationContext execute(PptGenerationContext context, PptCancellationToken cancellationToken) {
+        cancellationToken.throwIfCancellationRequested();
         try {
             String prompt = buildCoverImagePrompt(context);
-            String temporaryUrl = imageClient.generateImageUrl(prompt);
-            String minioUrl = imageStore.downloadAndStore(temporaryUrl, context.conversationId());
+            String temporaryUrl = imageClient.generateImageUrl(prompt, cancellationToken);
+            String minioUrl = imageStore.downloadAndStore(temporaryUrl, context.conversationId(), cancellationToken);
             PptSchema schema = context.schema();
             PptSchema schemaWithImage = new PptSchema(
                     schema.titleText(), schema.subtitleText(), schema.contentSlides(), minioUrl);
             return context.withSchema(schemaWithImage);
+        } catch (PptCancellationException cancelled) {
+            throw cancelled;
         } catch (Exception imageFailed) {
             log.warn("PPT 会话 {} 配图生成/转存失败，降级为无封面图继续后续渲染: {}",
                     context.conversationId(), imageFailed.getMessage(), imageFailed);
-            return context;
+            return context.withWarning(new com.agenttrail.capability.ppt.PptWarning(
+                    "PPT_IMAGE_DEGRADED", PptState.IMAGE,
+                    "封面图生成失败，已降级为无图版本继续生成", java.util.List.of()));
         }
     }
 

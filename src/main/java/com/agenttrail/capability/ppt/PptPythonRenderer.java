@@ -36,6 +36,15 @@ public class PptPythonRenderer {
 
     /** 同步调用，跑完/超时/失败才返回；成功时 {@code outputFile} 处一定存在一个真实文件。 */
     public void render(String templatePath, Path schemaJsonFile, Path outputFile) {
+        render(templatePath, schemaJsonFile, outputFile, PptCancellationToken.never());
+    }
+
+    /**
+     * 可取消渲染：短间隔等待期间观察 token，取消时终止 Python 进程及其 descendants，
+     * 而不是只中断 Java 等待线程留下孤儿进程。
+     */
+    public void render(String templatePath, Path schemaJsonFile, Path outputFile,
+            PptCancellationToken cancellationToken) {
         ProcessBuilder processBuilder = new ProcessBuilder(
                 pythonExecutable, renderScriptPath,
                 "--template", templatePath,
@@ -55,15 +64,28 @@ public class PptPythonRenderer {
 
         boolean finished;
         try {
-            finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+            finished = false;
+            while (!finished) {
+                cancellationToken.throwIfCancellationRequested();
+                long remainingNanos = deadline - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    break;
+                }
+                finished = process.waitFor(Math.min(TimeUnit.NANOSECONDS.toMillis(remainingNanos), 250L),
+                        TimeUnit.MILLISECONDS);
+            }
         } catch (InterruptedException interrupted) {
-            process.destroyForcibly();
+            destroyProcessTree(process);
             Thread.currentThread().interrupt();
             throw new PptRenderException("等待 Python 渲染进程时被中断", interrupted);
+        } catch (PptCancellationException cancelled) {
+            destroyProcessTree(process);
+            throw cancelled;
         }
 
         if (!finished) {
-            process.destroyForcibly();
+            destroyProcessTree(process);
             throw new PptRenderException("Python 渲染进程超过 " + timeoutSeconds + "s 未结束，已强制终止");
         }
 
@@ -74,6 +96,19 @@ public class PptPythonRenderer {
         if (!Files.exists(outputFile)) {
             throw new PptRenderException("Python 渲染进程退出码 0 但没有生成输出文件: " + outputFile
                     + "，stdout: " + stdout.await());
+        }
+    }
+
+    private static void destroyProcessTree(Process process) {
+        process.descendants().forEach(child -> {
+            child.destroy();
+            if (child.isAlive()) {
+                child.destroyForcibly();
+            }
+        });
+        process.destroy();
+        if (process.isAlive()) {
+            process.destroyForcibly();
         }
     }
 

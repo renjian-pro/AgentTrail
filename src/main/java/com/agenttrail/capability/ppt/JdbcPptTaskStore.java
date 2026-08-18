@@ -6,6 +6,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.dao.DuplicateKeyException;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -24,13 +25,25 @@ public class JdbcPptTaskStore implements PptTaskStore {
     private static final String INSERT_SQL = """
             INSERT INTO ppt_generation_task
                 (user_id, conversation_id, status, run_status, error_msg, cancel_requested,
-                 context_version, revision, context_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?, NULL, FALSE, ?, ?, ?, ?, ?)
+                 context_version, revision, failure_json, warnings_json, attempt, next_retry_at,
+                 context_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, NULL, FALSE, ?, ?, NULL, ?, 0, 0, ?, ?, ?)
+            """;
+
+    private static final String INSERT_IDEMPOTENCY_SQL = """
+            INSERT INTO ppt_generation_idempotency
+                (user_id, scope, idempotency_key, task_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """;
+
+    private static final String SELECT_IDEMPOTENT_TASK_SQL = """
+            SELECT task_id FROM ppt_generation_idempotency
+            WHERE user_id = ? AND scope = ? AND idempotency_key = ?
             """;
 
     private static final String SELECT_BY_ID_SQL = """
             SELECT id, user_id, conversation_id, status, run_status, error_msg, context_version, revision,
-                   context_json, created_at, updated_at
+                   failure_json, warnings_json, attempt, next_retry_at, context_json, created_at, updated_at
             FROM ppt_generation_task
             WHERE id = ?
             """;
@@ -39,7 +52,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
     // 和 InMemoryPptTaskStore#findLatestByConversationId 用同一个排序口径，两个实现行为一致。
     private static final String SELECT_LATEST_BY_CONVERSATION_SQL = """
             SELECT id, user_id, conversation_id, status, run_status, error_msg, context_version, revision,
-                   context_json, created_at, updated_at
+                   failure_json, warnings_json, attempt, next_retry_at, context_json, created_at, updated_at
             FROM ppt_generation_task
             WHERE conversation_id = ?
             ORDER BY id DESC
@@ -49,14 +62,23 @@ public class JdbcPptTaskStore implements PptTaskStore {
     private static final String CONDITIONAL_ADVANCE_SQL = """
             UPDATE ppt_generation_task
             SET status = ?, run_status = ?, error_msg = NULL, context_version = ?, revision = revision + 1,
-                context_json = ?, updated_at = ?
+                failure_json = NULL, warnings_json = ?, next_retry_at = 0, context_json = ?, updated_at = ?
             WHERE id = ? AND status = ? AND revision = ?
             """;
 
     private static final String CONDITIONAL_MARK_FAILED_SQL = """
             UPDATE ppt_generation_task
-            SET status = ?, run_status = ?, error_msg = ?, revision = revision + 1, updated_at = ?
+            SET status = ?, run_status = ?, error_msg = ?, failure_json = ?, next_retry_at = ?,
+                revision = revision + 1, updated_at = ?
             WHERE id = ? AND status = ? AND revision = ?
+            """;
+
+    private static final String CLAIM_SQL = """
+            UPDATE ppt_generation_task
+            SET run_status = 'RUNNING', attempt = attempt + 1, next_retry_at = 0,
+                revision = revision + 1, updated_at = ?
+            WHERE id = ? AND status = ? AND revision = ?
+              AND status NOT IN ('SUCCESS', 'CANCELLED', 'AWAITING_INPUT')
             """;
 
     private static final String REQUEST_CANCEL_SQL = """
@@ -77,7 +99,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
     private static final String MARK_CANCELLED_SQL = """
             UPDATE ppt_generation_task
             SET status = ?, run_status = ?, error_msg = NULL, cancel_requested = FALSE,
-                revision = revision + 1, updated_at = ?
+                failure_json = NULL, next_retry_at = 0, revision = revision + 1, updated_at = ?
             WHERE id = ?
             """;
 
@@ -91,8 +113,17 @@ public class JdbcPptTaskStore implements PptTaskStore {
             ORDER BY id
             """;
 
+    private static final String RECOVERABLE_TASK_IDS_SQL = """
+            SELECT id FROM ppt_generation_task
+            WHERE run_status IN ('QUEUED', 'RUNNING')
+               OR (run_status = 'RETRY_WAIT' AND next_retry_at <= ?)
+            ORDER BY updated_at, id
+            LIMIT ?
+            """;
+
     private static final String SELECT_EVENT_ATTEMPT_SQL = """
-            SELECT COUNT(*) FROM ppt_generation_stage_event WHERE task_id = ? AND stage = ?
+            SELECT COUNT(*) FROM ppt_generation_stage_event
+            WHERE task_id = ? AND stage = ? AND outcome = 'STARTED'
             """;
 
     private static final String INSERT_EVENT_SQL = """
@@ -124,6 +155,36 @@ public class JdbcPptTaskStore implements PptTaskStore {
 
     @Override
     public long create(String userId, String conversationId, PptGenerationContext initialContext) {
+        return insertTask(userId, conversationId, initialContext);
+    }
+
+    @Override
+    public PptTaskCreation createIdempotent(String userId, String conversationId,
+            PptGenerationContext initialContext, String scope, String idempotencyKey) {
+        if (scope == null || scope.isBlank() || idempotencyKey == null || idempotencyKey.isBlank()) {
+            return new PptTaskCreation(create(userId, conversationId, initialContext), false);
+        }
+        String scopedUserId = userId == null ? "legacy" : userId;
+        try {
+            PptTaskCreation created = transactionTemplate.execute(status -> {
+                long taskId = insertTask(scopedUserId, conversationId, initialContext);
+                jdbcClient.sql(INSERT_IDEMPOTENCY_SQL)
+                        .param(scopedUserId).param(scope).param(idempotencyKey).param(taskId)
+                        .param(System.currentTimeMillis()).update();
+                return new PptTaskCreation(taskId, false);
+            });
+            return created;
+        } catch (DuplicateKeyException duplicate) {
+            long existing = jdbcClient.sql(SELECT_IDEMPOTENT_TASK_SQL)
+                    .param(scopedUserId).param(scope).param(idempotencyKey)
+                    .query(Long.class).optional()
+                    .orElseThrow(() -> duplicate);
+            return new PptTaskCreation(existing, true);
+        }
+    }
+
+    /** 普通创建和幂等创建共用，确保两个入口的初始快照字段完全一致。 */
+    private long insertTask(String userId, String conversationId, PptGenerationContext initialContext) {
         long now = System.currentTimeMillis();
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql(INSERT_SQL)
@@ -133,6 +194,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 .param(PptRunStatus.QUEUED.name())
                 .param(initialContext.contextVersion())
                 .param(0L)
+                .param(PptWarningsJson.toJson(initialContext.warnings()))
                 .param(PptContextJson.toJson(initialContext))
                 .param(now)
                 .param(now)
@@ -165,6 +227,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
                     .param(newState.name())
                     .param(newRunStatus.name())
                     .param(context.contextVersion())
+                    .param(PptWarningsJson.toJson(context.warnings()))
                     .param(PptContextJson.toJson(context))
                     .param(now)
                     .param(id)
@@ -175,21 +238,39 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 return false;
             }
             insertEvent(id, expectedState, PptCheckpointEvent.OUTCOME_SUCCEEDED, now, now,
-                    null, expectedRevision + 1);
+                    null, null, expectedRevision + 1);
             return true;
         });
         return Boolean.TRUE.equals(updated);
     }
 
     @Override
-    public boolean markFailedIfCurrent(long id, PptState expectedState, long expectedRevision,
-            PptState failedState, String errorMsg) {
+    public boolean claim(long id, PptState expectedState, long expectedRevision) {
+        Boolean updated = transactionTemplate.execute(status -> {
+            long now = System.currentTimeMillis();
+            int rows = jdbcClient.sql(CLAIM_SQL)
+                    .param(now).param(id).param(expectedState.name()).param(expectedRevision).update();
+            if (rows == 0) {
+                return false;
+            }
+            insertEvent(id, expectedState, PptCheckpointEvent.OUTCOME_STARTED, now, 0,
+                    null, null, expectedRevision + 1);
+            return true;
+        });
+        return Boolean.TRUE.equals(updated);
+    }
+
+    @Override
+    public boolean recordFailureIfCurrent(long id, PptState expectedState, long expectedRevision,
+            PptFailure failure, PptRunStatus nextRunStatus, long nextRetryAtMillis) {
         Boolean updated = transactionTemplate.execute(status -> {
             long now = System.currentTimeMillis();
             int rows = jdbcClient.sql(CONDITIONAL_MARK_FAILED_SQL)
-                    .param(failedState.name())
-                    .param(PptRunStatus.FAILED.name())
-                    .param(errorMsg)
+                    .param(failure.failedStage().name())
+                    .param(nextRunStatus.name())
+                    .param(failure.userMessage())
+                    .param(PptFailureJson.toJson(failure))
+                    .param(nextRetryAtMillis)
                     .param(now)
                     .param(id)
                     .param(expectedState.name())
@@ -198,8 +279,8 @@ public class JdbcPptTaskStore implements PptTaskStore {
             if (rows == 0) {
                 return false;
             }
-            insertEvent(id, failedState, PptCheckpointEvent.OUTCOME_FAILED, now, now,
-                    errorMsg, expectedRevision + 1);
+            insertEvent(id, failure.failedStage(), PptCheckpointEvent.OUTCOME_FAILED, now, now,
+                    failure.code(), failure.retryClass().name(), expectedRevision + 1);
             return true;
         });
         return Boolean.TRUE.equals(updated);
@@ -261,7 +342,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 throw new PptCheckpointConflictException(id, current.state(), current.revision());
             }
             insertEvent(id, atState, PptCheckpointEvent.OUTCOME_CANCELLED, now, now,
-                    null, current.revision() + 1);
+                    null, null, current.revision() + 1);
         });
     }
 
@@ -285,6 +366,17 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 .list();
     }
 
+    @Override
+    public List<Long> recoverableTaskIds(long nowMillis, int limit) {
+        if (limit <= 0) {
+            return List.of();
+        }
+        return jdbcClient.sql(RECOVERABLE_TASK_IDS_SQL)
+                .param(nowMillis).param(limit)
+                .query(Long.class)
+                .list();
+    }
+
     private static PptTask mapRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
         return new PptTask(
                 rs.getLong("id"),
@@ -296,12 +388,16 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 rs.getString("context_json"),
                 rs.getInt("context_version"),
                 rs.getLong("revision"),
+                rs.getString("failure_json"),
+                rs.getString("warnings_json"),
+                rs.getInt("attempt"),
+                rs.getLong("next_retry_at"),
                 rs.getLong("created_at"),
                 rs.getLong("updated_at"));
     }
 
     private void insertEvent(long taskId, PptState stage, String outcome, long startedAt, long finishedAt,
-            String errorMessage, long revisionAfter) {
+            String errorCode, String retryClass, long revisionAfter) {
         int attempt = jdbcClient.sql(SELECT_EVENT_ATTEMPT_SQL)
                 .param(taskId)
                 .param(stage.name())
@@ -316,8 +412,8 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 .param(outcome)
                 .param(null)
                 .param(null)
-                .param(errorMessage == null ? null : "PPT_STAGE_FAILED")
-                .param(null)
+                .param(errorCode)
+                .param(retryClass)
                 .param(null)
                 .param(null)
                 .param(null)

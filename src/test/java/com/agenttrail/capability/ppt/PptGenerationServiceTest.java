@@ -57,7 +57,8 @@ class PptGenerationServiceTest {
         assertThat(service.describe(taskId)).isPresent();
         assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
         assertThat(service.describe(taskId).orElseThrow().runStatus()).isEqualTo(PptRunStatus.SUCCEEDED);
-        assertThat(service.describe(taskId).orElseThrow().revision()).isEqualTo(9);
+        // 初次执行先 claim 一次，再为 9 个阶段各提交一次 checkpoint。
+        assertThat(service.describe(taskId).orElseThrow().revision()).isEqualTo(10);
         assertThat(service.describe(taskId).orElseThrow().errorMsg()).isNull();
         assertThat(service.runningTaskIdsFor("legacy")).isEmpty();
     }
@@ -89,6 +90,20 @@ class PptGenerationServiceTest {
         assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.CANCELLED);
         assertThat(log).containsExactly("INIT#1");
         assertThat(service.runningTaskIdsFor("user-1")).isEmpty();
+    }
+
+    @Test
+    void recoveryCoordinatorRequeuesPersistedQueuedTaskThroughTheNormalService() {
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        long taskId = taskStore.create("user-1", "conv-recovery",
+                PptGenerationContext.initial("conv-recovery", "做一份 PPT"));
+        PptGenerationService service = new PptGenerationService(taskStore,
+                allStates(new ArrayList<>()), new com.agenttrail.runtime.lifecycle.InMemoryLeaseManager(),
+                new PptRetryPolicy(2, java.time.Duration.ofMillis(1), java.time.Duration.ofMillis(1)));
+        PptRecoveryCoordinator recovery = new PptRecoveryCoordinator(taskStore, service, Runnable::run, 10, 0);
+
+        assertThat(recovery.recoverOnce()).isEqualTo(1);
+        assertThat(taskStore.findById(taskId).orElseThrow().runStatus()).isEqualTo(PptRunStatus.SUCCEEDED);
     }
 
     @Test

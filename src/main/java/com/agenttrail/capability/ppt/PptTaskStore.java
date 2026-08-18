@@ -17,6 +17,15 @@ public interface PptTaskStore {
 
     long create(String userId, String conversationId, PptGenerationContext initialContext);
 
+    /**
+     * 持久化创建幂等键与任务的绑定。JDBC 实现用唯一约束解决多实例竞态，内存实现只作为测试替身；
+     * 没有幂等键时退化为普通创建。
+     */
+    default PptTaskCreation createIdempotent(String userId, String conversationId,
+            PptGenerationContext initialContext, String scope, String idempotencyKey) {
+        return new PptTaskCreation(create(userId, conversationId, initialContext), false);
+    }
+
     Optional<PptTask> findById(long id);
 
     default Optional<PptTask> findById(String userId, long id) {
@@ -56,22 +65,41 @@ public interface PptTaskStore {
     boolean conditionalAdvance(long id, PptState expectedState, long expectedRevision,
             PptState newState, PptRunStatus newRunStatus, PptGenerationContext context);
 
+    /** 抢占一个待运行/重试/人工继续任务；成功会递增 revision 并追加 STARTED 事件。 */
+    boolean claim(long id, PptState expectedState, long expectedRevision);
+
     /** 兼容旧调用方的失败入口；失败仍停留在当前业务阶段，但生命周期进入 FAILED。 */
     default void markFailed(long id, PptState failedState, String errorMsg) {
         PptTask current = findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("PPT 任务不存在: " + id));
-        boolean updated = markFailedIfCurrent(id, current.status(), current.revision(), failedState, errorMsg);
+        PptFailure failure = new PptFailure("PPT_STAGE_FAILED", failedState, false,
+                com.agenttrail.platform.error.RetryClass.FATAL,
+                Math.max(current.attempt(), 1), errorMsg, System.currentTimeMillis());
+        boolean updated = recordFailureIfCurrent(id, current.status(), current.revision(), failure,
+                PptRunStatus.FAILED, 0);
         if (!updated) {
             throw new PptCheckpointConflictException(id, current.status(), current.revision());
         }
     }
 
-    /** 仅当任务仍处于 expected state/revision 时记录失败并追加失败事件。 */
-    boolean markFailedIfCurrent(long id, PptState expectedState, long expectedRevision,
-            PptState failedState, String errorMsg);
+    /** 仅当任务仍处于 expected state/revision 时记录结构化失败并追加失败事件。 */
+    boolean recordFailureIfCurrent(long id, PptState expectedState, long expectedRevision,
+            PptFailure failure, PptRunStatus nextRunStatus, long nextRetryAtMillis);
+
+    /** 旧 API 保留为兼容入口；新执行器应使用 {@link #recordFailureIfCurrent}。 */
+    default boolean markFailedIfCurrent(long id, PptState expectedState, long expectedRevision,
+            PptState failedState, String errorMsg) {
+        PptFailure failure = new PptFailure("PPT_STAGE_FAILED", failedState, false,
+                com.agenttrail.platform.error.RetryClass.FATAL, 1, errorMsg, System.currentTimeMillis());
+        return recordFailureIfCurrent(id, expectedState, expectedRevision, failure,
+                PptRunStatus.FAILED, 0);
+    }
 
     /** 返回任务的不可覆盖阶段事件，按写入顺序排列。 */
     List<PptCheckpointEvent> eventsForTask(long taskId);
+
+    /** 返回到期或租约异常后可由恢复扫描重新入队的任务，结果有界以避免启动洪峰。 */
+    List<Long> recoverableTaskIds(long nowMillis, int limit);
 
     /** 请求取消：只写标记，由状态机在下一个状态边界完成终态切换。 */
     void requestCancel(long id);

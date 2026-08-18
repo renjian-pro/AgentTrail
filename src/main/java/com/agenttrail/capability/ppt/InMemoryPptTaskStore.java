@@ -15,6 +15,7 @@ public class InMemoryPptTaskStore implements PptTaskStore {
     private final Map<Long, PptTask> tasks = new ConcurrentHashMap<>();
     private final Map<Long, List<PptCheckpointEvent>> events = new ConcurrentHashMap<>();
     private final Set<Long> cancelRequested = ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> idempotency = new ConcurrentHashMap<>();
     private final AtomicLong idSequence = new AtomicLong(1);
 
     @Override
@@ -22,9 +23,25 @@ public class InMemoryPptTaskStore implements PptTaskStore {
         long id = idSequence.getAndIncrement();
         long now = System.currentTimeMillis();
         tasks.put(id, new PptTask(id, userId, conversationId, PptState.INIT, PptRunStatus.QUEUED, null,
-                PptContextJson.toJson(initialContext), initialContext.contextVersion(), 0, now, now));
+                PptContextJson.toJson(initialContext), initialContext.contextVersion(), 0,
+                null, PptWarningsJson.toJson(initialContext.warnings()), 0, 0, now, now));
         events.put(id, new ArrayList<>());
         return id;
+    }
+
+    @Override
+    public PptTaskCreation createIdempotent(String userId, String conversationId,
+            PptGenerationContext initialContext, String scope, String idempotencyKey) {
+        if (scope == null || scope.isBlank() || idempotencyKey == null || idempotencyKey.isBlank()) {
+            return new PptTaskCreation(create(userId, conversationId, initialContext), false);
+        }
+        String binding = String.valueOf(userId) + "\u0000" + scope + "\u0000" + idempotencyKey;
+        AtomicBoolean created = new AtomicBoolean();
+        long id = idempotency.computeIfAbsent(binding, ignored -> {
+            created.set(true);
+            return create(userId, conversationId, initialContext);
+        });
+        return new PptTaskCreation(id, !created.get());
     }
 
     @Override
@@ -55,18 +72,45 @@ public class InMemoryPptTaskStore implements PptTaskStore {
             long now = System.currentTimeMillis();
             long nextRevision = existing.revision() + 1;
             appendEvent(existing, expectedState, PptCheckpointEvent.OUTCOME_SUCCEEDED,
-                    now, now, null, nextRevision);
+                    now, now, null, null, nextRevision);
             updated.set(true);
             return new PptTask(id, existing.userId(), existing.conversationId(), newState, newRunStatus, null,
                     PptContextJson.toJson(context), context.contextVersion(), nextRevision,
+                    null, PptWarningsJson.toJson(context.warnings()), existing.attempt(), 0,
                     existing.createdAtMillis(), now);
         });
         return updated.get();
     }
 
     @Override
-    public boolean markFailedIfCurrent(long id, PptState expectedState, long expectedRevision,
-            PptState failedState, String errorMsg) {
+    public boolean claim(long id, PptState expectedState, long expectedRevision) {
+        AtomicBoolean updated = new AtomicBoolean();
+        tasks.compute(id, (ignored, existing) -> {
+            if (existing == null) {
+                throw new IllegalArgumentException("PPT 任务不存在: " + id);
+            }
+            if (existing.status() != expectedState || existing.revision() != expectedRevision
+                    || existing.status() == PptState.SUCCESS || existing.status() == PptState.CANCELLED
+                    || existing.status() == PptState.AWAITING_INPUT) {
+                return existing;
+            }
+            long now = System.currentTimeMillis();
+            long nextRevision = existing.revision() + 1;
+            int nextAttempt = existing.attempt() + 1;
+            appendEvent(existing, expectedState, PptCheckpointEvent.OUTCOME_STARTED,
+                    now, 0, null, null, nextRevision);
+            updated.set(true);
+            return new PptTask(id, existing.userId(), existing.conversationId(), existing.status(),
+                    PptRunStatus.RUNNING, existing.errorMsg(), existing.contextJson(), existing.contextVersion(),
+                    nextRevision, existing.failureJson(), existing.warningsJson(), nextAttempt, 0,
+                    existing.createdAtMillis(), now);
+        });
+        return updated.get();
+    }
+
+    @Override
+    public boolean recordFailureIfCurrent(long id, PptState expectedState, long expectedRevision,
+            PptFailure failure, PptRunStatus nextRunStatus, long nextRetryAtMillis) {
         AtomicBoolean updated = new AtomicBoolean();
         tasks.compute(id, (ignored, existing) -> {
             if (existing == null) {
@@ -77,11 +121,12 @@ public class InMemoryPptTaskStore implements PptTaskStore {
             }
             long now = System.currentTimeMillis();
             long nextRevision = existing.revision() + 1;
-            appendEvent(existing, failedState, PptCheckpointEvent.OUTCOME_FAILED,
-                    now, now, errorMsg, nextRevision);
+            appendEvent(existing, failure.failedStage(), PptCheckpointEvent.OUTCOME_FAILED,
+                    now, now, failure.code(), failure.retryClass().name(), nextRevision);
             updated.set(true);
-            return new PptTask(id, existing.userId(), existing.conversationId(), failedState, PptRunStatus.FAILED,
-                    errorMsg, existing.contextJson(), existing.contextVersion(), nextRevision,
+            return new PptTask(id, existing.userId(), existing.conversationId(), failure.failedStage(), nextRunStatus,
+                    failure.userMessage(), existing.contextJson(), existing.contextVersion(), nextRevision,
+                    PptFailureJson.toJson(failure), existing.warningsJson(), existing.attempt(), nextRetryAtMillis,
                     existing.createdAtMillis(), now);
         });
         return updated.get();
@@ -114,7 +159,8 @@ public class InMemoryPptTaskStore implements PptTaskStore {
             cancelRequested.add(id);
             return new PptTask(id, existing.userId(), existing.conversationId(), existing.status(),
                     PptRunStatus.CANCEL_REQUESTED, existing.errorMsg(), existing.contextJson(),
-                    existing.contextVersion(), existing.revision() + 1,
+                    existing.contextVersion(), existing.revision() + 1, existing.failureJson(), existing.warningsJson(),
+                    existing.attempt(), existing.nextRetryAtMillis(),
                     existing.createdAtMillis(), System.currentTimeMillis());
         });
     }
@@ -131,10 +177,11 @@ public class InMemoryPptTaskStore implements PptTaskStore {
             long now = System.currentTimeMillis();
             long nextRevision = existing.revision() + 1;
             appendEvent(existing, atState, PptCheckpointEvent.OUTCOME_CANCELLED,
-                    now, now, null, nextRevision);
+                    now, now, null, null, nextRevision);
             return new PptTask(id, existing.userId(), existing.conversationId(), PptState.CANCELLED,
                     PptRunStatus.CANCELLED, null, existing.contextJson(), existing.contextVersion(),
-                    nextRevision, existing.createdAtMillis(), now);
+                    nextRevision, existing.failureJson(), existing.warningsJson(), existing.attempt(), 0,
+                    existing.createdAtMillis(), now);
         });
         cancelRequested.remove(id);
     }
@@ -160,13 +207,34 @@ public class InMemoryPptTaskStore implements PptTaskStore {
                 .toList();
     }
 
+    @Override
+    public List<Long> recoverableTaskIds(long nowMillis, int limit) {
+        if (limit <= 0) {
+            return List.of();
+        }
+        return tasks.values().stream()
+                .filter(task -> task.runStatus() == PptRunStatus.QUEUED
+                        || task.runStatus() == PptRunStatus.RUNNING
+                        || (task.runStatus() == PptRunStatus.RETRY_WAIT
+                        && task.nextRetryAtMillis() <= nowMillis))
+                .sorted(java.util.Comparator.comparingLong(PptTask::updatedAtMillis))
+                .limit(limit)
+                .map(PptTask::id)
+                .toList();
+    }
+
     private void appendEvent(PptTask task, PptState stage, String outcome, long startedAt, long finishedAt,
-            String errorMessage, long revisionAfter) {
+            String errorCode, String retryClass, long revisionAfter) {
         List<PptCheckpointEvent> taskEvents = events.computeIfAbsent(task.id(), ignored -> new ArrayList<>());
         synchronized (taskEvents) {
-            int attempt = (int) taskEvents.stream().filter(event -> event.stage() == stage).count() + 1;
+            int startedAttempts = (int) taskEvents.stream()
+                    .filter(event -> event.stage() == stage
+                            && PptCheckpointEvent.OUTCOME_STARTED.equals(event.outcome()))
+                    .count();
+            int attempt = Math.max(1, startedAttempts
+                    + (PptCheckpointEvent.OUTCOME_STARTED.equals(outcome) ? 1 : 0));
             taskEvents.add(new PptCheckpointEvent(task.id(), stage, attempt, startedAt, finishedAt, outcome,
-                    null, null, errorMessage == null ? null : "PPT_STAGE_FAILED", null, null, null, null,
+                    null, null, errorCode, retryClass, null, null, null,
                     task.revision(), revisionAfter));
         }
     }

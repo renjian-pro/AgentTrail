@@ -1,5 +1,7 @@
 package com.agenttrail.capability.ppt.image;
 
+import com.agenttrail.capability.ppt.PptCancellationToken;
+
 /**
  * 图片下载 + 转存 MinIO 的最小抽象（issue #31）——"拿到第三方临时 URL，返回自建 MinIO 上的永久
  * URL"这一个方法，具体走真实 MinIO SDK（{@link MinioPptImageStore}）还是别的对象存储，对上层
@@ -19,4 +21,13 @@ public interface PptImageStore {
      * @return 自建 MinIO 上的永久可访问 URL
      */
     String downloadAndStore(String temporaryImageUrl, String objectKeyPrefix);
+
+    /** 默认适配旧对象存储；实现可覆盖并中断长时间的 HTTP 下载。 */
+    default String downloadAndStore(String temporaryImageUrl, String objectKeyPrefix,
+            PptCancellationToken cancellationToken) {
+        cancellationToken.throwIfCancellationRequested();
+        String result = downloadAndStore(temporaryImageUrl, objectKeyPrefix);
+        cancellationToken.throwIfCancellationRequested();
+        return result;
+    }
 }

@@ -9,4 +9,9 @@ public final class ProcessBuilderRenderPort implements RenderPort {
     @Override public void render(Path template, Path schemaFile, Path outputFile) {
         renderer.render(template.toString(), schemaFile, outputFile);
     }
+
+    @Override
+    public void render(Path template, Path schemaFile, Path outputFile, PptCancellationToken cancellationToken) {
+        renderer.render(template.toString(), schemaFile, outputFile, cancellationToken);
+    }
 }

@@ -16,4 +16,15 @@ public interface PptGenerationStrategy {
     PptState handledState();
 
     PptGenerationContext execute(PptGenerationContext context);
+
+    /**
+     * 默认适配旧 Strategy；需要中断 HTTP/Future/子进程的阶段可覆盖这个入口并传播 token。
+     * 编排器统一调用该重载，避免每个阶段自行判断数据库取消标记。
+     */
+    default PptGenerationContext execute(PptGenerationContext context, PptCancellationToken cancellationToken) {
+        cancellationToken.throwIfCancellationRequested();
+        PptGenerationContext result = execute(context);
+        cancellationToken.throwIfCancellationRequested();
+        return result;
+    }
 }

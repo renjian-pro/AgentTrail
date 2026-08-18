@@ -26,7 +26,7 @@ import java.time.Duration;
  * 只在 {@code strategy.execute(context)} 正常返回之后才调用——也就是说，只有当前状态该做的
  * 全部副作用（无论是一次 LLM 调用还是一次 Python 子进程渲染）都已经真正跑完，才会把 checkpoint
  * 推进到下一个状态；执行过程中抛出的任何异常都不会导致状态被提前推进，{@code current} 原地不动，
- * 只有 {@code errorMsg} 被记录下来。
+ * 失败会按稳定错误码、重试分类和 attempt 写入结构化元数据，旧客户端仍可读取 {@code errorMsg}。
  *
  * <p>{@link #run(long)} 既是"第一次跑完整个流程"的执行体（{@link #create} 内部调用它），
  * 也是"进程重启/上一次失败后重试"的恢复入口——两者是同一段代码，不是分开维护的两套逻辑：
@@ -45,8 +45,9 @@ public class PptGenerationService {
     private final PptTaskStore taskStore;
     private final Map<PptState, PptGenerationStrategy> strategiesByState;
     private final LeaseManager leaseManager;
+    private final PptRetryPolicy retryPolicy;
+    private final PptCancellationRegistry cancellationRegistry;
     private static final Duration RUN_LEASE_TTL = Duration.ofMinutes(10);
-    private final Map<String, Long> idempotencyKeys = new ConcurrentHashMap<>();
     private final java.util.Set<Long> idempotencyReplays = ConcurrentHashMap.newKeySet();
 
     public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies) {
@@ -55,8 +56,20 @@ public class PptGenerationService {
 
     public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies,
             LeaseManager leaseManager) {
+        this(taskStore, strategies, leaseManager, PptRetryPolicy.defaults());
+    }
+
+    public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies,
+            LeaseManager leaseManager, PptRetryPolicy retryPolicy) {
+        this(taskStore, strategies, leaseManager, retryPolicy, new PptCancellationRegistry());
+    }
+
+    public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies,
+            LeaseManager leaseManager, PptRetryPolicy retryPolicy, PptCancellationRegistry cancellationRegistry) {
         this.taskStore = taskStore;
         this.leaseManager = leaseManager;
+        this.retryPolicy = retryPolicy;
+        this.cancellationRegistry = cancellationRegistry;
         this.strategiesByState = strategies.stream()
                 .collect(Collectors.toMap(PptGenerationStrategy::handledState, strategy -> strategy));
         for (PptState state : ORDER) {
@@ -99,30 +112,24 @@ public class PptGenerationService {
     }
 
     public long prepare(String userId, String conversationId, String userMessage, String idempotencyKey) {
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            String scopedKey = String.valueOf(userId) + ":" + idempotencyKey;
-            Long existing = idempotencyKeys.get(scopedKey);
-            if (existing != null) {
-                idempotencyReplays.add(existing);
-                return existing;
-            }
-            long created = prepareByIntent(userId, conversationId, userMessage);
-            Long winner = idempotencyKeys.putIfAbsent(scopedKey, created);
-            if (winner != null) {
-                idempotencyReplays.add(winner);
-                return winner;
-            }
-            return created;
+        PptIntent intent = PptIntentRecognizer.recognize(userMessage);
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return prepareByIntent(userId, conversationId, userMessage, intent, null);
         }
-        return prepareByIntent(userId, conversationId, userMessage);
+        return prepareByIntent(userId, conversationId, userMessage, intent, idempotencyKey);
     }
 
     private long prepareByIntent(String userId, String conversationId, String userMessage) {
         PptIntent intent = PptIntentRecognizer.recognize(userMessage);
+        return prepareByIntent(userId, conversationId, userMessage, intent, null);
+    }
+
+    private long prepareByIntent(String userId, String conversationId, String userMessage,
+            PptIntent intent, String idempotencyKey) {
         return switch (intent) {
-            case CREATE -> prepareNew(userId, conversationId, userMessage);
+            case CREATE -> prepareNew(userId, conversationId, userMessage, idempotencyKey);
             case RESUME -> prepareResume(userId, conversationId);
-            case MODIFY -> prepareModify(userId, conversationId, userMessage);
+            case MODIFY -> prepareModify(userId, conversationId, userMessage, idempotencyKey);
         };
     }
 
@@ -130,9 +137,14 @@ public class PptGenerationService {
         return idempotencyReplays.remove(taskId);
     }
 
-    private long prepareNew(String userId, String conversationId, String userMessage) {
+    private long prepareNew(String userId, String conversationId, String userMessage, String idempotencyKey) {
         PptGenerationContext initialContext = PptGenerationContext.initial(conversationId, userMessage);
-        return taskStore.create(userId, conversationId, initialContext);
+        PptTaskCreation creation = taskStore.createIdempotent(userId, conversationId, initialContext,
+                "CREATE", idempotencyKey);
+        if (creation.replay()) {
+            idempotencyReplays.add(creation.taskId());
+        }
+        return creation.taskId();
     }
 
     /**
@@ -149,6 +161,10 @@ public class PptGenerationService {
             throw new IllegalStateException(
                     "会话 " + conversationId + " 最近一条 PPT 任务（id=" + existing.id() + "）已经完成，没有可继续的中断状态");
         }
+        if (existing.status() == PptState.CANCELLED) {
+            throw new IllegalStateException(
+                    "会话 " + conversationId + " 最近一条 PPT 任务（id=" + existing.id() + "）已经取消，没有可继续的中断状态");
+        }
         return existing.id();
     }
 
@@ -161,7 +177,7 @@ public class PptGenerationService {
      * 每次 MODIFY 都新建一条任务，原始任务和历史修改记录都完整保留在 {@code ppt_generation_task}
      * 表里，不是原地覆盖。
      */
-    private long prepareModify(String userId, String conversationId, String userMessage) {
+    private long prepareModify(String userId, String conversationId, String userMessage, String idempotencyKey) {
         PptTask existing = taskStore.findLatestByConversationId(userId, conversationId)
                 .filter(task -> task.status() == PptState.SUCCESS)
                 .orElseThrow(() -> new IllegalStateException(
@@ -169,9 +185,16 @@ public class PptGenerationService {
         PptGenerationContext previous = PptContextJson.fromJson(existing.contextJson());
         PptGenerationContext modifyContext = new PptGenerationContext(conversationId, userMessage,
                 previous.requirement(), previous.searchMaterials(), previous.templatePath(), previous.outline(),
-                previous.schema(), previous.outputPath());
+                previous.schema(), previous.outputPath(), null, PptGenerationContext.CURRENT_CONTEXT_VERSION,
+                previous.warnings());
 
-        long newTaskId = taskStore.create(userId, conversationId, modifyContext);
+        PptTaskCreation creation = taskStore.createIdempotent(userId, conversationId, modifyContext,
+                "MODIFY", idempotencyKey);
+        long newTaskId = creation.taskId();
+        if (creation.replay()) {
+            idempotencyReplays.add(newTaskId);
+            return newTaskId;
+        }
         // 新任务默认从 INIT 起步（taskStore.create 的固定行为），这里立即把 checkpoint 快进到
         // SCHEMA——INIT/REQUIREMENT/SEARCH/TEMPLATE/OUTLINE 都不需要真的执行一遍，这一行本身就是
         // "定位到已有记录、在其基础上改，不重新走完整流程"这条验收标准的具体落地。
@@ -194,13 +217,26 @@ public class PptGenerationService {
         PptGenerationContext context = PptContextJson.fromJson(task.contextJson());
         PptState current = task.status();
         long revision = task.revision();
+        PptCancellationToken cancellationToken = cancellationRegistry.tokenFor(taskId);
         try {
+            if (task.runStatus() == PptRunStatus.CANCEL_REQUESTED || taskStore.isCancelRequested(taskId)) {
+                taskStore.markCancelled(taskId, current);
+                return;
+            }
+            if (current == PptState.SUCCESS || current == PptState.CANCELLED || current == PptState.AWAITING_INPUT) {
+                return;
+            }
+            if (!taskStore.claim(taskId, current, revision)) {
+                return;
+            }
+            revision++;
             while (current != PptState.SUCCESS && current != PptState.CANCELLED
                     && current != PptState.AWAITING_INPUT) {
                 if (!leaseManager.renew(leaseKey, RUN_LEASE_TTL)) {
                     throw new PptGenerationException("PPT 任务执行租约已丢失: " + taskId);
                 }
                 if (taskStore.isCancelRequested(taskId)) {
+                    cancellationRegistry.cancel(taskId);
                     taskStore.markCancelled(taskId, current);
                     return;
                 }
@@ -209,16 +245,38 @@ public class PptGenerationService {
                     throw new IllegalStateException("没有登记状态 " + current + " 对应的 Strategy 实现");
                 }
                 try {
-                    context = strategy.execute(context);
+                    context = strategy.execute(context, cancellationToken);
+                } catch (PptCancellationException cancelled) {
+                    taskStore.markCancelled(taskId, current);
+                    return;
                 } catch (Exception executionFailed) {
-                    String errorMsg = describeFailure(executionFailed);
-                    log.error("PPT 任务 {} 在状态 {} 失败: {}", taskId, current, errorMsg, executionFailed);
-                    if (!taskStore.markFailedIfCurrent(taskId, current, revision, current, errorMsg)) {
+                    String diagnostic = describeFailure(executionFailed);
+                    log.error("PPT 任务 {} 在状态 {} 失败: {}", taskId, current, diagnostic, executionFailed);
+                    com.agenttrail.platform.error.RetryClass retryClass = PptFailureClassifier.classify(executionFailed);
+                    if (retryClass == com.agenttrail.platform.error.RetryClass.NONE) {
+                        retryClass = com.agenttrail.platform.error.RetryClass.FATAL;
+                    }
+                    String errorMsg = userFailureMessage(current, stableFailureCode(executionFailed));
+                    int attempt = Math.max(taskStore.findById(taskId).map(PptTask::attempt).orElse(1), 1);
+                    PptFailure failure = new PptFailure(stableFailureCode(executionFailed), current,
+                            retryClass == com.agenttrail.platform.error.RetryClass.RETRIABLE
+                                    || retryClass == com.agenttrail.platform.error.RetryClass.RATE_LIMITED,
+                            retryClass, attempt, errorMsg, System.currentTimeMillis());
+                    boolean retry = failure.retryable() && retryPolicy.canRetry(attempt);
+                    PptRunStatus failureStatus = retry ? PptRunStatus.RETRY_WAIT : PptRunStatus.FAILED;
+                    long nextRetryAt = retry
+                            ? System.currentTimeMillis() + retryPolicy.delayMillisForNextAttempt(attempt) : 0;
+                    if (!taskStore.recordFailureIfCurrent(taskId, current, revision, failure,
+                            failureStatus, nextRetryAt)) {
                         throw new PptCheckpointConflictException(taskId, current, revision);
                     }
                     throw new PptGenerationException("PPT 生成在状态 " + current + " 失败: " + errorMsg, executionFailed);
                 }
+                if (!leaseManager.renew(leaseKey, RUN_LEASE_TTL)) {
+                    throw new PptLeaseLostException(taskId);
+                }
                 if (taskStore.isCancelRequested(taskId)) {
+                    cancellationRegistry.cancel(taskId);
                     taskStore.markCancelled(taskId, current);
                     return;
                 }
@@ -243,6 +301,7 @@ public class PptGenerationService {
             }
         } finally {
             leaseManager.release(leaseKey);
+            cancellationRegistry.remove(taskId);
         }
     }
 
@@ -303,6 +362,7 @@ public class PptGenerationService {
     /** 请求在下一个状态边界停止；实际终态由 {@link #run(long)} 写入。 */
     public void requestCancel(long taskId) {
         taskStore.requestCancel(taskId);
+        cancellationRegistry.cancel(taskId);
     }
 
     /** Persist a user-visible failure when the asynchronous executor rejected a submission. */
@@ -358,5 +418,30 @@ public class PptGenerationService {
     private static String describeFailure(Exception e) {
         String message = e.getMessage();
         return (message == null || message.isBlank()) ? e.getClass().getSimpleName() : message;
+    }
+
+    /** 任务表只保存稳定、有限长度的用户提示；原始异常仅留在服务端日志。 */
+    private static String userFailureMessage(PptState state, String code) {
+        return switch (code) {
+            case "PPT_TIMEOUT" -> "PPT 生成超时，请稍后重试";
+            case "PPT_SCHEMA_INVALID" -> "PPT 结构生成失败，请检查需求后重试";
+            case "PPT_TEMPLATE_INVALID" -> "PPT 模板不可用，请更换模板后重试";
+            case "PPT_RATE_LIMITED" -> "服务繁忙，请稍后重试";
+            default -> "PPT 在 " + state + " 阶段执行失败，请稍后重试";
+        };
+    }
+
+    /** 稳定错误码只由异常类型/受控关键字生成，不把供应商响应或本机路径返回给前端。 */
+    private static String stableFailureCode(Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase();
+            if (message.contains("timeout") || message.contains("timed out")) return "PPT_TIMEOUT";
+            if (message.contains("schema") || message.contains("json")) return "PPT_SCHEMA_INVALID";
+            if (message.contains("template")) return "PPT_TEMPLATE_INVALID";
+            if (message.contains("rate limit") || message.contains("429")) return "PPT_RATE_LIMITED";
+            current = current.getCause();
+        }
+        return "PPT_STAGE_FAILED";
     }
 }

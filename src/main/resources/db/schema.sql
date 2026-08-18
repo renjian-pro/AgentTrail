@@ -254,6 +254,10 @@ CREATE TABLE IF NOT EXISTS ppt_generation_task
     cancel_requested BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '用户请求取消，状态机在下一个状态边界转为 CANCELLED',
     context_version INT          NOT NULL DEFAULT 1 COMMENT '上下文快照版本，用于迁移与兼容读取',
     revision        BIGINT       NOT NULL DEFAULT 0 COMMENT '单调递增 checkpoint 版本，防止迟到 worker 覆盖新快照',
+    failure_json    LONGTEXT     NULL COMMENT '脱敏结构化失败对象 JSON，兼容 error_msg 文本',
+    warnings_json   LONGTEXT     NULL COMMENT '成功但降级时的 warning 列表 JSON',
+    attempt         INT          NOT NULL DEFAULT 0 COMMENT '当前 pipelineState 的执行次数',
+    next_retry_at   BIGINT       NOT NULL DEFAULT 0 COMMENT 'RETRY_WAIT 最早可重试时刻（epoch millis）',
     context_json    LONGTEXT     NOT NULL COMMENT 'PptGenerationContext 完整快照 JSON，恢复时从这里重建上下文',
     created_at      BIGINT       NOT NULL COMMENT '创建时刻（epoch millis）',
     updated_at      BIGINT       NOT NULL COMMENT '最近一次状态推进/失败记录的时刻（epoch millis）',
@@ -314,6 +318,42 @@ PREPARE add_ppt_revision FROM @ddl;
 EXECUTE add_ppt_revision;
 DEALLOCATE PREPARE add_ppt_revision;
 
+SET @ddl := IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'ppt_generation_task' AND COLUMN_NAME = 'failure_json') = 0,
+    'ALTER TABLE ppt_generation_task ADD COLUMN failure_json LONGTEXT NULL COMMENT ''脱敏结构化失败对象 JSON，兼容 error_msg 文本'' AFTER revision',
+    'DO 0');
+PREPARE add_ppt_failure_json FROM @ddl;
+EXECUTE add_ppt_failure_json;
+DEALLOCATE PREPARE add_ppt_failure_json;
+
+SET @ddl := IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'ppt_generation_task' AND COLUMN_NAME = 'warnings_json') = 0,
+    'ALTER TABLE ppt_generation_task ADD COLUMN warnings_json LONGTEXT NULL COMMENT ''成功但降级时的 warning 列表 JSON'' AFTER failure_json',
+    'DO 0');
+PREPARE add_ppt_warnings_json FROM @ddl;
+EXECUTE add_ppt_warnings_json;
+DEALLOCATE PREPARE add_ppt_warnings_json;
+
+SET @ddl := IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'ppt_generation_task' AND COLUMN_NAME = 'attempt') = 0,
+    'ALTER TABLE ppt_generation_task ADD COLUMN attempt INT NOT NULL DEFAULT 0 COMMENT ''当前 pipelineState 的执行次数'' AFTER warnings_json',
+    'DO 0');
+PREPARE add_ppt_attempt FROM @ddl;
+EXECUTE add_ppt_attempt;
+DEALLOCATE PREPARE add_ppt_attempt;
+
+SET @ddl := IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'ppt_generation_task' AND COLUMN_NAME = 'next_retry_at') = 0,
+    'ALTER TABLE ppt_generation_task ADD COLUMN next_retry_at BIGINT NOT NULL DEFAULT 0 COMMENT ''RETRY_WAIT 最早可重试时刻（epoch millis）'' AFTER attempt',
+    'DO 0');
+PREPARE add_ppt_next_retry_at FROM @ddl;
+EXECUTE add_ppt_next_retry_at;
+DEALLOCATE PREPARE add_ppt_next_retry_at;
+
 -- 将旧版本任务的业务 status 映射到新增的运行生命周期字段。revision=0
 -- 只覆盖尚未经过新 checkpoint 逻辑推进的历史行，避免重写新版本任务。
 UPDATE ppt_generation_task
@@ -350,6 +390,21 @@ CREATE TABLE IF NOT EXISTS ppt_generation_stage_event
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT 'PPT 生成阶段执行审计事件';
+
+CREATE TABLE IF NOT EXISTS ppt_generation_idempotency
+(
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '幂等绑定主键',
+    user_id         VARCHAR(100) NOT NULL COMMENT '用户作用域，匿名请求使用 legacy',
+    scope           VARCHAR(32)  NOT NULL COMMENT 'CREATE/MODIFY/RESUME 等作用域',
+    idempotency_key VARCHAR(255) NOT NULL COMMENT '客户端生成的稳定幂等键',
+    task_id         BIGINT       NOT NULL COMMENT '幂等键对应的 PPT 任务',
+    created_at      BIGINT       NOT NULL COMMENT '绑定创建时刻（epoch millis）',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_ppt_idempotency (user_id, scope, idempotency_key),
+    KEY idx_ppt_idempotency_task (task_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT 'PPT 创建/修改/恢复请求幂等绑定';
 
 -- 深度研究任务的元信息（issue #108 / R20）。
 --

@@ -1,5 +1,7 @@
 package com.agenttrail.capability.ppt.image;
 
+import com.agenttrail.capability.ppt.PptCancellationException;
+import com.agenttrail.capability.ppt.PptCancellationToken;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -10,6 +12,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.List;
 import java.util.Map;
 
@@ -47,6 +53,11 @@ public class DashScopeImageClient implements TextToImageClient {
 
     @Override
     public String generateImageUrl(String prompt) {
+        return generateImageUrl(prompt, PptCancellationToken.never());
+    }
+
+    @Override
+    public String generateImageUrl(String prompt, PptCancellationToken cancellationToken) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new PptImageException("spring.ai.openai.api-key 未配置，无法调用文生图 API");
         }
@@ -57,14 +68,28 @@ public class DashScopeImageClient implements TextToImageClient {
                 .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(prompt), StandardCharsets.UTF_8))
                 .build();
 
+        CompletableFuture<HttpResponse<String>> future = httpClient.sendAsync(
+                request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         HttpResponse<String> response;
         try {
-            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        } catch (IOException callFailed) {
-            throw new PptImageException("调用 DashScope 文生图 API 失败: " + endpoint, callFailed);
+            while (true) {
+                cancellationToken.throwIfCancellationRequested();
+                try {
+                    response = future.get(100, TimeUnit.MILLISECONDS);
+                    break;
+                } catch (TimeoutException keepWaiting) {
+                    // 每 100ms 检查一次取消令牌，避免长 HTTP 调用阻塞取消边界。
+                }
+            }
+        } catch (PptCancellationException cancelled) {
+            future.cancel(true);
+            throw cancelled;
         } catch (InterruptedException interrupted) {
+            future.cancel(true);
             Thread.currentThread().interrupt();
             throw new PptImageException("调用 DashScope 文生图 API 被中断: " + endpoint, interrupted);
+        } catch (ExecutionException callFailed) {
+            throw new PptImageException("调用 DashScope 文生图 API 失败: " + endpoint, callFailed.getCause());
         }
         if (response.statusCode() != 200) {
             throw new PptImageException(

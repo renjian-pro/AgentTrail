@@ -1,5 +1,7 @@
 package com.agenttrail.capability.ppt.image;
 
+import com.agenttrail.capability.ppt.PptCancellationToken;
+
 /**
  * 文生图 API 的最小抽象（issue #31）——只有"给一句话 prompt，拿到一个第三方临时图片 URL"这一个
  * 方法，具体走 DashScope（{@link DashScopeImageClient}）还是别的供应商，对上层
@@ -12,4 +14,12 @@ package com.agenttrail.capability.ppt.image;
 public interface TextToImageClient {
 
     String generateImageUrl(String prompt);
+
+    /** 默认适配旧客户端；HTTP 客户端可覆盖并取消底层 Future。 */
+    default String generateImageUrl(String prompt, PptCancellationToken cancellationToken) {
+        cancellationToken.throwIfCancellationRequested();
+        String result = generateImageUrl(prompt);
+        cancellationToken.throwIfCancellationRequested();
+        return result;
+    }
 }

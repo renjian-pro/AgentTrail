@@ -11,6 +11,7 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
 import javax.sql.DataSource;
 import java.util.List;
+import com.agenttrail.platform.error.RetryClass;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,6 +32,7 @@ class JdbcPptTaskStoreIT {
 
     @BeforeEach
     void resetTable() {
+        JdbcClient.create(dataSource).sql("TRUNCATE TABLE ppt_generation_idempotency").update();
         JdbcClient.create(dataSource).sql("TRUNCATE TABLE ppt_generation_stage_event").update();
         JdbcClient.create(dataSource).sql("TRUNCATE TABLE ppt_generation_task").update();
         store = new JdbcPptTaskStore(dataSource);
@@ -70,6 +72,37 @@ class JdbcPptTaskStoreIT {
             assertThat(event.revisionBefore()).isZero();
             assertThat(event.revisionAfter()).isEqualTo(1);
         });
+    }
+
+    @Test
+    void idempotentCreationUsesTheDatabaseUniqueBinding() {
+        PptGenerationContext context = PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT");
+
+        PptTaskCreation first = store.createIdempotent("user-1", "conv-1", context, "CREATE", "key-1");
+        PptTaskCreation replay = store.createIdempotent("user-1", "conv-1", context, "CREATE", "key-1");
+
+        assertThat(first.replay()).isFalse();
+        assertThat(replay.replay()).isTrue();
+        assertThat(replay.taskId()).isEqualTo(first.taskId());
+    }
+
+    @Test
+    void claimAndRetryFailurePersistAttemptAndNextRetryTime() {
+        long id = store.create("user-1", "conv-1", PptGenerationContext.initial("conv-1", "问题"));
+        assertThat(store.claim(id, PptState.INIT, 0)).isTrue();
+        PptFailure failure = new PptFailure("PPT_TIMEOUT", PptState.INIT, true,
+                RetryClass.RETRIABLE, 1, "请求超时，请稍后重试", System.currentTimeMillis());
+        long retryAt = System.currentTimeMillis() + 60_000;
+
+        assertThat(store.recordFailureIfCurrent(id, PptState.INIT, 1, failure,
+                PptRunStatus.RETRY_WAIT, retryAt)).isTrue();
+        PptTask task = store.findById(id).orElseThrow();
+        assertThat(task.runStatus()).isEqualTo(PptRunStatus.RETRY_WAIT);
+        assertThat(task.attempt()).isEqualTo(1);
+        assertThat(task.nextRetryAtMillis()).isEqualTo(retryAt);
+        assertThat(PptFailureJson.fromJson(task.failureJson()).code()).isEqualTo("PPT_TIMEOUT");
+        assertThat(store.recoverableTaskIds(System.currentTimeMillis(), 10)).isEmpty();
+        assertThat(store.recoverableTaskIds(retryAt, 10)).containsExactly(id);
     }
 
     @Test

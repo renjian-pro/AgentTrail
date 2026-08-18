@@ -4,5 +4,7 @@ public enum RetryClass {
     NONE,
     RETRIABLE,
     RATE_LIMITED,
-    FATAL
+    FATAL,
+    DEGRADED,
+    CANCELLED
 }
