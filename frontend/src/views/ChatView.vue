@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import AgentHeader from '../components/AgentHeader.vue'
 import AttachedFileList from '../components/AttachedFileList.vue'
 import ChartToolCard from '../components/ChartToolCard.vue'
 import CollapsibleChip from '../components/CollapsibleChip.vue'
@@ -22,7 +21,8 @@ import { renderMarkdown } from '../utils/renderMarkdown'
 import { chartImageUrl } from '../utils/chartResult'
 import { resolveDroppedFile } from '../utils/fileDrop'
 import { looksLikeDataQuestion } from '../utils/dataQuestionHint'
-import { useChatStore, type AgentKind, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
+import { AGENT_KIND_LABELS, AGENT_KIND_MARKS, useChatStore,
+  type AgentKind, type ChatTurn, type PptEntry, type ResearchEntry } from '../stores/chat'
 
 /**
  * 交互一层、协议两类（见 `docs/requirements.md` §7.2）。
@@ -39,10 +39,18 @@ import { useChatStore, type AgentKind, type ChatTurn, type PptEntry, type Resear
  * 协议不统一是刻意的：SSE 单次流承载不了"刷新页面还能看进度""断点续跑""产物下载"，PPT 已有的
  * checkpoint 机制不能为了入口统一而丢掉。这层映射就是下面这个 `send` 里的两行 if，不引入调度层。
  *
- * <p><b>为什么四个能力现在同一排</b>：它们此前被拆成两处——身份在头部、任务是输入框上方的动作
- * 按钮（issue #93），理由是"作用域不同的东西不能共用一种交互"。但那个作用域差异（换执行器 vs
- * 异步任务）是后端事实，用户认知里"我要做什么"只有一个维度。差异下沉到 `send` 的分派，界面回到
- * 一排互斥模式。两组外观相同的按钮的问题同时消失了——现在只剩头部一组。
+ * <p><b>为什么模式和文件/联网搜索同一排</b>：它们此前被拆成两处——模式在页面顶部的
+ * AgentHeader 里，文件/联网搜索在输入框上方（issue #93 更早还有一版是"身份在头部、任务在
+ * 输入框上方"）。那个分法的依据（换执行器 vs 异步任务）是后端事实，用户认知里"这条消息怎么发"
+ * 只有一个维度，差异已经下沉到 `send` 的分派。现在整排都贴着输入框——用户的视线本来就在那里，
+ * 而顶部那一行离要打字的地方最远、却挂着最需要在发送前确认的东西。AgentHeader 随之删除。
+ *
+ * <p><b>选中态即常驻标识</b>：不额外写"本次会话：XX"，chip 的高亮已经说清楚了。这一点是从
+ * AgentHeader 继承来的、不能丢的性质——最早的实现只在切换时提示一行"下一条消息将使用 XX"，
+ * 提示消失之后用户就不知道自己在哪个模式下了，叠加"发完静默复位"就是"用户以为在数据分析、
+ * 模型却在编数据"那条静默失败链路（issue #92）。模式一直保持到用户显式切换，且**不锁定**：
+ * 会话跑起来之后照样能改（跨轮历史只回放 question/answer，从不带 tool_calls，
+ * 见 `JdbcSessionStore.loadHistory` 与 requirements.md §7.3）。
  */
 
 const chat = useChatStore()
@@ -120,9 +128,26 @@ const BAR_NOTES: Partial<Record<AgentKind, string>> = {
 }
 const barNote = computed(() => BAR_NOTES[agentKind.value] ?? '')
 
+/**
+ * 栏里排出来的模式，**不含 `chat`**：普通对话是"一个都没选"的默认态，不是第四种能力。
+ * 给它单独立一颗按钮，用户会当成一种和数据分析并列的能力去点；而"回到普通对话"这件事，
+ * 再点一次已选中的 chip 就做到了（见 `pickMode`），不需要第二个入口。
+ *
+ * <p>顺序：数据分析打头——这是当前要突出的主业务；其余按"换执行器 → 异步任务"排。
+ * 写成显式数组而不是 `Object.keys(LABELS).filter(...)`：这里的顺序是产品决定，
+ * 不该跟着 store 里那张表的键序漂。少一个模式编译器不会报错，但下面 `send` 的分派
+ * 覆盖了全部四个，漏排一个只是不给入口，不会走到没人处理的分支。
+ */
+const MODE_KINDS: AgentKind[] = ['analytics', 'research', 'ppt']
+
 function changeAgent(kind: AgentKind) {
   chat.setAgentKind(kind)
   if (kind !== 'chat') webSearch.value = false
+}
+
+/** 再点一次当前模式＝取消选择，落回普通对话——普通对话没有自己的按钮，这是它唯一的入口。 */
+function pickMode(kind: AgentKind) {
+  changeAgent(kind === agentKind.value ? 'chat' : kind)
 }
 
 /**
@@ -333,9 +358,6 @@ async function removeFile(fileId: number) {
 
 <template>
   <div class="chat-view" :class="{ 'is-empty': !messages.length }">
-    <!-- 不再需要 `:key="navigationSeq"` 强制重建：那是为了让「换一个」展开的解释不跨会话
-         活下来，而锁定语义连同那段解释一起删掉之后，这个组件已经没有自己的内部状态了。 -->
-    <AgentHeader :agent-kind="agentKind" @change="changeAgent" />
     <div v-if="!messages.length" class="welcome">
       <span class="welcome-mark">✦</span>
       <h1>AgentTrail，我帮你</h1>
@@ -369,16 +391,23 @@ async function removeFile(fileId: number) {
         @dragover.prevent="composerDragging = true" @dragleave="composerDragging = false" @drop.prevent="onComposerDrop">
       <AttachedFileList :files="files" :busy="uploadBusy" :error="uploadError" @remove="removeFile" />
       <!--
-        这一排现在只剩"叠加/附加"这一类东西：文件、联网搜索。能力模式全部回到头部那一排，
-        屏幕上不再有两组外观相同、作用域不同的按钮——那正是 issue #93 当初要解决的问题，
-        把模式收成一排之后它自然消失了，不需要靠"身份在上、动作在下"的位置约定来区分。
+        一排到底：模式（数据分析/深度研究/生成 PPT）和附加项（文件、联网搜索）都在这里，
+        因为它们回答的是同一个问题——"这条消息怎么发"。屏幕上不再有两组外观相同、作用域不同的
+        按钮，那正是 issue #93 要解决的问题；解法不是靠"身份在上、动作在下"的位置约定去区分，
+        而是根本不分两处。
       -->
       <div class="capability-bar">
         <FileUploadWidget @upload="upload" />
-        <!-- 禁用理由必须看得见：原来只写在 title 里，触屏设备根本没有 hover，用户只看到一颗
+        <button v-for="kind in MODE_KINDS" :key="kind" type="button" class="agent-option"
+            :class="{ active: kind === agentKind }" :aria-pressed="kind === agentKind" @click="pickMode(kind)">
+          <i>{{ AGENT_KIND_MARKS[kind] }}</i>{{ AGENT_KIND_LABELS[kind] }}
+        </button>
+        <!-- 联网搜索排在模式 chip **之后**：它在 research/ppt 下整颗不渲染（见 webSearchApplies），
+             排在前面的话每切一次模式，右边的 chip 就整体左移一格——刚点下去的那颗会从光标底下
+             跑掉，下一颗顶上来。排在末尾，消失的是行尾，留着的按钮一个都不动。
+             禁用理由必须看得见：原来只写在 title 里，触屏设备根本没有 hover，用户只看到一颗
              点不动的按钮，不知道是坏了还是不该用。理由现在由 .bar-notes 常驻显示，title 就是
-             同一句话的第二个副本了——两处绑同一个 computed，只会各自漂移。
-             research/ppt 下整颗按钮不渲染，不是禁用：见 webSearchApplies 的说明。 -->
+             同一句话的第二个副本了——两处绑同一个 computed，只会各自漂移。 -->
         <button v-if="webSearchApplies" type="button" :disabled="webSearchDisabled"
             :class="{ active: webSearch }" @click="webSearch = !webSearch">◎ 联网搜索</button>
         <!-- 灰字说明统一放到这一排的末尾，不夹在按钮中间——那一排的意思就是"这些是同一类东西"，

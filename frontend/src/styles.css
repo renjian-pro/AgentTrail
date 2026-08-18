@@ -533,26 +533,16 @@ button { cursor: pointer; }
 /* 能力模式选择器（issue #92，2026-08-17 按 §7.2 改为四模式互斥）。放在会话顶部而不是输入框
    旁边——位置编码作用域：越靠上作用域越大。模式决定这一轮走哪条协议链路，开关和上传只是
    往当前模式上叠加，不该在同一视觉层级。选中态本身就是常驻标识，不需要另一颗只读 chip。 */
-.agent-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 6px 10px; }
-.agent-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 11px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: #5f625b;
-  background: var(--surface);
-  font-size: 12px;
-}
-.agent-option:hover { border-color: #cdd0c9; color: var(--text); }
-.agent-option.active { border-color: #30332f; color: #fff; background: #30332f; }
+/* 模式 chip 现在就是 .capability-bar 里的一颗按钮，尺寸/描边/选中态/暗色全部由上面那条
+   `.capability-bar button` 规则统一给——这里只补它比别的按钮多出来的东西：前缀那个符号
+   需要一个 inline-flex 才能和文字居中对齐。曾经这一组有自己整套 .agent-option 规则
+   （连同 .dark 反色），和 .capability-bar button 是同一套外观的两份副本，改一个忘一个
+   就会当场分家；模式挪进这一排之后没有理由再留着第二份。 */
+.capability-bar .agent-option { display: inline-flex; align-items: center; gap: 6px; }
 .history button .kind-mark { margin-right: 6px; color: var(--faint); }
-.dark .agent-option.active { color: #16180f; background: #e7e9e0; }
-/* 联网搜索开启态在暗色下曾经是深灰底 + 白字压在深色背景上，几乎看不出开没开——它的暗色规则
-   本来挂在 .mode-picker 上，早先把开关从那排 chip 里搬出来时一起丢了，样式表里只剩一条没人
-   匹配的死规则。这里补回来，和顶部 Agent 选中态用同一套反色。 */
+/* 选中态在暗色下曾经是深灰底 + 白字压在深色背景上，几乎看不出开没开——这条规则本来挂在
+   .mode-picker 上，早先把开关从那排 chip 里搬出来时一起丢了，样式表里只剩一条没人匹配的
+   死规则。现在这一排的按钮（模式 chip、联网搜索）共用它。 */
 .dark .capability-bar button.active { border-color: #e7e9e0; color: #16180f; background: #e7e9e0; }
 
 /* 普通对话里问了数据问题时的引导卡片（issue #94）。做成对话流里的 inline 卡片而不是 toast——

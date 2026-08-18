@@ -1,5 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ChatView from './ChatView.vue'
 import { useChatStore } from '../stores/chat'
@@ -16,6 +16,17 @@ vi.mock('../api/chat-api', () => ({
 vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn() } }))
 vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn(), status: vi.fn() } }))
 vi.mock('../api/file-api', () => ({ fileApi: { upload: vi.fn(), remove: vi.fn() } }))
+
+/**
+ * 模式 chip 现在和「添加文件」「联网搜索」同排，按**文案**取而不是按下标：这一排的顺序是
+ * 产品决定、会再动的，而下标写死之后调一次顺序就会让一堆用例悄悄断言到另一颗按钮上——
+ * 断言仍然通过、测的却不是原来那件事。
+ */
+const chip = (wrapper: VueWrapper, label: string) => {
+  const found = wrapper.findAll('.agent-option').find(button => button.text().includes(label))
+  if (!found) throw new Error(`找不到模式按钮：${label}`)
+  return found
+}
 
 describe('ChatView', () => {
   beforeEach(() => {
@@ -178,7 +189,7 @@ describe('ChatView', () => {
     vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.agent-option')[3].trigger('click')
+    await chip(wrapper, '生成 PPT').trigger('click')
     await wrapper.find('textarea').setValue('生成战略汇报')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
@@ -186,7 +197,7 @@ describe('ChatView', () => {
     expect(pptApi.create).toHaveBeenCalledWith(expect.any(String), '生成战略汇报')
     expect(wrapper.text()).toContain('正在渲染')
     // 模式发完不复位（R13/R14）：PPT 仍然是选中态，用户可以接着改主题再发一版
-    expect(wrapper.findAll('.agent-option')[3].classes()).toContain('active')
+    expect(chip(wrapper, '生成 PPT').classes()).toContain('active')
 
     // 这条断言的方向和改造前**正好相反**，是有意的：任务曾经是"动作"，点一次发起一次，
     // 下一条消息自动回到普通对话；现在它是模式，选中后一直保持，第二次发送仍然走 PPT。
@@ -210,7 +221,7 @@ describe('ChatView', () => {
   it('keeps mode:analytics for every message in the session, not just the next one', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.agent-option')[1].trigger('click')
+    await chip(wrapper, '数据分析').trigger('click')
     await wrapper.find('textarea').setValue('上个月的订单量是多少')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
@@ -238,7 +249,7 @@ describe('ChatView', () => {
     vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'SUCCESS', errorMsg: null, outputPath: 'a.pptx' })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.agent-option')[3].trigger('click')
+    await chip(wrapper, '生成 PPT').trigger('click')
     await wrapper.find('textarea').setValue('把刚才的结论做成 PPT')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
@@ -260,11 +271,11 @@ describe('ChatView', () => {
     expect(toggle()).toBeTruthy()
     expect(toggle()!.attributes('disabled')).toBeUndefined()
 
-    await wrapper.findAll('.agent-option')[1].trigger('click')
+    await chip(wrapper, '数据分析').trigger('click')
     expect(toggle()!.attributes('disabled')).toBeDefined()
     expect(wrapper.get('.bar-notes').text()).toContain('不挂载联网搜索')
 
-    await wrapper.findAll('.agent-option')[2].trigger('click')
+    await chip(wrapper, '深度研究').trigger('click')
     expect(toggle()).toBeUndefined()
     expect(wrapper.get('.bar-notes').text()).toContain('自带资料检索')
   })
@@ -295,7 +306,7 @@ describe('ChatView', () => {
   it('stays quiet about switching when the session is already analytics', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.agent-option')[1].trigger('click')
+    await chip(wrapper, '数据分析').trigger('click')
     await wrapper.find('textarea').setValue('上个月的订单量是多少')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
@@ -322,7 +333,7 @@ describe('ChatView', () => {
   it('tells the user what to write by switching the composer placeholder per mode', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.agent-option')[2].trigger('click')
+    await chip(wrapper, '深度研究').trigger('click')
     expect(wrapper.find('textarea').attributes('placeholder')).toContain('研究')
 
     await wrapper.find('form').trigger('submit')
@@ -350,6 +361,28 @@ describe('ChatView', () => {
   })
 
   /**
+   * 模式 chip 的落点和「普通对话」的处置：三颗都在输入框上方那一排（`.capability-bar`），
+   * 数据分析打头；**普通对话没有自己的按钮**——它是"一个都没选"的默认态，给它排一颗按钮
+   * 用户就会当成第四种能力去点。取消选择的唯一入口是再点一次当前那颗。
+   *
+   * <p>顺带钉住顺序：数据分析在最前是产品决定（当前突出的主业务），不是 `AGENT_KIND_LABELS`
+   * 的键序碰巧如此。
+   */
+  it('lays the modes out in the composer bar, with no button for plain chat', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    expect(wrapper.findAll('.capability-bar .agent-option').map(button => button.text()))
+      .toEqual(['⌁数据分析', '⌕深度研究', '▣生成 PPT'])
+    expect(wrapper.text()).not.toContain('普通对话')
+
+    await chip(wrapper, '数据分析').trigger('click')
+    expect(useChatStore().agentKind).toBe('analytics')
+    // 再点一次＝取消，落回普通对话
+    await chip(wrapper, '数据分析').trigger('click')
+    expect(useChatStore().agentKind).toBe('chat')
+  })
+
+  /**
    * **本次修复的核心回归**（requirements.md R13/R14）：模式发完不复位、发完还能自由切、
    * 选择器始终在，四个模式常驻可见。
    *
@@ -363,24 +396,24 @@ describe('ChatView', () => {
   it('keeps the selected mode after sending and still allows switching', async () => {
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    expect(wrapper.findAll('.agent-option')).toHaveLength(4)
-    await wrapper.findAll('.agent-option')[1].trigger('click')
+    expect(wrapper.findAll('.agent-option')).toHaveLength(3)
+    await chip(wrapper, '数据分析').trigger('click')
 
     await wrapper.find('textarea').setValue('上个月的订单量是多少')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     // 不复位：选择器还在，数据分析仍然选中
-    expect(wrapper.findAll('.agent-option')).toHaveLength(4)
+    expect(wrapper.findAll('.agent-option')).toHaveLength(3)
     expect(useChatStore().agentKind).toBe('analytics')
-    expect(wrapper.findAll('.agent-option')[1].classes()).toContain('active')
+    expect(chip(wrapper, '数据分析').classes()).toContain('active')
 
     // 不锁定：会话已经有 id 了，照样能换
-    await wrapper.findAll('.agent-option')[2].trigger('click')
+    await chip(wrapper, '深度研究').trigger('click')
     expect(useChatStore().agentKind).toBe('research')
 
     // 再点当前模式＝取消，落回普通对话
-    await wrapper.findAll('.agent-option')[2].trigger('click')
+    await chip(wrapper, '深度研究').trigger('click')
     expect(useChatStore().agentKind).toBe('chat')
   })
 
@@ -401,7 +434,7 @@ describe('ChatView', () => {
     })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.agent-option')[2].trigger('click')
+    await chip(wrapper, '深度研究').trigger('click')
     await wrapper.find('textarea').setValue('帮我研究 AI')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
@@ -421,7 +454,7 @@ describe('ChatView', () => {
     vi.mocked(researchApi.status).mockReturnValue(new Promise(resolve => { resolveStatus = resolve }))
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
-    await wrapper.findAll('.agent-option')[2].trigger('click')
+    await chip(wrapper, '深度研究').trigger('click')
     await wrapper.find('textarea').setValue('研究 Java 工程师就业趋势')
     await wrapper.find('form').trigger('submit')
     await flushPromises()

@@ -52,7 +52,7 @@
 | R12 | Golden 变体目录 A/B 对照 | ✅ | `GoldenComparisonReport`，`-Dagenttrail.prompts.dir=prompts-variants/exp-a` |
 | R13 | 模式互斥逐轮可切 + `mode` 落库 | ⚠️ **部分且口径已变** | F6 交付的是**会话级** `agentKind` 存 **localStorage**（`chat.ts:91-118`）。`agent_session` 无 `mode` 列；锁定语义（`agentLocked`）与新模型冲突，需回退 |
 | R13a | `mode` 枚举化 + 未知值 400 | ❌ | `ChatApplicationService.java:54` 仍是 `"analytics".equals(mode)`，其余静默降级 |
-| R14 | 当前模式常驻可见标识 | ✅ | `AgentHeader.vue` |
+| R14 | 当前模式常驻可见标识 | ✅ | `ChatView.vue` 的 `.capability-bar`（模式 chip 与输入框同排，选中态即标识；`AgentHeader.vue` 已删除） |
 | R14a | 搜索开关只在普通对话出现 | ⚠️ **部分** | 数据分析下已禁用 + tooltip（`ChatView.vue:102-104`）；DR/PPT 下的形态待改 |
 | R15 | `ConversationDigest` | ✅ | `conversation/digest/ConversationDigest.java` + `Service` |
 | R16 | 图表要求数据有工具产出来源 | ✅ | `DataProvenancePolicy` + `chartProvenancePolicy` |

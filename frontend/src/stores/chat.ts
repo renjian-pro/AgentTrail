@@ -64,10 +64,11 @@ export type AgentKind = 'chat' | 'analytics' | 'research' | 'ppt'
 /**
  * 模式的图标和名字，**选择器和侧栏共用这一份**。
  *
- * <p>此前侧栏是内联的三元 `=== 'analytics' ? '⌁' : '○'`，而名字/图标另在 AgentHeader 里写了
+ * <p>此前侧栏是内联的三元 `=== 'analytics' ? '⌁' : '○'`，而名字/图标另在模式选择器里写了
  * 一遍。从两个模式扩到四个时，那个三元不会报错，只会把深度研究和 PPT 静默显示成普通对话——
  * 恰恰是"同一件事写在两处"最典型的失效方式：一处改了，另一处继续无声地给出错误答案。
  */
+/** `chat` 这两项只有侧栏在用：模式选择器不给默认态排按钮（见 ChatView 的 MODE_KINDS）。 */
 export const AGENT_KIND_MARKS: Record<AgentKind, string> = {
   chat: '○', analytics: '⌁', research: '⌕', ppt: '▣'
 }
