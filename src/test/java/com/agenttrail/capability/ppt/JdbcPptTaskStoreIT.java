@@ -31,6 +31,7 @@ class JdbcPptTaskStoreIT {
 
     @BeforeEach
     void resetTable() {
+        JdbcClient.create(dataSource).sql("TRUNCATE TABLE ppt_generation_stage_event").update();
         JdbcClient.create(dataSource).sql("TRUNCATE TABLE ppt_generation_task").update();
         store = new JdbcPptTaskStore(dataSource);
     }
@@ -44,6 +45,31 @@ class JdbcPptTaskStoreIT {
         assertThat(task.errorMsg()).isNull();
         assertThat(task.conversationId()).isEqualTo("conv-1");
         assertThat(task.createdAtMillis()).isPositive();
+        assertThat(task.runStatus()).isEqualTo(PptRunStatus.QUEUED);
+        assertThat(task.revision()).isZero();
+        assertThat(task.contextVersion()).isEqualTo(PptGenerationContext.CURRENT_CONTEXT_VERSION);
+    }
+
+    @Test
+    void conditionalAdvancePersistsRevisionAndStageEventAtomically() {
+        long id = store.create("conv-1", PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT"));
+
+        assertThat(store.conditionalAdvance(id, PptState.INIT, 0,
+                PptState.CLARIFY, PptRunStatus.RUNNING,
+                PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT"))).isTrue();
+        assertThat(store.conditionalAdvance(id, PptState.INIT, 0,
+                PptState.REQUIREMENT, PptRunStatus.RUNNING,
+                PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT"))).isFalse();
+
+        PptTask task = store.findById(id).orElseThrow();
+        assertThat(task.status()).isEqualTo(PptState.CLARIFY);
+        assertThat(task.revision()).isEqualTo(1);
+        assertThat(store.eventsForTask(id)).singleElement().satisfies(event -> {
+            assertThat(event.stage()).isEqualTo(PptState.INIT);
+            assertThat(event.outcome()).isEqualTo(PptCheckpointEvent.OUTCOME_SUCCEEDED);
+            assertThat(event.revisionBefore()).isZero();
+            assertThat(event.revisionAfter()).isEqualTo(1);
+        });
     }
 
     @Test
@@ -97,6 +123,10 @@ class JdbcPptTaskStoreIT {
         PptTask task = store.findById(id).orElseThrow();
         assertThat(task.status()).isEqualTo(PptState.OUTLINE);
         assertThat(task.errorMsg()).isEqualTo("模型输出不是合法 JSON");
+        assertThat(task.runStatus()).isEqualTo(PptRunStatus.FAILED);
         assertThat(PptContextJson.fromJson(task.contextJson()).searchMaterials()).containsExactly("素材");
+        assertThat(store.eventsForTask(id)).singleElement()
+                .extracting(PptCheckpointEvent::outcome)
+                .isEqualTo(PptCheckpointEvent.OUTCOME_FAILED);
     }
 }

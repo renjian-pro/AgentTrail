@@ -56,6 +56,8 @@ class PptGenerationServiceTest {
                 "IMAGE#1", "RENDER#1");
         assertThat(service.describe(taskId)).isPresent();
         assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
+        assertThat(service.describe(taskId).orElseThrow().runStatus()).isEqualTo(PptRunStatus.SUCCEEDED);
+        assertThat(service.describe(taskId).orElseThrow().revision()).isEqualTo(9);
         assertThat(service.describe(taskId).orElseThrow().errorMsg()).isNull();
         assertThat(service.runningTaskIdsFor("legacy")).isEmpty();
     }

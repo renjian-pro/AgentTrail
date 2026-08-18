@@ -5,7 +5,8 @@ import java.util.Optional;
 
 /**
  * PPT 生成任务的存取接口（issue #24）。参照 {@code PauseStateStore}/{@code FileStore} 的既有
- * 模式：接口不假设存储介质，先有内存实现（快速单测用）+ JDBC 实现（生产用）。
+ * 模式：接口不假设存储介质，先有内存实现（快速单测用）+ JDBC 实现（生产用）。当前快照和
+ * 追加式阶段事件分开存取：快照负责恢复，事件负责审计与进度展示。
  */
 public interface PptTaskStore {
 
@@ -38,15 +39,39 @@ public interface PptTaskStore {
     }
 
     /**
-     * 状态推进：调用方（{@link PptGenerationService}）只应该在 {@code newState}
-     * 对应的上一个状态的副作用已经真正完成之后才调用这个方法——这里本身不做任何时序校验，
-     * 时序正确性是调用方的职责，这里只管把这次推进原子落库，同时清空 {@code errorMsg}
-     * （上一次失败的痕迹不该跟着一次成功的推进继续挂着）。
+     * 兼容旧调用方的推进入口：先读取当前 checkpoint，再执行条件推进。
+     * 新代码必须使用带 expected state/revision 的重载，避免迟到 worker 覆盖新快照。
      */
-    void advance(long id, PptState newState, PptGenerationContext context);
+    default void advance(long id, PptState newState, PptGenerationContext context) {
+        PptTask current = findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("PPT 任务不存在: " + id));
+        boolean updated = conditionalAdvance(id, current.status(), current.revision(), newState,
+                runStatusFor(newState), context);
+        if (!updated) {
+            throw new PptCheckpointConflictException(id, current.status(), current.revision());
+        }
+    }
 
-    /** 某个状态执行失败：{@code status} 保持是这个失败的状态本身（下次重新跑它整个状态），只更新 errorMsg。 */
-    void markFailed(long id, PptState failedState, String errorMsg);
+    /** 仅当任务仍处于 expected state/revision 时推进，并追加不可覆盖的成功事件。 */
+    boolean conditionalAdvance(long id, PptState expectedState, long expectedRevision,
+            PptState newState, PptRunStatus newRunStatus, PptGenerationContext context);
+
+    /** 兼容旧调用方的失败入口；失败仍停留在当前业务阶段，但生命周期进入 FAILED。 */
+    default void markFailed(long id, PptState failedState, String errorMsg) {
+        PptTask current = findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("PPT 任务不存在: " + id));
+        boolean updated = markFailedIfCurrent(id, current.status(), current.revision(), failedState, errorMsg);
+        if (!updated) {
+            throw new PptCheckpointConflictException(id, current.status(), current.revision());
+        }
+    }
+
+    /** 仅当任务仍处于 expected state/revision 时记录失败并追加失败事件。 */
+    boolean markFailedIfCurrent(long id, PptState expectedState, long expectedRevision,
+            PptState failedState, String errorMsg);
+
+    /** 返回任务的不可覆盖阶段事件，按写入顺序排列。 */
+    List<PptCheckpointEvent> eventsForTask(long taskId);
 
     /** 请求取消：只写标记，由状态机在下一个状态边界完成终态切换。 */
     void requestCancel(long id);
@@ -58,4 +83,18 @@ public interface PptTaskStore {
 
     /** 返回指定用户当前仍可继续推进的任务，匿名用户不应调用此查询。 */
     List<Long> runningTaskIdsFor(String userId);
+
+    /** 运行状态和业务阶段的默认映射，供兼容入口使用。 */
+    private static PptRunStatus runStatusFor(PptState state) {
+        if (state == PptState.AWAITING_INPUT) {
+            return PptRunStatus.WAITING_INPUT;
+        }
+        if (state == PptState.CANCELLED) {
+            return PptRunStatus.CANCELLED;
+        }
+        if (state == PptState.SUCCESS) {
+            return PptRunStatus.SUCCEEDED;
+        }
+        return PptRunStatus.RUNNING;
+    }
 }

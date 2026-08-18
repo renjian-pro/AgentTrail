@@ -193,6 +193,7 @@ public class PptGenerationService {
         }
         PptGenerationContext context = PptContextJson.fromJson(task.contextJson());
         PptState current = task.status();
+        long revision = task.revision();
         try {
             while (current != PptState.SUCCESS && current != PptState.CANCELLED
                     && current != PptState.AWAITING_INPUT) {
@@ -212,18 +213,32 @@ public class PptGenerationService {
                 } catch (Exception executionFailed) {
                     String errorMsg = describeFailure(executionFailed);
                     log.error("PPT 任务 {} 在状态 {} 失败: {}", taskId, current, errorMsg, executionFailed);
-                    taskStore.markFailed(taskId, current, errorMsg);
+                    if (!taskStore.markFailedIfCurrent(taskId, current, revision, current, errorMsg)) {
+                        throw new PptCheckpointConflictException(taskId, current, revision);
+                    }
                     throw new PptGenerationException("PPT 生成在状态 " + current + " 失败: " + errorMsg, executionFailed);
+                }
+                if (taskStore.isCancelRequested(taskId)) {
+                    taskStore.markCancelled(taskId, current);
+                    return;
                 }
                 // CLARIFY 判定信息不足时不往下走，落到 AWAITING_INPUT 等用户补充——用的还是
                 // advance（而不是 markFailed）：等人不是失败，errorMsg 必须保持为空，否则前端会
                 // 把一次正常的追问渲染成一条错误，而 runningTaskIdsFor 也会把它当成出错任务筛掉。
                 if (current == PptState.CLARIFY && context.clarifyingQuestion() != null) {
-                    taskStore.advance(taskId, PptState.AWAITING_INPUT, context);
+                    if (!taskStore.conditionalAdvance(taskId, current, revision,
+                            PptState.AWAITING_INPUT, PptRunStatus.WAITING_INPUT, context)) {
+                        throw new PptCheckpointConflictException(taskId, current, revision);
+                    }
                     return;
                 }
                 PptState next = nextState(current);
-                taskStore.advance(taskId, next, context);
+                PptRunStatus nextRunStatus = next == PptState.SUCCESS
+                        ? PptRunStatus.SUCCEEDED : PptRunStatus.RUNNING;
+                if (!taskStore.conditionalAdvance(taskId, current, revision, next, nextRunStatus, context)) {
+                    throw new PptCheckpointConflictException(taskId, current, revision);
+                }
+                revision++;
                 current = next;
             }
         } finally {

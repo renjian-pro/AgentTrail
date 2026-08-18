@@ -19,6 +19,48 @@ class InMemoryPptTaskStoreTest {
         assertThat(task.status()).isEqualTo(PptState.INIT);
         assertThat(task.errorMsg()).isNull();
         assertThat(task.conversationId()).isEqualTo("conv-1");
+        assertThat(task.runStatus()).isEqualTo(PptRunStatus.QUEUED);
+        assertThat(task.revision()).isZero();
+        assertThat(task.contextVersion()).isEqualTo(PptGenerationContext.CURRENT_CONTEXT_VERSION);
+    }
+
+    @Test
+    void conditionalAdvanceIncrementsRevisionAndAppendsASuccessEvent() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        long id = store.create("conv-1", PptGenerationContext.initial("conv-1", "问题"));
+
+        boolean advanced = store.conditionalAdvance(id, PptState.INIT, 0,
+                PptState.CLARIFY, PptRunStatus.RUNNING,
+                PptGenerationContext.initial("conv-1", "问题"));
+
+        assertThat(advanced).isTrue();
+        PptTask task = store.findById(id).orElseThrow();
+        assertThat(task.status()).isEqualTo(PptState.CLARIFY);
+        assertThat(task.runStatus()).isEqualTo(PptRunStatus.RUNNING);
+        assertThat(task.revision()).isEqualTo(1);
+        assertThat(store.eventsForTask(id)).singleElement().satisfies(event -> {
+            assertThat(event.stage()).isEqualTo(PptState.INIT);
+            assertThat(event.outcome()).isEqualTo(PptCheckpointEvent.OUTCOME_SUCCEEDED);
+            assertThat(event.revisionBefore()).isZero();
+            assertThat(event.revisionAfter()).isEqualTo(1);
+        });
+    }
+
+    @Test
+    void staleConditionalAdvanceDoesNotOverwriteTheNewerCheckpoint() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        long id = store.create("conv-1", PptGenerationContext.initial("conv-1", "问题"));
+        PptGenerationContext context = PptGenerationContext.initial("conv-1", "问题");
+
+        assertThat(store.conditionalAdvance(id, PptState.INIT, 0,
+                PptState.CLARIFY, PptRunStatus.RUNNING, context)).isTrue();
+        assertThat(store.conditionalAdvance(id, PptState.INIT, 0,
+                PptState.REQUIREMENT, PptRunStatus.RUNNING, context)).isFalse();
+
+        PptTask task = store.findById(id).orElseThrow();
+        assertThat(task.status()).isEqualTo(PptState.CLARIFY);
+        assertThat(task.revision()).isEqualTo(1);
+        assertThat(store.eventsForTask(id)).hasSize(1);
     }
 
     @Test
@@ -47,6 +89,10 @@ class InMemoryPptTaskStoreTest {
         PptTask task = store.findById(id).orElseThrow();
         assertThat(task.status()).isEqualTo(PptState.OUTLINE);
         assertThat(task.errorMsg()).isEqualTo("模型输出解析失败");
+        assertThat(task.runStatus()).isEqualTo(PptRunStatus.FAILED);
+        assertThat(store.eventsForTask(id)).singleElement()
+                .extracting(PptCheckpointEvent::outcome)
+                .isEqualTo(PptCheckpointEvent.OUTCOME_FAILED);
     }
 
     @Test

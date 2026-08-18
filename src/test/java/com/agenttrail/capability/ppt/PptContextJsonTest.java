@@ -10,6 +10,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PptContextJsonTest {
 
     @Test
+    void writesTheCurrentContextVersionIntoEveryNewSnapshot() {
+        String json = PptContextJson.toJson(PptGenerationContext.initial("conv-1", "问题"));
+
+        assertThat(json).contains("\"contextVersion\":1");
+        assertThat(PptContextJson.fromJson(json).contextVersion())
+                .isEqualTo(PptGenerationContext.CURRENT_CONTEXT_VERSION);
+    }
+
+    @Test
+    void readsLegacySnapshotWithoutVersionAsTheCurrentCompatibleVersion() {
+        String legacyJson = "{\"conversationId\":\"conv-1\",\"userRequirement\":\"问题\"}";
+
+        assertThat(PptContextJson.fromJson(legacyJson).contextVersion())
+                .isEqualTo(PptGenerationContext.CURRENT_CONTEXT_VERSION);
+    }
+
+    @Test
     void roundTripsAFullyPopulatedContext() {
         PptGenerationContext original = PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT")
                 .withRequirement(new PptRequirement("标题", "主题", "受众", 3, "专业简洁"))
