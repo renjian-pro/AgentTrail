@@ -62,6 +62,7 @@ import org.springframework.ai.tool.ToolCallback;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
@@ -722,6 +723,10 @@ public class AgentLoopExecutor {
         Timer ttftTimer = timer("agenttrail.llm.ttft");
         AtomicBoolean firstChunkSeen = new AtomicBoolean();
         AtomicBoolean mainSubscriptionTerminated = new AtomicBoolean();
+        // 看门狗也是靠 dispose() 停这条流的，它会和用户主动停止一样触发下面的 CANCEL 分支。
+        // 但超时有自己的收尾（failRun：Error 事件 + 审计），两套收尾都跑会让同一轮既落库又报错、
+        // 还发两次 Complete。看门狗在 dispose 之前先立这面旗，CANCEL 分支看见就不插手。
+        AtomicBoolean cancelledByWatchdog = new AtomicBoolean();
         AtomicReference<Disposable> watchdogRef = new AtomicReference<>();
         log.debug("[{}] 第 {} 轮开始：{} 条历史，{} 个工具", context.conversationId(),
                 context.roundCounter().get(), context.messages().size(), roundTools.size());
@@ -761,12 +766,20 @@ public class AgentLoopExecutor {
                     if (watchdog != null) {
                         watchdog.dispose();
                     }
+                    // 用户按下停止：这条流被 AgentTaskManager.stopLocalTask 取消掉，doOnComplete /
+                    // doOnError 都不会再走，于是这一轮**从来没有落过库**——问题和已经吐出来的半截
+                    // 答案只活在前端内存里，切走再切回来（openSession 用服务端历史整体替换 messages）
+                    // 就一起消失了。收尾必须挂在这里，因为只有这里还看得见 state 和 context。
+                    if (signalType == SignalType.CANCEL && !cancelledByWatchdog.get()) {
+                        cancelRun(state, context, requestSnapshot);
+                    }
                 })
                 .subscribe();
 
         // 每轮都要重新登记，否则停止请求作用在上一轮早已结束的订阅上（踩坑点 #9）
         taskManager.setDisposable(context.conversationId(), subscription);
-        Disposable watchdog = scheduleRoundWatchdog(context, state, requestSnapshot, subscription);
+        Disposable watchdog = scheduleRoundWatchdog(context, state, requestSnapshot, subscription,
+                cancelledByWatchdog);
         if (mainSubscriptionTerminated.get()) {
             watchdog.dispose();
         } else {
@@ -787,11 +800,14 @@ public class AgentLoopExecutor {
      * 走同一套收尾逻辑（落库、Hook、释放单飞锁、给前端一个明确的 Error 事件）。
      */
     private Disposable scheduleRoundWatchdog(RunContext context, RoundState state, String requestSnapshot,
-                                            Disposable subscription) {
+                                            Disposable subscription, AtomicBoolean cancelledByWatchdog) {
         return Mono.delay(roundTimeout).subscribe(tick -> {
             if (subscription.isDisposed()) {
                 return;
             }
+            // 先认领这次取消，再 dispose——顺序反过来的话，doFinally 会在这面旗立起来之前就跑完，
+            // 把超时当成用户主动停止收尾一遍，紧接着下面的 failRun 再收尾一遍。
+            cancelledByWatchdog.set(true);
             subscription.dispose();
             failRun(new TimeoutException("round exceeded absolute timeout of " + roundTimeout),
                     context, state, requestSnapshot);
@@ -1014,6 +1030,9 @@ public class AgentLoopExecutor {
                         pauseConfig.requiresApproval(call.name())
                                 ? ToolRiskLevel.HIGH_RISK : ToolRiskLevel.READ_ONLY))
                 .toList();
+        // 暂停也是这次运行的一个终局：轮次订阅随后可能被孤儿回收 dispose 掉，没有这行认领的话
+        // 那个 CANCEL 会被当成"用户按了停止"，把半截问答落库，还会盖掉正在等审批的快照语义。
+        context.markTerminated();
         context.emit(new AgentStreamEvent.Paused(
                 context.conversationId(), PauseReason.HITL_APPROVAL, publicPending));
         context.emitComplete();
@@ -1237,6 +1256,7 @@ public class AgentLoopExecutor {
      */
     private void completeRun(RoundState state, RunContext context) {
         log.debug("[{}] 收尾落库中", context.conversationId());
+        context.markTerminated();
         forgetBudget(context);
         String think = state.reasoning().isEmpty() ? null : state.reasoning();
         TurnRecord record = new TurnRecord(
@@ -1275,6 +1295,49 @@ public class AgentLoopExecutor {
     }
 
     /**
+     * 中断收尾（用户按下停止）。**落库，但不当成失败**——这一轮确实发生过：用户问了，模型也
+     * 答了半截，只是被喊停了。不落库的话它在刷新/切换会话之后就彻底不存在了，而用户看到的
+     * 是"我明明问过、也看到过答案"。
+     *
+     * <p>和 {@link #completeRun} 的区别只在于**不做那些只对完整答案才成立的收尾**：
+     * 不抽记忆（半截答案提炼出来的记忆会一直污染后续会话）、不跑 StageOutput 的收尾输出
+     * （引用链接/推荐问题是针对最终答案的）、不消费暂停检查点（这一轮并没有成功走完恢复链路，
+     * 检查点留着才能安全重试）。
+     *
+     * <p>和 {@link #failRun} 的区别在于**不发 Error 事件**：停止是用户自己要的结果，不是故障。
+     * 同样地，这里也不允许抛异常——它挂在 {@code doFinally} 上，异常会变成
+     * {@code onErrorDropped} 噪声，还会让单飞占位和事件流留在半开状态。
+     */
+    private void cancelRun(RoundState state, RunContext context, String requestSnapshot) {
+        if (!context.markTerminated()) {
+            log.debug("[{}] 这次运行已经收尾过，忽略随后的取消信号", context.conversationId());
+            return;
+        }
+        log.info("[{}] 本轮被中断，落库已生成的部分", context.conversationId());
+        Long turnId = null;
+        try {
+            forgetBudget(context);
+            String think = state.reasoning().isEmpty() ? null : state.reasoning();
+            // 一个字都没吐出来时写 null 而不是空串：loadHistory 靠 answer != null 决定要不要给模型
+            // 回放一条助手消息，空串会变成一条内容为空的 AssistantMessage 混进下一轮的上下文。
+            String answer = state.text().isBlank() ? null : state.text();
+            TurnRecord record = new TurnRecord(
+                    context.conversationId(), context.params().userId(), context.question(),
+                    answer, think, context.toolTimelineJson(), null, context.elapsedMillis());
+            turnId = turnCommitter.commit(record, requestedFileIds(context.params()));
+            recordTrace(context, state, requestSnapshot, answer, false, "cancelled by user");
+            fireSessionEnd(context, false);
+        } catch (RuntimeException collateral) {
+            log.error("[{}] 中断收尾过程中出错，本轮仍会正常结束", context.conversationId(), collateral);
+        } finally {
+            // 和另外两条收尾路径同样的顺序：先放单飞占位再宣告结束。
+            taskManager.removeTask(context.conversationId());
+            context.emit(new AgentStreamEvent.Complete(context.conversationId(), turnId));
+            context.emitComplete();
+        }
+    }
+
+    /**
      * 失败收尾。**这是整个循环唯一的兜底出口，因此它自己不允许抛异常**——落审计、跑 Hook
      * 这些收尾动作再重要，也重要不过"让这一轮有个结束"。
      *
@@ -1287,6 +1350,7 @@ public class AgentLoopExecutor {
      */
     private void failRun(Throwable error, RunContext context, RoundState state, String requestSnapshot) {
         log.warn("[{}] 本轮失败收尾", context.conversationId(), error);
+        context.markTerminated();
         try {
             forgetBudget(context);
             recordTrace(context, state, requestSnapshot, null, false, error.getMessage());

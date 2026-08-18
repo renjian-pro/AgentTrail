@@ -1,68 +1,62 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PptTaskCard from './PptTaskCard.vue'
-import { pptApi } from '../api/ppt-api'
+import { TOKEN_KEY } from '../api/auth-token'
 
-vi.mock('../api/ppt-api', () => ({
-  pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn(), clarify: vi.fn() }
-}))
+/**
+ * 这个文件钉住的是一条**只在真实浏览器里才暴露**的失败：下载曾经是 `<a href>` + target=_blank，
+ * 单元测试里它只是一个 DOM 属性、看不出任何问题，实际点下去却因为浏览器导航带不上
+ * Authorization 请求头而稳定拿到 401 AUTH_REQUIRED，还是在另一个标签页里报的错。
+ *
+ * <p>所以断言的形态是"点击后发起了一个带鉴权头的 fetch"，而不是"渲染出了正确的 href"——
+ * 后者正是当初通过了却没能拦住这个 bug 的那种断言。
+ */
+describe('PptTaskCard 下载', () => {
+  const successTask = { taskId: 7, status: 'SUCCESS', errorMsg: null, outputPath: '/tmp/a.pptx' }
 
-const awaiting = (clarifyingQuestion: string) => ({
-  kind: 'ppt' as const,
-  prompt: '什么情况',
-  task: { taskId: 7, status: 'AWAITING_INPUT', errorMsg: null, outputPath: null, clarifyingQuestion }
-})
-
-describe('PptTaskCard 需求澄清', () => {
-  beforeEach(() => vi.clearAllMocks())
-
-  /**
-   * 追问必须落在一个能回答的地方。四格里最后也最容易漏的一格就是这个：后端问出来了、卡片也显示了，
-   * 但没有输入框，用户只能去主输入框回答——那会新建一个从零开始的任务（深度研究至今就是这样断的）。
-   */
-  it('renders the question with an answer box instead of the resume button', () => {
-    const wrapper = mount(PptTaskCard, { props: { entry: awaiting('这份 PPT 想讲什么主题？') } })
-
-    expect(wrapper.text()).toContain('这份 PPT 想讲什么主题？')
-    expect(wrapper.find('.clarify-form textarea').exists()).toBe(true)
-    // 等人的任务点"继续"是空转，不该给这颗按钮
-    expect(wrapper.find('.task-actions button').exists()).toBe(false)
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(TOKEN_KEY, 'test-token')
+    vi.restoreAllMocks()
+    // jsdom 没实现这两个，saveBlob 会直接用到
+    URL.createObjectURL = vi.fn(() => 'blob:fake')
+    URL.revokeObjectURL = vi.fn()
   })
 
-  it('treats the question as a prompt for input, not as an error', () => {
-    const wrapper = mount(PptTaskCard, { props: { entry: awaiting('想讲什么主题？') } })
+  it('带着 Authorization 请求头取文件，而不是让浏览器导航过去', async () => {
+    const fetchMock = vi.fn(async () => new Response(new Blob(['fake-pptx']), {
+      status: 200,
+      headers: { 'Content-Disposition': "attachment; filename*=UTF-8''%E9%94%80%E5%94%AE%E6%B1%87%E6%8A%A5.pptx" }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const clicked: string[] = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) { clicked.push(this.download) })
 
-    expect(wrapper.find('.error').exists()).toBe(false)
-    expect(wrapper.text()).toContain('需要补充信息')
-    expect(wrapper.text()).not.toContain('任务正在等待或运行中')
+    const wrapper = mount(PptTaskCard, { props: { entry: { kind: 'ppt', prompt: '销售汇报', task: successTask } } })
+    // 不能再有裸链接——它是这个 bug 的形态本身
+    expect(wrapper.find('a').exists()).toBe(false)
+    await wrapper.find('.task-actions button').trigger('click')
+    await flushPromises()
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/agent/v1/ppt/7/download')
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer test-token')
+    // token 不能进 URL：那会让凭证进浏览器历史、访问日志和 Referer
+    expect(url).not.toContain('test-token')
+    // 文件名用服务端 Content-Disposition 里那个（RFC 5987 编码的中文名）
+    expect(clicked).toEqual(['销售汇报.pptx'])
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:fake')
   })
 
-  it('sends the answer to the clarify endpoint and shows the state it resumes into', async () => {
-    vi.mocked(pptApi.clarify).mockResolvedValue({
-      taskId: 7, status: 'REQUIREMENT', errorMsg: null, outputPath: null, clarifyingQuestion: null
-    })
-    // 续跑后第一次轮询就到终态，避免用例挂在 1.5 秒的轮询循环里
-    vi.mocked(pptApi.status).mockResolvedValue({
-      taskId: 7, status: 'SUCCESS', errorMsg: null, outputPath: 'deck.pptx', clarifyingQuestion: null
-    })
-    const entry = awaiting('想讲什么主题？')
+  it('下载失败时把错误显示在卡片上，而不是丢进另一个标签页', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ message: 'PPT 文件不存在: 7' }), { status: 404 })))
+    const entry = { kind: 'ppt' as const, prompt: '销售汇报', task: successTask }
     const wrapper = mount(PptTaskCard, { props: { entry } })
 
-    await wrapper.find('.clarify-form textarea').setValue('讲三季度复盘')
-    await wrapper.find('.clarify-form').trigger('submit')
+    await wrapper.find('.task-actions button').trigger('click')
+    await flushPromises()
 
-    expect(pptApi.clarify).toHaveBeenCalledWith(7, '讲三季度复盘')
-    expect(entry.task.status).toBe('REQUIREMENT')
-    // 回答提交后追问区块收起，输入框不再挂在那儿等第二次提交
-    expect(wrapper.find('.clarify-form').exists()).toBe(false)
-  })
-
-  it('does not submit an empty answer', async () => {
-    const wrapper = mount(PptTaskCard, { props: { entry: awaiting('想讲什么主题？') } })
-
-    await wrapper.find('.clarify-form textarea').setValue('   ')
-    await wrapper.find('.clarify-form').trigger('submit')
-
-    expect(pptApi.clarify).not.toHaveBeenCalled()
+    expect(wrapper.find('.error').text()).toContain('PPT 文件不存在')
   })
 })

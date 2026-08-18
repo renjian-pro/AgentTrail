@@ -1,4 +1,4 @@
-import { jsonInit, request } from './http'
+import { jsonInit, request, requestFile } from './http'
 export type PptTask = {
   taskId: number
   status: string
@@ -18,5 +18,8 @@ export const pptApi = {
   // 提交即返回。只追问一轮——CLARIFY 被整个跳过，所以不会出现答完又被问一遍。
   clarify: (taskId: number, answer: string) =>
     request<PptTask>(`/agent/v1/ppt/clarify/${taskId}`, jsonInit({ answer })),
-  status: (taskId: number) => request<PptTask>(`/agent/v1/ppt/${taskId}`)
+  status: (taskId: number) => request<PptTask>(`/agent/v1/ppt/${taskId}`),
+  // 下载必须走 requestFile 而不是 <a href>：鉴权是 Authorization 请求头，浏览器导航带不上，
+  // 裸链接会稳定地拿到 401（见 http.ts 的 authorizedFetch 注释）。
+  download: (taskId: number) => requestFile(`/agent/v1/ppt/${taskId}/download`, `ppt-${taskId}.pptx`)
 }

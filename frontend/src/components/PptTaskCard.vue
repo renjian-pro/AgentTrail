@@ -1,16 +1,40 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { pptApi } from '../api/ppt-api'
-import { toErrorMessage } from '../api/http'
+import { saveBlob, toErrorMessage } from '../api/http'
 import type { PptEntry } from '../stores/chat'
 
 const props = defineProps<{ entry: PptEntry }>()
 const busy = ref(false)
 const answer = ref('')
 // 历史记录中的旧 payload 可能存的是服务器磁盘路径；任务号才是稳定且可公开的下载凭证。
-const downloadUrl = computed(() => props.entry.task?.status === 'SUCCESS'
-  ? `/agent/v1/ppt/${props.entry.task.taskId}/download`
-  : undefined)
+const canDownload = computed(() => props.entry.task?.status === 'SUCCESS')
+const downloading = ref(false)
+
+/**
+ * 下载走带鉴权的 fetch，不是 `<a href>`。
+ *
+ * <p>这里曾经是一个普通链接 + `target="_blank"`，看起来最自然，但**浏览器导航带不上
+ * Authorization 请求头**，而这套鉴权的 token 只存在 localStorage 里、只靠请求头送出。
+ * 结果是每次点下载都在新标签页里拿到 `{"code":"AUTH_REQUIRED"}`，而且因为错误发生在
+ * 另一个标签页，这张卡片上的错误提示一个字都不会显示——用户看到的是"生成成功但下载不了"。
+ *
+ * <p>把 token 拼进 query 也能让链接活过来，但那会让凭证进浏览器历史、服务端访问日志和
+ * Referer，是拿一个鉴权漏洞换一个下载按钮。
+ */
+async function download() {
+  if (!props.entry.task) return
+  downloading.value = true
+  props.entry.error = undefined
+  try {
+    const file = await pptApi.download(props.entry.task.taskId)
+    saveBlob(file.blob, file.filename)
+  } catch (failure) {
+    props.entry.error = toErrorMessage(failure)
+  } finally {
+    downloading.value = false
+  }
+}
 
 const labels: Record<string, string> = {
   INIT: '初始化', CLARIFY: '需求澄清', REQUIREMENT: '需求分析', SEARCH: '资料检索', TEMPLATE: '读取模板',
@@ -105,7 +129,9 @@ async function submitAnswer() {
       </div>
       <div class="task-actions">
         <button v-if="canResume" :disabled="busy" @click="resume">↻ 继续</button>
-        <a v-if="downloadUrl" :href="downloadUrl" target="_blank">预览 / 下载 PPT ↗</a>
+        <button v-if="canDownload" :disabled="downloading" @click="download">
+          {{ downloading ? '正在下载…' : '↓ 下载 PPT' }}
+        </button>
       </div>
       <section v-if="awaitingInput" class="clarification-card ppt-clarify">
         <p class="eyebrow">助手追问</p>

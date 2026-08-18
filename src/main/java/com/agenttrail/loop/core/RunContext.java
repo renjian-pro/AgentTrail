@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * @param consecutiveToolFailures 按工具名统计的"连续失败"计数，跨这次推理的多轮递增/清零；
  *                      {@code maxConsecutiveToolFailures} 机制用它判断要不要提前熔断，见
  *                      {@link AgentLoopExecutor#finishRound}
+ * @param terminated    这次运行的终局是否已经有人认领，见 {@link #markTerminated()}
  */
 record RunContext(
         String question,
@@ -65,7 +66,8 @@ record RunContext(
          * 不是角色提示词本身——后者是 `resources/prompts/` 里的纯文本，纳管、有版本、进 stamp。
          */
         Set<String> usedPromptStamps,
-        boolean resumedFromPause) {
+        boolean resumedFromPause,
+        java.util.concurrent.atomic.AtomicBoolean terminated) {
 
     private static final Logger log = LoggerFactory.getLogger(RunContext.class);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -75,7 +77,8 @@ record RunContext(
                Map<String, String> mdcSnapshot) {
         this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
                 new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>(),
-                java.util.concurrent.ConcurrentHashMap.newKeySet(), false);
+                java.util.concurrent.ConcurrentHashMap.newKeySet(), false,
+                new java.util.concurrent.atomic.AtomicBoolean());
     }
 
     RunContext(String question, RunnableParams params, List<Message> messages, Sinks.Many<AgentStreamEvent> sink,
@@ -83,7 +86,8 @@ record RunContext(
                Map<String, String> mdcSnapshot, boolean resumedFromPause) {
         this(question, params, messages, sink, roundCounter, startTimeMillis, toolSearchSession, mdcSnapshot,
                 new LinkedHashMap<>(), new HashMap<>(), new AtomicReference<>(),
-                java.util.concurrent.ConcurrentHashMap.newKeySet(), resumedFromPause);
+                java.util.concurrent.ConcurrentHashMap.newKeySet(), resumedFromPause,
+                new java.util.concurrent.atomic.AtomicBoolean());
     }
 
     String conversationId() {
@@ -92,6 +96,18 @@ record RunContext(
 
     long elapsedMillis() {
         return System.currentTimeMillis() - startTimeMillis;
+    }
+
+    /**
+     * 认领这次运行的终局，只有第一个调用者拿到 {@code true}。
+     *
+     * <p>存在的理由是**取消信号不止一个来源**：用户按停止会 dispose 当前轮次的订阅，而轮次
+     * 订阅在别处（{@code AgentTaskManager.setDisposable} 发现任务已不在时的孤儿回收）也会被
+     * dispose。没有这道认领，一次已经正常收尾（或已经暂停等审批）的运行还可能再走一遍中断
+     * 收尾——同一轮问答落库两次，用户在历史里看到自己问了两遍。
+     */
+    boolean markTerminated() {
+        return terminated.compareAndSet(false, true);
     }
 
     /** 递增并返回本轮的轮次序号（从 1 开始）。 */

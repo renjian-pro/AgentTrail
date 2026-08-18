@@ -264,6 +264,23 @@ CREATE TABLE IF NOT EXISTS ppt_generation_task
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT 'PPT 生成状态机任务：status/error_msg 是按状态粒度的断点续传 checkpoint';
 
+-- cancel_requested 是后来加进上面建表语句的（取消功能），但 CREATE TABLE IF NOT EXISTS 对
+-- 已经存在的表整段跳过，老库补不上这一列。这和 agent_trace.prompt_stamps 是同一个失效方式
+-- （见本文件上方那段注释）：JdbcPptTaskStore 的 INSERT 列出 8 个列，库里只有 7 个，于是
+-- 每一次 POST /agent/v1/ppt/create 都是 BadSqlGrammarException(Unknown column
+-- 'cancel_requested')，前端只看得到一个 500 "Internal Server Error"，看不出是 DDL 漂移。
+-- 补列块必须和建表语句同时加，不能只改 CREATE——那一版改动在新库上永远是对的，在任何
+-- 已经跑过一次的库上永远是错的，而开发和演示用的都是后者。
+SET @ddl := IF(
+    (SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ppt_generation_task'
+       AND COLUMN_NAME = 'cancel_requested') = 0,
+    'ALTER TABLE ppt_generation_task ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT FALSE COMMENT ''用户请求取消，状态机在下一个状态边界转为 CANCELLED''',
+    'DO 0');
+PREPARE add_cancel_requested FROM @ddl;
+EXECUTE add_cancel_requested;
+DEALLOCATE PREPARE add_cancel_requested;
+
 -- 深度研究任务的元信息（issue #108 / R20）。
 --
 -- **刻意不存报告正文。** 完成的报告随 CapabilityConversationService 落进 agent_session.timeline

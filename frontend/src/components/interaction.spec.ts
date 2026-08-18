@@ -36,13 +36,15 @@ describe('chat detail components', () => {
     expect(attached.emitted('remove')).toEqual([[7]])
   })
 
-  it('uses the controlled download endpoint for completed legacy PPT tasks', () => {
+  it('uses a controlled download action for completed legacy PPT tasks', () => {
     const card = mount(PptTaskCard, { props: { entry: {
       kind: 'ppt',
       prompt: 'Create a quarterly summary',
       task: { taskId: 9, status: 'SUCCESS', errorMsg: null, outputPath: 'E:/internal/ppt/9.pptx' }
     } } })
 
-    expect(card.find('a').attributes('href')).toBe('/agent/v1/ppt/9/download')
+    expect(card.find('a').exists()).toBe(false)
+    expect(card.find('.task-actions button').text()).toContain('下载 PPT')
+    expect(card.text()).not.toContain('E:/internal/ppt/9.pptx')
   })
 })
