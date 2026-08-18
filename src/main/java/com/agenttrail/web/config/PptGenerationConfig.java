@@ -5,6 +5,9 @@ import com.agenttrail.loop.core.AgentLoopExecutor;
 import com.agenttrail.capability.ppt.JdbcPptTaskStore;
 import com.agenttrail.capability.ppt.PptGenerationService;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
+import com.agenttrail.capability.ppt.PptGenerationMetrics;
+import com.agenttrail.capability.ppt.PptRetryPolicy;
+import com.agenttrail.capability.ppt.PptCancellationRegistry;
 import com.agenttrail.capability.ppt.PptRecoveryCoordinator;
 import com.agenttrail.capability.ppt.PptPythonRenderer;
 import com.agenttrail.capability.ppt.PptTaskStore;
@@ -33,6 +36,7 @@ import com.agenttrail.runtime.lifecycle.LeaseManager;
 import com.agenttrail.infrastructure.lease.RedisLeaseManager;
 import com.agenttrail.loop.task.RedisTaskLock;
 import io.minio.MinioClient;
+import io.micrometer.core.instrument.MeterRegistry;
 import okhttp3.OkHttpClient;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.ObjectProvider;
@@ -284,6 +288,12 @@ public class PptGenerationConfig {
         return new ImageStrategy(pptTextToImageClient, pptImageStore);
     }
 
+    /** 指标 bean 可选：没有 actuator/registry 的开发环境仍使用同一状态机，只是不注册时间序列。 */
+    @Bean
+    public PptGenerationMetrics pptGenerationMetrics(ObjectProvider<MeterRegistry> meterRegistries) {
+        return new PptGenerationMetrics(meterRegistries.getIfAvailable());
+    }
+
     /**
      * Spring 按接口类型把上面全部 {@link PptGenerationStrategy} bean 自动收集成一个
      * {@code List}——不需要在这里手写"哪个状态对应哪个实现"的映射，
@@ -291,7 +301,9 @@ public class PptGenerationConfig {
      */
     @Bean
     public PptGenerationService pptGenerationService(PptTaskStore pptTaskStore,
-            List<PptGenerationStrategy> pptGenerationStrategies, LeaseManager pptLeaseManager) {
-        return new PptGenerationService(pptTaskStore, pptGenerationStrategies, pptLeaseManager);
+            List<PptGenerationStrategy> pptGenerationStrategies, LeaseManager pptLeaseManager,
+            PptGenerationMetrics pptGenerationMetrics) {
+        return new PptGenerationService(pptTaskStore, pptGenerationStrategies, pptLeaseManager,
+                PptRetryPolicy.defaults(), new PptCancellationRegistry(), pptGenerationMetrics);
     }
 }

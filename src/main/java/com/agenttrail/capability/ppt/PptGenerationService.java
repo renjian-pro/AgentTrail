@@ -48,6 +48,7 @@ public class PptGenerationService {
     private final LeaseManager leaseManager;
     private final PptRetryPolicy retryPolicy;
     private final PptCancellationRegistry cancellationRegistry;
+    private final PptGenerationMetrics metrics;
     private static final Duration RUN_LEASE_TTL = Duration.ofMinutes(10);
     private final java.util.Set<Long> idempotencyReplays = ConcurrentHashMap.newKeySet();
 
@@ -62,15 +63,25 @@ public class PptGenerationService {
 
     public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies,
             LeaseManager leaseManager, PptRetryPolicy retryPolicy) {
-        this(taskStore, strategies, leaseManager, retryPolicy, new PptCancellationRegistry());
+        this(taskStore, strategies, leaseManager, retryPolicy, new PptCancellationRegistry(),
+                new PptGenerationMetrics(null));
     }
 
     public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies,
             LeaseManager leaseManager, PptRetryPolicy retryPolicy, PptCancellationRegistry cancellationRegistry) {
+        this(taskStore, strategies, leaseManager, retryPolicy, cancellationRegistry,
+                new PptGenerationMetrics(null));
+    }
+
+    /** 生产装配可注入 Micrometer；旧构造函数保持无指标的兼容行为。 */
+    public PptGenerationService(PptTaskStore taskStore, List<PptGenerationStrategy> strategies,
+            LeaseManager leaseManager, PptRetryPolicy retryPolicy, PptCancellationRegistry cancellationRegistry,
+            PptGenerationMetrics metrics) {
         this.taskStore = taskStore;
         this.leaseManager = leaseManager;
         this.retryPolicy = retryPolicy;
         this.cancellationRegistry = cancellationRegistry;
+        this.metrics = metrics == null ? new PptGenerationMetrics(null) : metrics;
         this.strategiesByState = strategies.stream()
                 .collect(Collectors.toMap(PptGenerationStrategy::handledState, strategy -> strategy));
         for (PptState state : ORDER) {
@@ -271,9 +282,15 @@ public class PptGenerationService {
                 if (strategy == null) {
                     throw new IllegalStateException("没有登记状态 " + current + " 对应的 Strategy 实现");
                 }
+                int stageAttempt = taskStore.findById(taskId).map(PptTask::attempt).orElse(1);
+                log.info("PPT stage started taskId={} conversationId={} stage={} attempt={} revision={}",
+                        taskId, task.conversationId(), current, stageAttempt, revision);
+                long stageStartedAt = System.nanoTime();
                 try {
                     context = strategy.execute(context, cancellationToken);
+                    metrics.stageSucceeded(current, System.nanoTime() - stageStartedAt);
                 } catch (PptCancellationException cancelled) {
+                    metrics.taskCancelled();
                     taskStore.markCancelled(taskId, current);
                     return;
                 } catch (Exception executionFailed) {
@@ -283,6 +300,7 @@ public class PptGenerationService {
                     if (retryClass == com.agenttrail.platform.error.RetryClass.NONE) {
                         retryClass = com.agenttrail.platform.error.RetryClass.FATAL;
                     }
+                    metrics.stageFailed(current, System.nanoTime() - stageStartedAt, retryClass.name());
                     String errorMsg = userFailureMessage(current, stableFailureCode(executionFailed));
                     int attempt = Math.max(taskStore.findById(taskId).map(PptTask::attempt).orElse(1), 1);
                     PptFailure failure = new PptFailure(stableFailureCode(executionFailed), current,
@@ -297,6 +315,7 @@ public class PptGenerationService {
                             failureStatus, nextRetryAt)) {
                         throw new PptCheckpointConflictException(taskId, current, revision);
                     }
+                    if (!retry) metrics.taskFailed();
                     throw new PptGenerationException("PPT 生成在状态 " + current + " 失败: " + errorMsg, executionFailed);
                 }
                 if (!leaseManager.renew(leaseKey, RUN_LEASE_TTL)) {
@@ -323,9 +342,12 @@ public class PptGenerationService {
                 if (!taskStore.conditionalAdvance(taskId, current, revision, next, nextRunStatus, context)) {
                     throw new PptCheckpointConflictException(taskId, current, revision);
                 }
+                log.info("PPT checkpoint committed taskId={} conversationId={} from={} to={} revision={}",
+                        taskId, task.conversationId(), current, next, revision + 1);
                 revision++;
                 current = next;
             }
+            metrics.taskSucceeded();
         } finally {
             leaseManager.release(leaseKey);
             cancellationRegistry.remove(taskId);
