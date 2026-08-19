@@ -43,4 +43,31 @@ public record PptTemplateVersion(String templateId, String version, String name,
                 "ppt-template/default/1", checksum, PptTemplateStatus.ACTIVE,
                 System.currentTimeMillis(), path);
     }
+
+    /** 内置富视觉模板契约；description 同时给 Schema 模型提供逐页字段映射。 */
+    public static PptTemplateVersion richContract(String path, String checksum) {
+        return new PptTemplateVersion("default", "1", "AgentTrail Rich",
+                "COVER: title(7), description(30), author(10); "
+                        + "CATALOG: catalog1(9), catalog2(9), catalog3(9); "
+                        + "COMPARE: title(9), content1(60), content2(60); "
+                        + "CONTENT: title(9), subTitle(4), content(55), image; END: title(5)",
+                Set.of("technology", "dark", "visual"),
+                Set.of(PptPageType.COVER, PptPageType.CATALOG, PptPageType.COMPARE,
+                        PptPageType.CONTENT, PptPageType.END),
+                Map.ofEntries(
+                        Map.entry("title", new PptTemplateField("title", PptFieldType.TEXT, false, 9)),
+                        Map.entry("description",
+                                new PptTemplateField("description", PptFieldType.TEXT, false, 30)),
+                        Map.entry("author", new PptTemplateField("author", PptFieldType.TEXT, false, 10)),
+                        Map.entry("catalog1", new PptTemplateField("catalog1", PptFieldType.TEXT, false, 9)),
+                        Map.entry("catalog2", new PptTemplateField("catalog2", PptFieldType.TEXT, false, 9)),
+                        Map.entry("catalog3", new PptTemplateField("catalog3", PptFieldType.TEXT, false, 9)),
+                        Map.entry("content1", new PptTemplateField("content1", PptFieldType.TEXT, false, 60)),
+                        Map.entry("content2", new PptTemplateField("content2", PptFieldType.TEXT, false, 60)),
+                        Map.entry("subTitle", new PptTemplateField("subTitle", PptFieldType.TEXT, false, 4)),
+                        Map.entry("content", new PptTemplateField("content", PptFieldType.TEXT, false, 55)),
+                        Map.entry("image", new PptTemplateField("image", PptFieldType.IMAGE, false, 0))),
+                "ppt-template/default/1", checksum, PptTemplateStatus.ACTIVE,
+                System.currentTimeMillis(), path);
+    }
 }

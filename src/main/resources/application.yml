@@ -125,8 +125,8 @@ agenttrail:
         pool-size: 2
         queue-capacity: 8
     python-executable: python
-    render-script-path: src/main/resources/ppt-scripts/render_ppt.py
-    template-path: src/main/resources/ppt-templates/default-template.pptx
+    render-script-path: src/main/resources/ppt-scripts/render_ppt_rich.py
+    template-path: src/main/resources/ppt-templates/rich-template.pptx
     template-allowlist-dir: src/main/resources/ppt-templates
     output-dir: target/ppt-output
     artifact-root: target/ppt-artifacts

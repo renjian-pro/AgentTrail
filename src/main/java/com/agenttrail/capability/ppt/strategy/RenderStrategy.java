@@ -154,17 +154,11 @@ public class RenderStrategy implements PptGenerationStrategy {
 
     private static PptTextFill toTextFill(String fieldName, PptField field) {
         String text = field.text() != null ? field.text() : field.value() == null ? "" : String.valueOf(field.value());
-        String shapeName = switch (fieldName) {
-            case "title", "titleText", "title_text" -> PptTemplateSpec.TITLE_SHAPE;
-            case "subtitle", "subtitleText", "subtitle_text" -> PptTemplateSpec.SUBTITLE_SHAPE;
-            case "slideTitle", "slideTitleText", "slide_title_text" -> PptTemplateSpec.CONTENT_TITLE_SHAPE;
-            case "body", "content", "slideBody", "slideBodyText", "slide_body_text" -> PptTemplateSpec.CONTENT_BODY_SHAPE;
-            default -> fieldName;
-        };
-        int fontLimit = shapeName.equals(PptTemplateSpec.TITLE_SHAPE) ? PptTemplateSpec.TITLE_FONT_LIMIT
-                : shapeName.equals(PptTemplateSpec.SUBTITLE_SHAPE) ? PptTemplateSpec.SUBTITLE_FONT_LIMIT
-                : shapeName.equals(PptTemplateSpec.CONTENT_TITLE_SHAPE) ? PptTemplateSpec.CONTENT_TITLE_FONT_LIMIT
+        // 动态 Schema 的字段名就是模板 shape name，不能在渲染 seam 再翻译成旧模板字段。
+        int fontLimit = fieldName.equals(PptTemplateSpec.TITLE_SHAPE) ? PptTemplateSpec.TITLE_FONT_LIMIT
+                : fieldName.equals(PptTemplateSpec.SUBTITLE_SHAPE) ? PptTemplateSpec.SUBTITLE_FONT_LIMIT
+                : fieldName.equals(PptTemplateSpec.CONTENT_TITLE_SHAPE) ? PptTemplateSpec.CONTENT_TITLE_FONT_LIMIT
                 : PptTemplateSpec.CONTENT_BODY_FONT_LIMIT;
-        return new PptTextFill(shapeName, text, fontLimit);
+        return new PptTextFill(fieldName, text, fontLimit);
     }
 }

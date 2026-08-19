@@ -47,6 +47,22 @@ class PptTemplateContractTest {
     }
 
     @Test
+    void exposesTheRichTemplatePageTypesAndActualShapeNames() {
+        Path path = Path.of("src/main/resources/ppt-templates/rich-template.pptx").toAbsolutePath().normalize();
+
+        PptTemplateVersion template = PptTemplateVersion.richContract(path.toString(),
+                PptTemplateChecksum.sha256(path));
+
+        assertThat(template.supportedPageTypes()).containsExactlyInAnyOrder(
+                PptPageType.COVER, PptPageType.CATALOG, PptPageType.COMPARE,
+                PptPageType.CONTENT, PptPageType.END);
+        assertThat(template.templateSchema()).containsKeys(
+                "title", "description", "author", "catalog1", "catalog2", "catalog3",
+                "content1", "content2", "subTitle", "content", "image");
+        assertThat(template.description()).contains("COVER: title(7)", "CONTENT: title(9)");
+    }
+
+    @Test
     void validatesDynamicPagesAndPreservesVisualPlanAndAssetsInCheckpointJson() {
         PptTemplateVersion template = new PptTemplateVersion("demo", "1", "demo", "demo", Set.of(),
                 Set.of(PptPageType.CONTENT), Map.of(

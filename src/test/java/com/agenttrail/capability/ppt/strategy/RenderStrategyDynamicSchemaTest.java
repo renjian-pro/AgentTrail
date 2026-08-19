@@ -49,7 +49,7 @@ class RenderStrategyDynamicSchemaTest {
                 .contains("\"pageType\":\"COVER\"")
                 .contains("\"templatePageRef\":\"CONTENT\"")
                 .contains("\"speakerNotes\":\"演讲备注\"")
-                .contains("\"shapeName\":\"slide_title_text\"")
+                .contains("\"shapeName\":\"slideTitle\"")
                 .contains("动态标题"));
     }
 }

@@ -139,7 +139,7 @@ public class PptGenerationConfig {
     @Bean
     public PptPythonRenderer pptPythonRenderer(
             @Value("${agenttrail.ppt.python-executable:python}") String pythonExecutable,
-            @Value("${agenttrail.ppt.render-script-path:src/main/resources/ppt-scripts/render_ppt.py}")
+            @Value("${agenttrail.ppt.render-script-path:src/main/resources/ppt-scripts/render_ppt_rich.py}")
             String renderScriptPath,
             @Value("${agenttrail.ppt.render-timeout-seconds:60}") long renderTimeoutSeconds) {
         return new PptPythonRenderer(pythonExecutable, renderScriptPath, renderTimeoutSeconds);
@@ -181,7 +181,7 @@ public class PptGenerationConfig {
 
     @Bean
     public TemplateStrategy pptTemplateStrategy(
-            @Value("${agenttrail.ppt.template-path:src/main/resources/ppt-templates/default-template.pptx}")
+            @Value("${agenttrail.ppt.template-path:src/main/resources/ppt-templates/rich-template.pptx}")
             String templatePath,
             @Value("${agenttrail.ppt.template-allowlist-dir:src/main/resources/ppt-templates}") String allowlistDir,
             PptTemplateRegistry pptTemplateRegistry) {
@@ -194,11 +194,11 @@ public class PptGenerationConfig {
      */
     @Bean
     public PptTemplateRegistry pptTemplateRegistry(
-            @Value("${agenttrail.ppt.template-path:src/main/resources/ppt-templates/default-template.pptx}")
+            @Value("${agenttrail.ppt.template-path:src/main/resources/ppt-templates/rich-template.pptx}")
             String templatePath) {
         java.nio.file.Path path = java.nio.file.Path.of(templatePath).toAbsolutePath().normalize();
         InMemoryPptTemplateRegistry registry = new InMemoryPptTemplateRegistry();
-        registry.register(PptTemplateVersion.defaultContract(path.toString(), PptTemplateChecksum.sha256(path)));
+        registry.register(PptTemplateVersion.richContract(path.toString(), PptTemplateChecksum.sha256(path)));
         return registry;
     }
 

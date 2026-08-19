@@ -6,7 +6,7 @@
 agenttrail:
   ppt:
     python-executable: python3
-    render-script-path: /app/ppt-scripts/render_ppt.py
-    template-path: /app/ppt-templates/default-template.pptx
+    render-script-path: /app/ppt-scripts/render_ppt_rich.py
+    template-path: /app/ppt-templates/rich-template.pptx
     template-allowlist-dir: /app/ppt-templates
     output-dir: /app/ppt-output
