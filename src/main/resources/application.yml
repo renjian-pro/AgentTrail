@@ -117,6 +117,9 @@ agenttrail:
     executor:
       pool-size: 4
       queue-capacity: 20
+    recovery:
+      batch-size: 20
+      jitter-ms: 500
     render:
       executor:
         pool-size: 2
@@ -126,6 +129,7 @@ agenttrail:
     template-path: src/main/resources/ppt-templates/default-template.pptx
     template-allowlist-dir: src/main/resources/ppt-templates
     output-dir: target/ppt-output
+    artifact-root: target/ppt-artifacts
     render-timeout-seconds: 60
     model: deepseek-chat
     image:
