@@ -210,8 +210,9 @@ public class PptGenerationConfig {
 
     @Bean
     public SchemaStrategy pptSchemaStrategy(AgentLoopExecutorFactory executorFactory,
-            @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new SchemaStrategy(executorFactory.forInternalOrchestration(modelId, false));
+            @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId,
+            PptTemplateRegistry pptTemplateRegistry) {
+        return new SchemaStrategy(executorFactory.forInternalOrchestration(modelId, false), pptTemplateRegistry);
     }
 
     /** 视觉规划独立落 checkpoint，后续模板/Schema/素材阶段共享同一份规划。 */

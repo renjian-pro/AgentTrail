@@ -69,7 +69,9 @@ class ImageStrategyTest {
 
         strategy.execute(contextWithSchema());
 
-        assertThat(imageClient.receivedPrompt).contains("Spring AI Agent").contains("团队内部");
+        assertThat(imageClient.receivedPrompt)
+                .contains("Spring AI Agent", "团队内部")
+                .contains("16:9", "无文字", "构图");
     }
 
     @Test

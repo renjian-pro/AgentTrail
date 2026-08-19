@@ -10,8 +10,10 @@ import com.agenttrail.capability.ppt.PptCancellationToken;
 import com.agenttrail.capability.ppt.PptFieldType;
 import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
+import com.agenttrail.capability.ppt.PptPrompts;
 import com.agenttrail.capability.ppt.PptSchema;
 import com.agenttrail.capability.ppt.PptState;
+import com.agenttrail.capability.ppt.PptVisualPlan;
 import com.agenttrail.capability.ppt.PptWarning;
 import com.agenttrail.capability.ppt.image.PptImageStore;
 import com.agenttrail.capability.ppt.image.TextToImageClient;
@@ -86,8 +88,15 @@ public class ImageStrategy implements PptGenerationStrategy {
 
     private static String buildCoverImagePrompt(PptGenerationContext context) {
         var requirement = context.requirement();
-        String style = context.visualPlan() == null ? "插画风格" : context.visualPlan().imageStyle();
-        return ("为一份 PPT 生成一张适合作为封面的%s配图，主题是「%s」，面向%s，"
-                + "画面里不要出现任何文字。").formatted(style, requirement.topic(), requirement.audience());
+        PptVisualPlan visual = context.visualPlan() == null
+                ? PptVisualPlan.defaultFor(requirement) : context.visualPlan();
+        return PptPrompts.IMAGE.formatted(
+                requirement.topic(),
+                requirement.audience(),
+                visual.imageStyle(),
+                visual.pageSize(),
+                visual.styleKeywords(),
+                visual.primaryColor(),
+                visual.backgroundColor());
     }
 }

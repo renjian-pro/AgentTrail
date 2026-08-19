@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * CLARIFY 状态的判定语义——和 {@code DeepResearchServiceTest} 里对 {@code needsMoreInfo} 的用例
- * 一一对应：固定标记优先、关键词兜底、都不命中时默认放行。
+ * 基本判定沿用固定标记优先、关键词兜底；纯执行命令则必须先经过确定性拦截，不能让模型补写需求。
  */
 class ClarifyStrategyTest {
 
@@ -37,6 +37,20 @@ class ClarifyStrategyTest {
         PptGenerationContext result = strategy.execute(PptGenerationContext.initial("conv-1", "做一份 Spring AI 分享"));
 
         assertThat(result.clarifyingQuestion()).isNull();
+    }
+
+    @Test
+    void vagueGenerateCommandCannotBypassClarificationEvenWhenTheModelInventsDefaults() {
+        ClarifyStrategy strategy = strategyReturning(
+                "【开始生成】已采用默认设置：需求分析概述、3 页、专业简洁、团队内部汇报。");
+
+        PptGenerationContext result = strategy.execute(PptGenerationContext.initial("conv-1", "生成吧"));
+
+        assertThat(result.clarifyingQuestion())
+                .contains("主题")
+                .contains("页数")
+                .contains("风格")
+                .contains("受众");
     }
 
     /**

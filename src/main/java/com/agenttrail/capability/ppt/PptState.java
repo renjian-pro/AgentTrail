@@ -12,8 +12,8 @@ package com.agenttrail.capability.ppt;
  * {@code coverImageUrl}）翻译成渲染用的机械结构，先后顺序上必须排在 RENDER 之前。
  *
  * <p>{@code CLARIFY} 紧跟 {@code INIT}：它只做"信息够不够开始做"的判定，必须排在
- * {@code REQUIREMENT} 之前——{@code REQUIREMENT} 的提示词是"用户没说就合理推断一个默认值",
- * 一旦跑到那里，需求含糊这件事就被默认值悄悄抹平了，再没有追问的时机。
+ * {@code REQUIREMENT} 之前——先收齐主题、页数、风格和受众，再把已确认信息结构化，避免后续
+ * 阶段为了满足输出 Schema 而擅自补写业务需求。
  */
 public enum PptState {
     INIT,

@@ -3,7 +3,7 @@ package com.agenttrail.capability.ppt;
 import com.agenttrail.loop.prompt.PromptRegistry;
 
 /**
- * PPT 生成各 LLM 驱动状态的提示词（issue #24）——REQUIREMENT/OUTLINE/SCHEMA 三个状态各一段，
+ * PPT 生成各模型驱动状态的提示词（issue #24）——CLARIFY/REQUIREMENT/SEARCH/OUTLINE/SCHEMA/IMAGE 各一段，
  * 风格上和 {@code DeepResearchPrompts} 保持一致：结构化输出的格式指令由
  * {@link com.agenttrail.runtime.api.OutputType} 机制自动追加在问题末尾，这里的常量本身不含
  * 格式指令文本。
@@ -45,6 +45,9 @@ public final class PptPrompts {
 
     /** {@code %s} 是需求摘要 + 素材，OUTLINE 需要看到 REQUIREMENT 和 SEARCH 两个状态的产出。 */
     public static final String OUTLINE = PROMPTS.text("ppt.outline");
+
+    /** IMAGE 状态使用的文生图提示模板，依次注入主题、受众和全局视觉规划。 */
+    public static final String IMAGE = PROMPTS.text("ppt.image");
 
     /** {@code %s} 是 OUTLINE 的产出，同时把模板 shape 的字数上限写进 Prompt（软约束，见踩坑点 #53）。 */
     public static final String SCHEMA = PROMPTS.text("ppt.schema").formatted(
