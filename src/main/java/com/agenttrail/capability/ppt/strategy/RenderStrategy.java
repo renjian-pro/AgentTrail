@@ -29,6 +29,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
+import java.util.function.Function;
 
 /**
  * RENDER 状态（issue #24）：把 {@link PptSchema}（面向模型的语义化结构）翻译成
@@ -49,15 +50,27 @@ public class RenderStrategy implements PptGenerationStrategy {
     private final RenderPort renderPort;
     private final Path outputDir;
     private final Executor renderExecutor;
+    private final Function<String, String> imageReferenceResolver;
 
     public RenderStrategy(PptPythonRenderer renderer, String outputDir) {
-        this(new ProcessBuilderRenderPort(renderer), outputDir, null);
+        this(new ProcessBuilderRenderPort(renderer), outputDir, null, Function.identity());
+    }
+
+    public RenderStrategy(PptPythonRenderer renderer, String outputDir,
+            Function<String, String> imageReferenceResolver) {
+        this(new ProcessBuilderRenderPort(renderer), outputDir, null, imageReferenceResolver);
     }
 
     public RenderStrategy(RenderPort renderPort, String outputDir, Executor renderExecutor) {
+        this(renderPort, outputDir, renderExecutor, Function.identity());
+    }
+
+    public RenderStrategy(RenderPort renderPort, String outputDir, Executor renderExecutor,
+            Function<String, String> imageReferenceResolver) {
         this.renderPort = renderPort;
         this.outputDir = Path.of(outputDir);
         this.renderExecutor = renderExecutor;
+        this.imageReferenceResolver = imageReferenceResolver == null ? Function.identity() : imageReferenceResolver;
     }
 
     @Override
@@ -85,12 +98,20 @@ public class RenderStrategy implements PptGenerationStrategy {
         Path schemaFile = workDir.resolve("schema.json");
         Path outputFile = workDir.resolve("presentation.pptx");
 
-        PptRenderPayload payload = toRenderPayload(context.schema());
+        PptRenderPayload payload = toRenderPayload(context.schema(), imageReferenceResolver);
+        long imageReferenceCount = payload.pages().stream()
+                .flatMap(page -> page.fills().stream())
+                .filter(field -> "IMAGE".equals(field.type()) || "BACKGROUND".equals(field.type()))
+                .filter(field -> field.url() != null && !field.url().isBlank())
+                .count();
+        if (payload.titleSlideImageUrl() != null && !payload.titleSlideImageUrl().isBlank()) {
+            imageReferenceCount++;
+        }
         long renderStartedAt = System.nanoTime();
-        log.info("PPT render started conversationId={} templateName={} pageCount={} dynamicPages={}",
+        log.info("PPT render started conversationId={} templateName={} pageCount={} dynamicPages={} imageReferences={}",
                 context.conversationId(), templateName(context),
                 payload.pages().isEmpty() ? payload.contentSlides().size() + 1 : payload.pages().size(),
-                !payload.pages().isEmpty());
+                !payload.pages().isEmpty(), imageReferenceCount);
         try {
             Files.createDirectories(workDir);
             Files.writeString(schemaFile, MAPPER.writeValueAsString(payload), StandardCharsets.UTF_8);
@@ -146,12 +167,13 @@ public class RenderStrategy implements PptGenerationStrategy {
         catch (RuntimeException invalidPath) { return "INVALID"; }
     }
 
-    private static PptRenderPayload toRenderPayload(PptSchema schema) {
+    private static PptRenderPayload toRenderPayload(PptSchema schema,
+            Function<String, String> imageReferenceResolver) {
         if (schema.pages() != null && !schema.pages().isEmpty()) {
             List<DynamicPage> pages = schema.pages().stream()
                     .map(page -> new DynamicPage(page.pageId(), page.pageType().name(),
                             page.templatePageRef(), page.fields().entrySet().stream()
-                                    .map(entry -> toRenderField(entry.getKey(), entry.getValue()))
+                                    .map(entry -> toRenderField(entry.getKey(), entry.getValue(), imageReferenceResolver))
                                     .toList(), page.speakerNotes()))
                     .toList();
             // 动态页也提供 legacy 填充，旧渲染脚本/旧模板仍能安全降级；新脚本优先消费 pages。
@@ -159,7 +181,8 @@ public class RenderStrategy implements PptGenerationStrategy {
             List<TextFill> titleFills = legacyTextFills(cover.fills());
             List<ContentSlide> content = pages.subList(1, pages.size()).stream()
                     .map(page -> new ContentSlide(legacyTextFills(page.fills()))).toList();
-            return new PptRenderPayload(titleFills, content, schema.coverImageUrl(), pages);
+            return new PptRenderPayload(titleFills, content,
+                    resolveImageReference(schema.coverImageUrl(), imageReferenceResolver), pages);
         }
         List<TextFill> titleSlideFills = List.of(
                 new TextFill(PptTemplateSpec.TITLE_SHAPE, schema.titleText(), PptTemplateSpec.TITLE_FONT_LIMIT),
@@ -177,10 +200,12 @@ public class RenderStrategy implements PptGenerationStrategy {
         // 共用同一套"渲染载荷带图片信息、render_ppt.py 负责真正贴图"机制，见 PptRenderPayload
         // 类注释。为 null（没配图/断点续传时旧任务没有这个字段）时 render_ppt.py 自己退化成
         // Pillow 装饰图形兜底，这里不需要做任何 null 特判。
-        return new PptRenderPayload(titleSlideFills, contentSlides, schema.coverImageUrl(), List.of());
+        return new PptRenderPayload(titleSlideFills, contentSlides,
+                resolveImageReference(schema.coverImageUrl(), imageReferenceResolver), List.of());
     }
 
-    private static RenderField toRenderField(String fieldName, PptField field) {
+    private static RenderField toRenderField(String fieldName, PptField field,
+            Function<String, String> imageReferenceResolver) {
         String content = field.text() != null ? field.text()
                 : field.value() == null ? "" : String.valueOf(field.value());
         // 动态 Schema 的字段名就是模板 shape name，不能在渲染 seam 再翻译成旧模板字段。
@@ -190,8 +215,24 @@ public class RenderStrategy implements PptGenerationStrategy {
                 : PptTemplateSpec.CONTENT_BODY_FONT_LIMIT;
         String url = field.type() == com.agenttrail.capability.ppt.PptFieldType.IMAGE
                 || field.type() == com.agenttrail.capability.ppt.PptFieldType.BACKGROUND
-                        ? field.artifactId() : null;
+                        ? resolveImageReference(field.artifactId(), imageReferenceResolver) : null;
         return new RenderField(fieldName, field.type().name(), content, url, fontLimit);
+    }
+
+    private static String resolveImageReference(String storedReference,
+            Function<String, String> imageReferenceResolver) {
+        if (storedReference == null || storedReference.isBlank()) return null;
+        final String resolved;
+        try {
+            resolved = imageReferenceResolver.apply(storedReference);
+        } catch (RuntimeException resolveFailed) {
+            throw new PptGenerationException("解析 PPT 图片引用失败: " + storedReference, resolveFailed);
+        }
+        if (resolved == null || !(resolved.startsWith("http://") || resolved.startsWith("https://")
+                || resolved.startsWith("file:"))) {
+            throw new PptGenerationException("PPT 图片引用无法解析为渲染器可读取的 URL: " + storedReference);
+        }
+        return resolved;
     }
 
     /** 仅为旧渲染脚本保留文本降级载荷；动态 Python 适配器消费完整 fields。 */

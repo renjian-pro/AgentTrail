@@ -224,9 +224,10 @@ public class PptGenerationConfig {
     @Bean
     public RenderStrategy pptRenderStrategy(PptPythonRenderer pptPythonRenderer,
             @Qualifier("pptRenderExecutor") ExecutorService pptRenderExecutor,
+            PptImageStore pptImageStore,
             @Value("${agenttrail.ppt.output-dir:target/ppt-output}") String outputDir) {
         return new RenderStrategy(new com.agenttrail.capability.ppt.ProcessBuilderRenderPort(pptPythonRenderer),
-                outputDir, pptRenderExecutor);
+                outputDir, pptRenderExecutor, pptImageStore::resolveForRender);
     }
 
     /**

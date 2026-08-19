@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * issue #31 的核心编排逻辑：{@link ImageStrategy} 只需要证明两件事——成功路径下，持久化进
- * {@link PptSchema#coverImageUrl()} 的是 {@link PptImageStore} 转存之后的 MinIO URL，不是
+ * {@link PptSchema#coverImageUrl()} 的是 {@link PptImageStore} 转存之后的稳定 MinIO 引用，不是
  * {@link TextToImageClient} 直接返回的临时链接；失败路径下（不管是调文生图 API 失败还是下载/
  * 转存 MinIO 失败），整个方法必须正常返回、不抛异常，不能拖垮整条 PPT 生成流水线（验收标准第四
  * 条）。真实 DashScope + 真实 MinIO 的端到端验证见 {@code ImageStrategyIT}。

@@ -50,6 +50,8 @@ public class PptPythonRenderer {
                 "--template", templatePath,
                 "--schema", schemaJsonFile.toString(),
                 "--output", outputFile.toString());
+        // Windows 默认控制台代码页会把 Python 的中文诊断变成问号，既影响排障也使测试无法可靠断言。
+        processBuilder.environment().put("PYTHONIOENCODING", "utf-8");
 
         Process process;
         try {

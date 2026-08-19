@@ -6,6 +6,7 @@ import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptPage;
 import com.agenttrail.capability.ppt.PptPageType;
 import com.agenttrail.capability.ppt.PptPythonRenderer;
+import com.agenttrail.capability.ppt.PptRenderException;
 import com.agenttrail.capability.ppt.PptSchema;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,9 +25,30 @@ import java.util.Arrays;
 import java.util.zip.ZipFile;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** 覆盖动态 Schema 到富模板渲染器的最短真实链路。 */
 class RenderStrategyRichTemplateTest {
+
+    @Test
+    void failsInsteadOfReportingSuccessWhenARequestedImageCannotBeDownloaded(@TempDir Path tempDir)
+            throws Exception {
+        PptSchema schema = new PptSchema("标题", "副标题", List.of(), null,
+                List.of(page("content", PptPageType.CONTENT, Map.of(
+                        "title", PptField.text("核心路径"),
+                        "image", new PptField(PptFieldType.IMAGE, null,
+                                "http://127.0.0.1:1/unreachable.png", "不可达测试图片")))),
+                "default", "1");
+        String template = new ClassPathResource("ppt-templates/rich-template.pptx").getFile().getAbsolutePath();
+        String script = new ClassPathResource("ppt-scripts/render_ppt_rich.py").getFile().getAbsolutePath();
+        RenderStrategy strategy = new RenderStrategy(new PptPythonRenderer("python", script, 60),
+                tempDir.toString());
+
+        assertThatThrownBy(() -> strategy.execute(PptGenerationContext.initial("rich-render-failure", "unused")
+                .withTemplatePath(template).withSchema(schema)))
+                .isInstanceOf(PptRenderException.class)
+                .hasMessageContaining("图片下载失败");
+    }
 
     @Test
     void rendersAllRichLayoutsThroughTheExistingJavaRendererInterface(@TempDir Path tempDir) throws Exception {
@@ -42,7 +64,7 @@ class RenderStrategyRichTemplateTest {
         });
         imageServer.start();
         try {
-            String imageUrl = "http://127.0.0.1:" + imageServer.getAddress().getPort() + "/replacement.png";
+            String storedObjectKey = "ppt/rich-render/content-image.png";
             List<PptPage> pages = List.of(
                 page("cover", PptPageType.COVER, Map.of(
                         "title", PptField.text("智能体时代"),
@@ -60,7 +82,7 @@ class RenderStrategyRichTemplateTest {
                         "title", PptField.text("核心路径"),
                         "subTitle", PptField.text("闭环"),
                         "content", PptField.text("需求、规划、生成、校验形成稳定闭环"),
-                        "image", new PptField(PptFieldType.IMAGE, null, imageUrl, "测试替换图片"))),
+                        "image", new PptField(PptFieldType.IMAGE, null, storedObjectKey, "测试替换图片"))),
                 page("end", PptPageType.END, Map.of("title", PptField.text("谢谢"))));
             PptSchema schema = new PptSchema("兼容标题", "兼容副标题", List.of(), null,
                     pages, "default", "1");
@@ -68,7 +90,9 @@ class RenderStrategyRichTemplateTest {
             String template = new ClassPathResource("ppt-templates/rich-template.pptx").getFile().getAbsolutePath();
             String script = new ClassPathResource("ppt-scripts/render_ppt_rich.py").getFile().getAbsolutePath();
             RenderStrategy strategy = new RenderStrategy(new PptPythonRenderer("python", script, 60),
-                    tempDir.toString());
+                    tempDir.toString(), reference -> storedObjectKey.equals(reference)
+                            ? "http://127.0.0.1:" + imageServer.getAddress().getPort() + "/replacement.png"
+                            : reference);
 
             Path output = Path.of(strategy.execute(PptGenerationContext.initial("rich-render", "unused")
                     .withTemplatePath(template).withSchema(schema)).outputPath());

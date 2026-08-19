@@ -4,6 +4,7 @@ import com.agenttrail.capability.ppt.PptContentSlideFill;
 import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptRequirement;
 import com.agenttrail.capability.ppt.PptSchema;
+import com.agenttrail.capability.ppt.image.PptImageStore;
 import com.agenttrail.support.LocalConfig;
 import com.agenttrail.support.SharedMySql;
 import io.minio.MinioClient;
@@ -52,8 +53,11 @@ class ImageStrategyIT {
     @Autowired
     private ImageStrategy imageStrategy;
 
+    @Autowired
+    private PptImageStore imageStore;
+
     @Test
-    void generatesARealImageDownloadsAndReuploadsToMinioAndTheSchemaReferencesTheMinioUrl() throws Exception {
+    void generatesARealImageDownloadsAndReuploadsToMinioAndTheSchemaReferencesTheStableObjectKey() throws Exception {
         PptSchema schemaBeforeImage = new PptSchema("Spring AI Agent 实战", "面向团队内部分享",
                 List.of(new PptContentSlideFill("为什么手写 ReAct Loop", "绕开 ChatClient 差异")));
         PptGenerationContext context = PptGenerationContext
@@ -64,15 +68,16 @@ class ImageStrategyIT {
 
         PptGenerationContext result = imageStrategy.execute(context);
 
-        String coverImageUrl = result.schema().coverImageUrl();
-        assertThat(coverImageUrl)
+        String storedReference = result.schema().coverImageUrl();
+        assertThat(storedReference)
                 .as("配图成功时 schema 必须真的多出一个 coverImageUrl——失败时才允许是 null，" +
                         "如果这个断言失败，很可能是 spring.ai.openai.api-key 没配或者 MinIO 没起，不是代码逻辑错")
                 .isNotBlank();
-        assertThat(coverImageUrl)
-                .as("持久化引用必须是自建 MinIO 的 URL，不能是 DashScope 返回的临时链接")
-                .startsWith(MINIO_ENDPOINT + "/" + MINIO_BUCKET + "/")
-                .doesNotContain("dashscope");
+        assertThat(storedReference)
+                .as("checkpoint 必须保存稳定 MinIO object key，不能保存 DashScope 或短时签名 URL")
+                .doesNotStartWith("http://")
+                .doesNotStartWith("https://")
+                .doesNotContain("dashscope", "X-Amz-Signature");
 
         // schema 原有的文字字段必须原样保留——IMAGE 状态只应该补上 coverImageUrl 这一个字段
         assertThat(result.schema().titleText()).isEqualTo("Spring AI Agent 实战");
@@ -84,18 +89,14 @@ class ImageStrategyIT {
                 .endpoint(MINIO_ENDPOINT)
                 .credentials(MINIO_ACCESS_KEY, MINIO_SECRET_KEY)
                 .build();
-        String bucketPrefix = "/" + MINIO_BUCKET + "/";
-        URI imageUri = URI.create(coverImageUrl);
-        assertThat(imageUri.getPath()).startsWith(bucketPrefix);
-        String objectKey = imageUri.getPath().substring(bucketPrefix.length());
         assertThat(minioClient.statObject(StatObjectArgs.builder()
                         .bucket(MINIO_BUCKET)
-                        .object(objectKey)
+                        .object(storedReference)
                         .build()))
                 .as("MinIO 里必须真的存在这个对象").isNotNull();
 
-        // 2) 这个 URL 现在应该是可以直接公开访问到的一张图片——证明"立即转存"这四个字确实做到了：
-        //    即使 DashScope 那个临时链接现在已经失效，我们自己的 MinIO URL 依然能访问
+        // 2) 渲染时才解析短时签名 URL；既验证私有 bucket 可读，也避免把会过期的 URL 持久化。
+        URI imageUri = URI.create(imageStore.resolveForRender(storedReference));
         HttpResponse<byte[]> response = HttpClient.newHttpClient().send(
                 HttpRequest.newBuilder(imageUri).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
         assertThat(response.statusCode()).isEqualTo(200);

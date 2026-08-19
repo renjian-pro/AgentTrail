@@ -3,12 +3,12 @@ package com.agenttrail.capability.ppt.image;
 import com.agenttrail.capability.ppt.PptCancellationToken;
 
 /**
- * 图片下载 + 转存 MinIO 的最小抽象（issue #31）——"拿到第三方临时 URL，返回自建 MinIO 上的永久
- * URL"这一个方法，具体走真实 MinIO SDK（{@link MinioPptImageStore}）还是别的对象存储，对上层
+ * 图片下载 + 转存 MinIO 的最小抽象（issue #31）——"拿到第三方临时 URL，返回自建存储中的稳定
+ * 引用"这一个方法，具体走真实 MinIO SDK（{@link MinioPptImageStore}）还是别的对象存储，对上层
  * {@code com.agenttrail.capability.ppt.strategy.ImageStrategy} 透明。
  *
  * <p>失败时抛 {@link PptImageException}，是否降级（配图失败不能拖垮整条 PPT 生成流水线）是调用方
- * 的职责——这一层只负责"要么真的存成功返回 MinIO URL，要么老实抛异常"，不会返回 null 静默失败，
+ * 的职责——这一层只负责"要么真的存成功返回稳定引用，要么老实抛异常"，不会返回 null 静默失败，
  * 那样会让调用方误以为"没有图"是正常状态，而不是"转存出错了"。
  */
 public interface PptImageStore {
@@ -18,7 +18,7 @@ public interface PptImageStore {
      * @param objectKeyPrefix   MinIO 对象 key 的前缀（调用方一般传会话/任务标识，方便运维排查这张图
      *                          是哪次 PPT 生成产出的），真正的 key 在这个前缀基础上追加随机后缀，
      *                          避免同一前缀并发写入互相覆盖
-     * @return 自建 MinIO 上的永久可访问 URL
+     * @return 自建存储中的稳定引用（生产 MinIO 实现返回 object key，不持久化会过期的签名 URL）
      */
     String downloadAndStore(String temporaryImageUrl, String objectKeyPrefix);
 
@@ -39,5 +39,13 @@ public interface PptImageStore {
             PptCancellationToken cancellationToken) {
         // 旧实现只理解 prefix；保留它的调用语义，真正需要稳定 object key 的生产实现覆盖此方法。
         return downloadAndStore(temporaryImageUrl, objectKeyPrefix, cancellationToken);
+    }
+
+    /**
+     * 把 checkpoint 中的稳定引用解析成当前渲染进程可读取的 URL。默认兼容已经是 HTTP(S) URL 的
+     * 测试替身和旧存储；私有对象存储实现应在这里生成短时签名 URL，而不是把签名 URL 写回 Schema。
+     */
+    default String resolveForRender(String storedReference) {
+        return storedReference;
     }
 }

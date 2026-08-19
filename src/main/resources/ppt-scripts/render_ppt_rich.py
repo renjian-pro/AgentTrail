@@ -5,7 +5,7 @@
 ✔ 支持新 JSON schema（type / content / url / fontLimit）
 ✔ 保留模板字体样式
 ✔ Group shape 支持
-✔ image 字段：仅 URL 才替换，非 URL 保留模板图
+✔ image 字段：有 URL 必须完成替换；无 URL 才保留模板图
 ✔ shape.name = JSON key 匹配
 ✔ 每页 background 支持（全屏背景图，最稳定）
 ✔ 自动清理模板页
@@ -56,7 +56,7 @@ def is_url(text):
         return False
     try:
         r = urlparse(text)
-        return r.scheme and r.netloc
+        return r.scheme in ("http", "https") and bool(r.netloc)
     except:
         return False
 
@@ -67,8 +67,10 @@ def download_image(url):
         r.raise_for_status()
         return BytesIO(r.content)
     except Exception as e:
-        print(f"❌ 图片下载失败: {url}, 错误: {e}")
-        return None
+        parsed = urlparse(url)
+        safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        # 不串出 requests 的原始异常，避免把 MinIO 签名 URL 的 query secret 写进任务日志。
+        raise RuntimeError(f"图片下载失败: {safe_url}, 错误: {type(e).__name__}") from None
 
 
 # =========================
@@ -131,8 +133,6 @@ def set_slide_background(slide, url):
     """
 
     img_data = download_image(url)
-    if not img_data:
-        return False
 
     try:
         from pptx.oxml import parse_xml
@@ -171,8 +171,7 @@ def set_slide_background(slide, url):
         return True
 
     except Exception as e:
-        print("❌ 设置背景失败:", e)
-        return False
+        raise RuntimeError(f"设置背景失败: {type(e).__name__}") from e
 
 
 # =========================
@@ -271,45 +270,49 @@ def fill_slide(slide, data):
 
         # ========= background（无需 shape）
         if field_type == "background":
-            if is_url(url):
+            if url:
+                if not is_url(url):
+                    raise RuntimeError(f"背景图不是可读取的 HTTP(S) URL: {key}")
                 set_slide_background(slide, url)
             continue
 
         shape = shape_map.get(key)
         if not shape:
+            if field_type == "image" and url:
+                raise RuntimeError(f"图片字段找不到模板 shape: {key}")
             print(f"⚠️ 未找到 shape: {key}")
             continue
 
         # ========= image
         if field_type == "image":
-            if is_url(url):
-                img_data = download_image(url)
-                if img_data:
-                    try:
-                        left, top, width, height = (
-                            shape.left,
-                            shape.top,
-                            shape.width,
-                            shape.height
-                        )
+            if not url:
+                # IMAGE 阶段允许单图失败降级；没有 artifact 引用时保留模板图。
+                continue
+            if not is_url(url):
+                raise RuntimeError(f"图片字段不是可读取的 HTTP(S) URL: {key}")
+            img_data = download_image(url)
+            try:
+                left, top, width, height = (
+                    shape.left,
+                    shape.top,
+                    shape.width,
+                    shape.height
+                )
 
-                        parent = shape._element.getparent()
-                        parent.remove(shape._element)
+                parent = shape._element.getparent()
+                parent.remove(shape._element)
 
-                        slide.shapes.add_picture(
-                            img_data,
-                            left,
-                            top,
-                            width=width,
-                            height=height
-                        )
+                slide.shapes.add_picture(
+                    img_data,
+                    left,
+                    top,
+                    width=width,
+                    height=height
+                )
 
-                        print(f"✓ 图片替换: {key}")
-
-                    except Exception as e:
-                        print(f"❌ 图片替换失败 {key}: {e}")
-
-            # 非 URL 保留模板图
+                print(f"✓ 图片替换: {key}")
+            except Exception as e:
+                raise RuntimeError(f"图片替换失败: {key}, 错误: {type(e).__name__}") from e
             continue
 
         # ========= text

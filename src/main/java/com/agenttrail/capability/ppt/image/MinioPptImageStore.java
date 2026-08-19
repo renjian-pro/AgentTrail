@@ -16,10 +16,10 @@ import java.util.UUID;
 import com.agenttrail.capability.ppt.PptCancellationToken;
 
 /**
- * issue #31 的核心落地：把文生图 API 返回的临时 URL 立即下载、转存进自建 MinIO，返回永久可访问的
- * URL——绝不持久化第三方那个临时链接本身（见 issue 描述：链接过期后历史 PPT 里的图就全部失效）。
+ * issue #31 的核心落地：把文生图 API 返回的临时 URL 立即下载、转存进自建 MinIO，返回稳定 object
+ * key——绝不持久化第三方链接或 MinIO 签名 URL；签名 URL 只在真正渲染时短时生成。
  *
- * <p>bucket 首次使用时惰性创建 + 设成公开只读下载策略，不像 issue #23 图表那样要求运维提前手工
+ * <p>bucket 首次使用时惰性创建，不像 issue #23 图表那样要求运维提前手工
  * 建好——这个项目里 issue #23 的 MinIO 写入是外部 mcp-echarts 进程自己管自己的 bucket，这是第一次
  * 由这个 Java 进程的生产代码直接持有 MinIO 写权限，既然自己管，就把"能不能正常用"的前置条件也在
  * 自己这一层兜住，不额外制造一个"部署文档里要记得手工建 bucket"的隐藏依赖。
@@ -27,6 +27,7 @@ import com.agenttrail.capability.ppt.PptCancellationToken;
 public class MinioPptImageStore implements PptImageStore {
 
     private static final Logger log = LoggerFactory.getLogger(MinioPptImageStore.class);
+    private static final Duration RENDER_URL_VALIDITY = Duration.ofMinutes(30);
 
     private final MinioClient minioClient;
     private final HttpClient downloadClient;
@@ -76,9 +77,19 @@ public class MinioPptImageStore implements PptImageStore {
             throw new PptImageException(
                     "上传图片到 MinIO 失败: bucket=" + bucket + " object=" + objectKey, uploadFailed);
         }
-        String publicUrl = objectKey;
-        log.info("PPT 配图已转存至 MinIO: {}", publicUrl);
+        log.info("PPT 配图已转存至 MinIO: bucket={} objectKey={}", bucket, objectKey);
         return objectKey;
+    }
+
+    @Override
+    public String resolveForRender(String storedReference) {
+        if (storedReference == null || storedReference.isBlank()) {
+            throw new PptImageException("生成 MinIO 签名 URL 失败: object key 为空");
+        }
+        if (storedReference.startsWith("http://") || storedReference.startsWith("https://")) {
+            return storedReference;
+        }
+        return presignedUrl(storedReference, RENDER_URL_VALIDITY);
     }
 
     public String presignedUrl(String objectKey, Duration validity) {
@@ -109,22 +120,6 @@ public class MinioPptImageStore implements PptImageStore {
                 throw new PptImageException("初始化 MinIO bucket 失败: " + bucket, ensureFailed);
             }
         }
-    }
-
-    private static String publicReadPolicy(String bucket) {
-        return """
-                {
-                  "Version": "2012-10-17",
-                  "Statement": [
-                    {
-                      "Effect": "Allow",
-                      "Principal": {"AWS": ["*"]},
-                      "Action": ["s3:GetObject"],
-                      "Resource": ["arn:aws:s3:::%s/*"]
-                    }
-                  ]
-                }
-                """.formatted(bucket);
     }
 
     private static String safePrefix(String objectKeyPrefix) {
