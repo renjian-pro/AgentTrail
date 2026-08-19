@@ -15,7 +15,7 @@ export type ChatTurn = {
   tools?: { name: string; toolCallId: string; detail: string; argumentsText: string; result?: string }[]
   approval?: ApprovalCardState
 }
-export type PptEntry = { kind: 'ppt'; prompt: string; task?: PptTask; error?: string }
+export type PptEntry = { kind: 'ppt'; prompt: string; task?: PptTask; error?: string; lastNotice?: string }
 export type ResearchEntry = {
   kind: 'research'
   question: string

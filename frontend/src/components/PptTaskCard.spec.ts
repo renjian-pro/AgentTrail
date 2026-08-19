@@ -59,4 +59,30 @@ describe('PptTaskCard 下载', () => {
 
     expect(wrapper.find('.error').text()).toContain('PPT 文件不存在')
   })
+
+  it('用可折叠过程展示整体阶段和图片明细，不再渲染追问或修改输入框', () => {
+    const task = {
+      taskId: 8, status: 'AWAITING_INPUT', errorMsg: null, outputPath: null,
+      clarifyingQuestion: '这份 PPT 主要想讲什么主题？',
+      taskView: {
+        taskId: 8, conversationId: 'conv-8', operation: 'CREATE', pipelineState: 'AWAITING_INPUT',
+        runStatus: 'WAITING_INPUT', revision: 4, currentStageLabel: '等待补充主题',
+        completedStages: ['INIT'], progressPercent: 9,
+        progressEvents: [
+          { sequence: 1, stage: 'INIT', level: 'STAGE', status: 'COMPLETED', message: '初始化任务完成', current: null, total: null, occurredAtMillis: 1 },
+          { sequence: 2, stage: 'IMAGE', level: 'DETAIL', status: 'COMPLETED', message: '图片生成完成（3/6）', current: 3, total: 6, occurredAtMillis: 2 }
+        ],
+        clarification: '这份 PPT 主要想讲什么主题？', failure: null, warnings: [], artifact: null,
+        baseTaskId: null, baseArtifactId: null, createdAtMillis: 1, updatedAtMillis: 2,
+        capabilities: { canCancel: false, canResume: false, canAnswer: true, canDownload: false, canModify: false }
+      }
+    }
+    const wrapper = mount(PptTaskCard, { props: { entry: { kind: 'ppt', prompt: '做一份 PPT', task } } })
+
+    expect(wrapper.get('.ppt-timeline').text()).toContain('初始化任务完成')
+    expect(wrapper.get('.ppt-timeline').text()).toContain('图片生成完成（3/6）')
+    expect(wrapper.get('.ppt-conversation-hint').text()).toContain('下方会话输入框回复')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.text()).toContain('下方会话输入框')
+  })
 })

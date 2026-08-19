@@ -48,9 +48,7 @@ class ClarifyStrategyTest {
 
         assertThat(result.clarifyingQuestion())
                 .contains("主题")
-                .contains("页数")
-                .contains("风格")
-                .contains("受众");
+                .doesNotContain("页数", "风格", "受众");
     }
 
     /**

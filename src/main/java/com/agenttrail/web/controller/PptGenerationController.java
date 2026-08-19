@@ -3,9 +3,10 @@ import com.agenttrail.web.dto.PptClarifyRequest;
 import com.agenttrail.web.dto.PptGenerationResponse;
 import com.agenttrail.web.dto.PptGenerationRequest;
 import com.agenttrail.web.dto.PptModifyRequest;
-import com.agenttrail.web.dto.PptTaskCapabilities;
-import com.agenttrail.web.dto.PptTaskView;
+import com.agenttrail.web.dto.PptMessageRequest;
 import com.agenttrail.web.service.CapabilityConversationService;
+import com.agenttrail.web.service.PptApplicationService;
+import com.agenttrail.web.service.PptTaskViewAssembler;
 
 import com.agenttrail.capability.ppt.PptGenerationService;
 import com.agenttrail.conversation.digest.ConversationDigestService;
@@ -45,14 +46,12 @@ import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.List;
-import java.util.ArrayList;
 
 /**
  * PPT 生成的 HTTP 入口（issue #24，异步化见后续 bug 修复）。{@code /create}/{@code /resume}
  * 只做"落库准备 + 把状态机丢到后台执行器"这一步就立即返回，真正的状态机推进
- * （{@link PptGenerationService#run}）在 {@link #pptGenerationExecutor} 上跑；前端靠轮询
+ * （{@link PptGenerationService#run}）在应用服务管理的后台执行器上跑；前端靠轮询
  * {@code GET /agent/v1/ppt/{taskId}} 观察进度——状态机每完成一个状态就会落库一次
  * checkpoint（见 {@link PptGenerationService} 类注释），轮询天然就能看到逐步推进的效果，
  * 不需要另外搭一条 SSE 推送通道。
@@ -67,26 +66,30 @@ public class PptGenerationController {
     private static final Logger log = LoggerFactory.getLogger(PptGenerationController.class);
 
     private final PptGenerationService pptGenerationService;
-    private final CapabilityConversationService conversationService;
-    private final Executor pptGenerationExecutor;
     private final PptArtifactStore artifactStore;
-    /**
-     * 已有会话里发起 PPT 时带上上下文摘要（issue #103）。此前只传当次那一句话，用户说
-     * "根据前面的会话做个 PPT" 会得到一份题为"前面的会话"的幻灯片，而且不报错。
-     */
-    private final ConversationDigestService digestService;
+    private final PptApplicationService applicationService;
+    private final PptTaskViewAssembler taskViewAssembler;
 
     /** 多个构造函数并存时 Spring 无法自行选择，生产装配走这一个。 */
     @Autowired
     public PptGenerationController(PptGenerationService pptGenerationService,
             CapabilityConversationService conversationService,
             @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor,
-            ConversationDigestService digestService, PptArtifactStore artifactStore) {
+            ConversationDigestService digestService, PptArtifactStore artifactStore,
+            PptApplicationService applicationService, PptTaskViewAssembler taskViewAssembler) {
         this.pptGenerationService = pptGenerationService;
-        this.conversationService = conversationService;
-        this.pptGenerationExecutor = pptGenerationExecutor;
-        this.digestService = digestService;
         this.artifactStore = artifactStore;
+        this.applicationService = applicationService;
+        this.taskViewAssembler = taskViewAssembler;
+    }
+
+    public PptGenerationController(PptGenerationService pptGenerationService,
+            CapabilityConversationService conversationService,
+            @Qualifier("pptGenerationExecutor") Executor pptGenerationExecutor,
+            ConversationDigestService digestService, PptArtifactStore artifactStore) {
+        this(pptGenerationService, conversationService, pptGenerationExecutor, digestService, artifactStore,
+                new PptApplicationService(pptGenerationService, conversationService,
+                        pptGenerationExecutor, digestService), new PptTaskViewAssembler(pptGenerationService));
     }
 
     /** 兼容旧签名：不带摘要服务时退化成"不带上下文"，行为与 issue #103 之前一致。 */
@@ -102,6 +105,23 @@ public class PptGenerationController {
                 }, null);
     }
 
+    /** 单一会话写入口：回答、取消、继续、修改和新建均由应用层结合当前任务状态路由。 */
+    @PostMapping("/agent/v1/ppt/message")
+    public PptGenerationResponse message(@Valid @RequestBody PptMessageRequest request) {
+        String userId = currentUserId();
+        try {
+            PptApplicationService.Result result = applicationService.handleMessage(userId, request);
+            return toResponse(userId, result.taskId());
+        } catch (RejectedExecutionException rejected) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "PPT 后台任务队列已满，请稍后重试", rejected);
+        } catch (IllegalArgumentException missingTask) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, missingTask.getMessage(), missingTask);
+        } catch (IllegalStateException conflict) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, conflict.getMessage(), conflict);
+        }
+    }
+
     /** 兼容没有对象存储的旧测试/装配，仍支持本机 outputPath 下载。 */
     public PptGenerationController(PptGenerationService pptGenerationService,
             CapabilityConversationService conversationService,
@@ -110,47 +130,33 @@ public class PptGenerationController {
         this(pptGenerationService, conversationService, pptGenerationExecutor, digestService, null);
     }
 
-    /** 触发条件是会话状态（已有历史就带），不解析用户有没有说"根据前面的"——踩坑点 #52 的既有结论。 */
-    private String withConversationContext(String conversationId, String message) {
-        return digestService.withContext(conversationId, message, "ppt");
-    }
-
     @PostMapping("/agent/v1/ppt/create")
     public PptGenerationResponse create(@Valid @RequestBody PptGenerationRequest request) {
-        long startedAt = System.nanoTime();
         String userId = currentUserId();
-        long taskId = prepareTask(userId, request);
-        if (!pptGenerationService.consumeIdempotencyReplay(taskId)) {
-            runInBackgroundThenRecord(userId, taskId, request.conversationId(), request.message(), startedAt);
+        try {
+            long taskId = applicationService.create(userId, request.conversationId(), request.message(),
+                    request.idempotencyKey()).taskId();
+            return toResponse(userId, taskId);
+        } catch (RejectedExecutionException rejected) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "PPT 后台任务队列已满，请稍后重试", rejected);
         }
-        return toResponse(userId, taskId);
     }
 
     @PostMapping("/agent/v1/ppt/resume/{taskId}")
     public PptGenerationResponse resume(@PathVariable long taskId) {
         String userId = currentUserIdOrLegacyForDirectCall();
-        PptTask task = (userId == null ? pptGenerationService.describe(taskId)
-                : pptGenerationService.describe(userId, taskId))
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId));
-        // WAITING_INPUT、SUCCESS、CANCELLED 都有专用动作或终态；普通 resume 不能越过业务边界。
-        if (task.status() == com.agenttrail.capability.ppt.PptState.AWAITING_INPUT
-                || task.status() == com.agenttrail.capability.ppt.PptState.SUCCESS
-                || task.status() == com.agenttrail.capability.ppt.PptState.CANCELLED) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "PPT 任务当前状态不支持继续: " + task.status());
-        }
-        if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
-        }
-        // /resume 原本就不记会话历史（只有 /create 记）——异步化不改变这一点，行为对齐旧实现。
         try {
-            pptGenerationExecutor.execute(() -> runAndSwallow(userId, taskId));
+            applicationService.resume(userId, taskId);
+            return toResponse(userId, taskId);
+        } catch (IllegalArgumentException missingTask) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, missingTask.getMessage(), missingTask);
+        } catch (IllegalStateException invalidState) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, invalidState.getMessage(), invalidState);
         } catch (RejectedExecutionException rejected) {
-            String message = "PPT 后台任务队列已满，请稍后重试";
-            pptGenerationService.markSchedulingFailure(taskId, message);
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, message, rejected);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "PPT 后台任务队列已满，请稍后重试", rejected);
         }
-        return toResponse(userId, taskId);
     }
 
     /**
@@ -167,20 +173,16 @@ public class PptGenerationController {
     public PptGenerationResponse clarify(@PathVariable long taskId, @Valid @RequestBody PptClarifyRequest request) {
         String userId = currentUserIdOrLegacyForDirectCall();
         try {
-            pptGenerationService.answerClarification(userId, taskId, request.answer());
+            applicationService.answer(userId, taskId, request.answer());
+            return toResponse(userId, taskId);
         } catch (IllegalArgumentException missingTask) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, missingTask.getMessage(), missingTask);
         } catch (IllegalStateException notAwaiting) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, notAwaiting.getMessage(), notAwaiting);
-        }
-        try {
-            pptGenerationExecutor.execute(() -> runAndSwallow(userId, taskId));
         } catch (RejectedExecutionException rejected) {
-            String message = "PPT 后台任务队列已满，请稍后重试";
-            pptGenerationService.markSchedulingFailure(taskId, message);
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, message, rejected);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "PPT 后台任务队列已满，请稍后重试", rejected);
         }
-        return toResponse(userId, taskId);
     }
 
     /** 轮询端点：不驱动任何执行，纯读当前 checkpoint——前端靠反复调用这个来看到生成进度推进。 */
@@ -196,15 +198,12 @@ public class PptGenerationController {
     @PostMapping("/agent/v1/ppt/{taskId}/cancel")
     public PptGenerationResponse cancel(@PathVariable long taskId) {
         String userId = currentUserIdOrLegacyForDirectCall();
-        if (userId != null && pptGenerationService.describe(userId, taskId).isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 任务不存在: " + taskId);
-        }
         try {
-            pptGenerationService.requestCancel(taskId);
+            applicationService.cancel(userId, taskId);
+            return toResponse(userId, taskId);
         } catch (IllegalArgumentException missingTask) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, missingTask.getMessage(), missingTask);
         }
-        return toResponse(userId, taskId);
     }
 
     /** 查询一个会话的全部版本；用户归属由服务层带入 SQL 条件，不能仅凭 conversationId 查询。 */
@@ -233,24 +232,17 @@ public class PptGenerationController {
     public PptGenerationResponse modify(@PathVariable long taskId,
             @Valid @RequestBody PptModifyRequest request) {
         String userId = currentUserIdOrLegacyForDirectCall();
-        String scopedUserId = userId == null ? "legacy" : userId;
         final long newTaskId;
         try {
-            newTaskId = pptGenerationService.prepareModify(scopedUserId, taskId, request.message(),
-                    request.idempotencyKey());
+            newTaskId = applicationService.modify(userId, taskId, request.message(),
+                    request.idempotencyKey()).taskId();
         } catch (IllegalArgumentException missingOrInvalid) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, missingOrInvalid.getMessage(), missingOrInvalid);
         } catch (IllegalStateException invalidState) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, invalidState.getMessage(), invalidState);
-        }
-        if (!pptGenerationService.consumeIdempotencyReplay(newTaskId)) {
-            try {
-                pptGenerationExecutor.execute(() -> runAndSwallow(userId, newTaskId));
-            } catch (RejectedExecutionException rejected) {
-                String message = "PPT 后台任务队列已满，请稍后重试";
-                pptGenerationService.markSchedulingFailure(newTaskId, message);
-                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, message, rejected);
-            }
+        } catch (RejectedExecutionException rejected) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "PPT 后台任务队列已满，请稍后重试", rejected);
         }
         return toResponse(userId, newTaskId);
     }
@@ -258,42 +250,6 @@ public class PptGenerationController {
     @GetMapping("/agent/v1/ppt/running")
     public java.util.List<Long> runningTaskIds() {
         return pptGenerationService.runningTaskIdsFor(currentUserIdOrLegacyForDirectCall());
-    }
-
-    private void runInBackgroundThenRecord(String userId, long taskId, String conversationId, String message,
-            long startedAt) {
-        try {
-            pptGenerationExecutor.execute(() -> {
-            RuntimeException failure = null;
-            try {
-                if (userId == null) pptGenerationService.run(taskId); else pptGenerationService.run(userId, taskId);
-            } catch (RuntimeException runFailure) {
-                failure = runFailure;
-            }
-            long elapsed = elapsedMillis(startedAt);
-            if (failure == null) {
-                PptGenerationResponse response = toResponse(userId, taskId);
-                String answer = "PPT 任务状态：" + response.status();
-                conversationService.recordSuccess(userId, conversationId, message, answer, "ppt", response, elapsed);
-            } else {
-                conversationService.recordFailure(userId, conversationId, message, "ppt", failure.getMessage(), elapsed);
-            }
-            });
-        } catch (RejectedExecutionException rejected) {
-            String errorMessage = "PPT 后台任务队列已满，请稍后重试";
-            pptGenerationService.markSchedulingFailure(taskId, errorMessage);
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, errorMessage, rejected);
-        }
-    }
-
-    /** {@code run(taskId)} 失败时已经在内部把 errorMsg 落库了（{@code taskStore.markFailed}）——
-     * 轮询端点读得到；这里只需要不让异常从后台线程里裸抛出去，记一条日志留痕即可。 */
-    private void runAndSwallow(String userId, long taskId) {
-        try {
-            if (userId == null) pptGenerationService.run(taskId); else pptGenerationService.run(userId, taskId);
-        } catch (RuntimeException failure) {
-            log.warn("PPT 任务 {} 后台续跑失败（已落库 errorMsg，轮询可见）", taskId, failure);
-        }
     }
 
     /**
@@ -354,21 +310,7 @@ public class PptGenerationController {
     }
 
     private PptGenerationResponse toResponse(String userId, long taskId) {
-        PptTask task = (userId == null ? pptGenerationService.describe(taskId) : pptGenerationService.describe(userId, taskId))
-                .orElseThrow(() -> new IllegalStateException("PPT 任务不存在: " + taskId));
-        com.agenttrail.capability.ppt.PptGenerationContext context = safeContext(task);
-        String downloadUrl = task.status() == com.agenttrail.capability.ppt.PptState.SUCCESS
-                && (context == null || context.artifactRef() == null) && hasOutputFile(userId, taskId)
-                ? "/agent/v1/ppt/" + taskId + "/download"
-                : null;
-        if (task.status() == com.agenttrail.capability.ppt.PptState.SUCCESS && context != null
-                && context.artifactRef() != null) {
-            // 具体签名/代理下载仍由 /download 端点处理；这里只暴露稳定 task URL，不把签名 URL 落进快照。
-            downloadUrl = "/agent/v1/ppt/" + taskId + "/download";
-        }
-        PptTaskView view = buildTaskView(task, context);
-        return new PptGenerationResponse(taskId, task.status(), task.errorMsg(), downloadUrl,
-                pptGenerationService.pendingClarifyingQuestionOf(userId, taskId), view);
+        return taskViewAssembler.response(userId, taskId);
     }
 
     private com.agenttrail.capability.ppt.PptGenerationContext safeContext(PptTask task) {
@@ -378,66 +320,6 @@ public class PptGenerationController {
             log.warn("PPT 任务 {} 上下文快照无法装配统一视图", task.id(), malformed);
             return null;
         }
-    }
-
-    private PptTaskView buildTaskView(PptTask task, com.agenttrail.capability.ppt.PptGenerationContext context) {
-        List<com.agenttrail.capability.ppt.PptCheckpointEvent> events;
-        try {
-            events = pptGenerationService.eventsOf(task.id());
-        } catch (RuntimeException ignored) {
-            events = List.of();
-        }
-        if (events == null) events = List.of();
-        List<com.agenttrail.capability.ppt.PptState> completed = new ArrayList<>();
-        for (var event : events) {
-            if (com.agenttrail.capability.ppt.PptCheckpointEvent.OUTCOME_SUCCEEDED.equals(event.outcome())
-                    && !completed.contains(event.stage())) completed.add(event.stage());
-        }
-        List<com.agenttrail.capability.ppt.PptState> stages = List.of(
-                com.agenttrail.capability.ppt.PptState.INIT, com.agenttrail.capability.ppt.PptState.CLARIFY,
-                com.agenttrail.capability.ppt.PptState.REQUIREMENT, com.agenttrail.capability.ppt.PptState.SEARCH,
-                com.agenttrail.capability.ppt.PptState.VISUAL_PLAN,
-                com.agenttrail.capability.ppt.PptState.TEMPLATE, com.agenttrail.capability.ppt.PptState.OUTLINE,
-                com.agenttrail.capability.ppt.PptState.SCHEMA, com.agenttrail.capability.ppt.PptState.IMAGE,
-                com.agenttrail.capability.ppt.PptState.RENDER, com.agenttrail.capability.ppt.PptState.VERIFY);
-        int progress = task.status() == com.agenttrail.capability.ppt.PptState.SUCCESS ? 100
-                : Math.max(0, Math.min(99, (int) Math.round(100.0 * completed.size() / stages.size())));
-        boolean terminal = task.status() == com.agenttrail.capability.ppt.PptState.SUCCESS
-                || task.status() == com.agenttrail.capability.ppt.PptState.CANCELLED;
-        PptTaskCapabilities capabilities = new PptTaskCapabilities(
-                !terminal && task.status() != com.agenttrail.capability.ppt.PptState.AWAITING_INPUT,
-                task.status() != com.agenttrail.capability.ppt.PptState.SUCCESS
-                        && task.status() != com.agenttrail.capability.ppt.PptState.CANCELLED
-                        && task.status() != com.agenttrail.capability.ppt.PptState.AWAITING_INPUT,
-                task.status() == com.agenttrail.capability.ppt.PptState.AWAITING_INPUT,
-                task.status() == com.agenttrail.capability.ppt.PptState.SUCCESS
-                        && (context != null && context.artifactRef() != null || hasOutputFile(null, task.id())),
-                task.status() == com.agenttrail.capability.ppt.PptState.SUCCESS);
-        com.agenttrail.capability.ppt.PptFailure failure = null;
-        List<com.agenttrail.capability.ppt.PptWarning> warnings = List.of();
-        if (context != null) {
-            try { failure = pptGenerationService.failureOf(task); } catch (RuntimeException ignored) { }
-            try { warnings = pptGenerationService.warningsOf(task); } catch (RuntimeException ignored) { }
-        }
-        return new PptTaskView(task.id(), task.conversationId(), context == null ? "CREATE" : context.operation(),
-                task.status(), task.runStatus(),
-                task.revision(), task.status() == com.agenttrail.capability.ppt.PptState.AWAITING_INPUT
-                        ? "等待补充信息" : task.status().name(), completed, progress,
-                context == null ? null : context.clarifyingQuestion(), failure, warnings,
-                context == null ? null : context.artifactRef(), context == null ? null : context.baseTaskId(),
-                context == null ? null : context.baseArtifactId(), task.createdAtMillis(),
-                task.updatedAtMillis(), capabilities);
-    }
-
-    private long prepareTask(String userId, PptGenerationRequest request) {
-        String scopedUserId = userId == null ? "legacy" : userId;
-        if (request.idempotencyKey() == null || request.idempotencyKey().isBlank()) {
-            return pptGenerationService.prepare(scopedUserId, request.conversationId(),
-                    withConversationContext(request.conversationId(), request.message()));
-        }
-        return pptGenerationService.prepare(scopedUserId, request.conversationId(),
-                withConversationContext(request.conversationId(), request.message()),
-                request.idempotencyKey());
     }
 
     private boolean hasOutputFile(String userId, long taskId) {
@@ -476,10 +358,6 @@ public class PptGenerationController {
         } catch (InvalidPathException invalidPath) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 文件不存在: " + taskId, invalidPath);
         }
-    }
-
-    private static long elapsedMillis(long startedAt) {
-        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     private static String currentUserId() {

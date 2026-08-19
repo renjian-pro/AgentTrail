@@ -107,7 +107,7 @@ class PptGenerationServiceTest {
     }
 
     @Test
-    void resumeIntentContinuesFromCheckpointedStateByConversationIdNotFromInit() {
+    void explicitResumeContinuesFromCheckpointedStateNotFromInit() {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
         for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.VISUAL_PLAN, PptState.TEMPLATE,
@@ -125,38 +125,15 @@ class PptGenerationServiceTest {
         assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.SCHEMA);
 
         log.clear();
-        // 调用方只知道 conversationId，不知道 taskId——RESUME 分支自己按 conversationId 找到
-        // 这条中断的任务，而不是要求调用方传 taskId 进来
-        long resumedTaskId = service.create("conv-1", "继续生成之前那份 PPT");
+        service.run(taskId);
 
-        assertThat(resumedTaskId).as("RESUME 找到的应该是同一条中断的任务").isEqualTo(taskId);
         // 只重跑了 SCHEMA（这次成功）和它之后的 IMAGE/RENDER，INIT~OUTLINE 一次都没有重跑
         assertThat(log).containsExactly("SCHEMA#2", "IMAGE#1", "RENDER#1", "VERIFY#1");
         assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
     }
 
     @Test
-    void resumeIntentThrowsWhenNoTaskExistsForThatConversation() {
-        PptGenerationService service = new PptGenerationService(new InMemoryPptTaskStore(), allStates(new ArrayList<>()));
-
-        assertThatThrownBy(() -> service.create("conv-从来没建过任务", "继续生成之前那份 PPT"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("没有可以继续");
-    }
-
-    @Test
-    void resumeIntentThrowsWhenTheLatestTaskAlreadySucceeded() {
-        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
-        PptGenerationService service = new PptGenerationService(taskStore, allStates(new ArrayList<>()));
-        service.create("conv-1", "帮我做一份介绍 PPT"); // CREATE 一次跑到 SUCCESS
-
-        assertThatThrownBy(() -> service.create("conv-1", "继续生成之前那份 PPT"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("已经完成");
-    }
-
-    @Test
-    void modifyIntentLocatesTheLatestCompletedTaskAndOnlyRerunsFromSchemaOnward() {
+    void explicitModifyOnlyRerunsFromSchemaOnward() {
         List<String> log = new ArrayList<>();
         InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
         PptGenerationService service = new PptGenerationService(taskStore, allStates(log));
@@ -177,7 +154,8 @@ class PptGenerationServiceTest {
         long originalTaskId = taskStore.create("conv-1", original);
         taskStore.advance(originalTaskId, PptState.SUCCESS, original);
 
-        long modifiedTaskId = service.create("conv-1", "帮我修改这个标题");
+        long modifiedTaskId = service.prepareModify("legacy", originalTaskId, "帮我修改这个标题", null);
+        service.run(modifiedTaskId);
 
         assertThat(modifiedTaskId).as("MODIFY 新建一条任务，不覆盖原任务").isNotEqualTo(originalTaskId);
         // 只有 SCHEMA/IMAGE/RENDER 被真正执行过——INIT/REQUIREMENT/SEARCH/TEMPLATE/OUTLINE
@@ -201,32 +179,6 @@ class PptGenerationServiceTest {
     }
 
     @Test
-    void modifyIntentThrowsWhenNoCompletedTaskExistsForThatConversation() {
-        PptGenerationService service = new PptGenerationService(new InMemoryPptTaskStore(), allStates(new ArrayList<>()));
-
-        assertThatThrownBy(() -> service.create("conv-从来没建过任务", "帮我修改这个标题"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("没有已经生成完成");
-    }
-
-    @Test
-    void modifyIntentThrowsWhenTheLatestTaskForThatConversationIsStillMidFlight() {
-        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
-        List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.VISUAL_PLAN, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER, PptState.VERIFY)) {
-            strategies.add(new RecordingPptGenerationStrategy(state, new ArrayList<>()));
-        }
-        strategies.add(new RecordingPptGenerationStrategy(PptState.SCHEMA, new ArrayList<>(), Integer.MAX_VALUE));
-        PptGenerationService service = new PptGenerationService(taskStore, strategies);
-        assertThatThrownBy(() -> service.create("conv-1", "帮我做一份介绍 PPT")); // 卡在 SCHEMA，没跑到 SUCCESS
-
-        assertThatThrownBy(() -> service.create("conv-1", "帮我修改这个标题"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("没有已经生成完成");
-    }
-
-    @Test
     void explicitModifyUsesTheRequestedBaseTaskAndPersistsVersionMetadata() {
         InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
         PptGenerationService service = new PptGenerationService(taskStore, allStates(new ArrayList<>()));
@@ -243,6 +195,25 @@ class PptGenerationServiceTest {
         assertThat(modified.baseTaskId()).isEqualTo(baseTaskId);
         assertThat(modified.baseArtifactId()).isEqualTo("ppt-artifact-base");
         assertThat(modified.schema()).isEqualTo(baseContext.schema());
+    }
+
+    @Test
+    void activeTaskReplacementKeepsTheOriginalRequirementAndStartsFromInit() {
+        InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
+        PptGenerationService service = new PptGenerationService(taskStore, allStates(new ArrayList<>()));
+        PptGenerationContext baseContext = PptGenerationContext.initial("conv-1", "季度经营复盘");
+        long baseTaskId = taskStore.create("user-a", "conv-1", baseContext);
+        taskStore.advance(baseTaskId, PptState.IMAGE, baseContext);
+
+        long replacementId = service.prepareReplacement("user-a", baseTaskId,
+                "第二页改成流程图", "replacement-key");
+        PptTask replacementTask = taskStore.findById(replacementId).orElseThrow();
+        PptGenerationContext replacement = PptContextJson.fromJson(replacementTask.contextJson());
+
+        assertThat(replacementTask.status()).isEqualTo(PptState.INIT);
+        assertThat(replacement.operation()).isEqualTo("MODIFY");
+        assertThat(replacement.baseTaskId()).isEqualTo(baseTaskId);
+        assertThat(replacement.userRequirement()).contains("季度经营复盘", "第二页改成流程图");
     }
 
     @Test
@@ -354,12 +325,9 @@ class PptGenerationServiceTest {
         assertThat(service.runningTaskIdsFor("legacy")).isEmpty();
     }
 
-    /**
-     * 回答之后从 REQUIREMENT 继续，而且 **CLARIFY 不再跑第二次**——"只追问一轮"是靠跳过状态
-     * 达成的结构性约束，不是靠一个"已经问过了"的标志位。日志里 CLARIFY 只出现一次就是这条的证据。
-     */
+    /** 回答后必须重新采集并校验主题，不能因为用户回答过一次就无条件开工。 */
     @Test
-    void answeringTheClarificationResumesFromRequirementAndNeverAsksTwice() {
+    void answeringTheClarificationRunsClarifyAgainBeforeStartingWork() {
         List<String> log = new ArrayList<>();
         InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
         PptGenerationService service = new PptGenerationService(taskStore, askingClarify(log, "要做什么主题的 PPT？"));
@@ -369,7 +337,7 @@ class PptGenerationServiceTest {
         service.run(taskId);
 
         assertThat(log).containsExactly(
-                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "VISUAL_PLAN#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1",
+                "INIT#1", "CLARIFY#1", "CLARIFY#2", "REQUIREMENT#1", "SEARCH#1", "VISUAL_PLAN#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1",
                 "IMAGE#1", "RENDER#1", "VERIFY#1");
         assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
     }
@@ -385,8 +353,34 @@ class PptGenerationServiceTest {
         service.answerClarification("legacy", taskId, "讲三季度复盘");
 
         PptTask task = service.describe(taskId).orElseThrow();
-        assertThat(task.status()).isEqualTo(PptState.REQUIREMENT);
+        assertThat(task.status()).isEqualTo(PptState.CLARIFY);
         assertThat(task.contextJson()).contains("什么情况").contains("要做什么主题？").contains("讲三季度复盘");
+    }
+
+    @Test
+    void cannotAdvancePastRequirementWithoutAValidTopic() {
+        List<String> log = new ArrayList<>();
+        List<PptGenerationStrategy> strategies = allStates(log);
+        strategies.removeIf(strategy -> strategy.handledState() == PptState.REQUIREMENT);
+        strategies.add(new PptGenerationStrategy() {
+            @Override
+            public PptState handledState() {
+                return PptState.REQUIREMENT;
+            }
+
+            @Override
+            public PptGenerationContext execute(PptGenerationContext context) {
+                log.add("REQUIREMENT#1");
+                return context.withRequirement(null)
+                        .withClarifyingQuestion("这份 PPT 主要想讲什么主题？");
+            }
+        });
+        PptGenerationService service = new PptGenerationService(new InMemoryPptTaskStore(), strategies);
+
+        long taskId = service.create("conv-1", "给管理层看，控制在 8 页");
+
+        assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.AWAITING_INPUT);
+        assertThat(log).containsExactly("INIT#1", "CLARIFY#1", "REQUIREMENT#1");
     }
 
     /** 没在等人的任务收到"回答"，那其实是一句新需求——静默拿它覆盖掉正在跑的任务比报错难查得多。 */
@@ -431,7 +425,8 @@ class PptGenerationServiceTest {
             @Override
             public PptGenerationContext execute(PptGenerationContext context) {
                 log.add("CLARIFY#" + (++calls));
-                return context.withClarifyingQuestion(question);
+                return calls == 1 ? context.withClarifyingQuestion(question)
+                        : context.withClarifyingQuestion(null);
             }
         });
         return strategies;

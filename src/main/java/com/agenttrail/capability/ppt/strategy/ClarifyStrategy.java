@@ -42,7 +42,7 @@ public class ClarifyStrategy implements PptGenerationStrategy {
             "帮我做个ppt", "帮我做一份ppt", "制作ppt", "来个ppt", "来一份ppt");
 
     private static final String BARE_COMMAND_QUESTION =
-            "请补充 PPT 的主题、页数、风格和受众；给出这四项后我再开始生成。";
+            "这份 PPT 主要想讲什么主题？";
 
     private final AgentLoopExecutor executor;
 

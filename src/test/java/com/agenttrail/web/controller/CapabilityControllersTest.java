@@ -107,7 +107,7 @@ class CapabilityControllersTest {
         PptGenerationService pptService = mock(PptGenerationService.class);
         CapabilityConversationService conversationService = mock(CapabilityConversationService.class);
         Path generatedPpt = Files.createTempFile("agenttrail-ppt-", ".pptx");
-        when(pptService.prepare("legacy", "conversation-2", "生成季度汇报")).thenReturn(9L);
+        when(pptService.prepareCreate("legacy", "conversation-2", "生成季度汇报", null)).thenReturn(9L);
         when(pptService.describe(9L)).thenReturn(Optional.of(
                 new PptTask(9L, "conversation-2", PptState.SUCCESS, null, "{}", 1L, 2L)));
         when(pptService.outputPathOf(9L)).thenReturn(generatedPpt.toString());
@@ -121,7 +121,7 @@ class CapabilityControllersTest {
             assertThat(response.outputPath()).isEqualTo("/agent/v1/ppt/9/download");
             verify(pptService).run(9L);
             verify(conversationService).recordSuccess(isNull(), eq("conversation-2"), eq("生成季度汇报"),
-                    eq("PPT 任务状态：SUCCESS"), eq("ppt"), eq(response), anyLong());
+                    eq("PPT 任务状态：SUCCESS"), eq("ppt"), eq(java.util.Map.of("taskId", 9L)), anyLong());
         } finally {
             Files.deleteIfExists(generatedPpt);
         }

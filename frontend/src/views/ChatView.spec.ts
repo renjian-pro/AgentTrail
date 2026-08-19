@@ -13,7 +13,9 @@ vi.mock('../api/chat-api', () => ({
   streamChat: vi.fn(),
   streamApproval: vi.fn()
 }))
-vi.mock('../api/ppt-api', () => ({ pptApi: { create: vi.fn(), resume: vi.fn(), status: vi.fn(), clarify: vi.fn() } }))
+vi.mock('../api/ppt-api', () => ({ pptApi: {
+  message: vi.fn(), create: vi.fn(), resume: vi.fn(), status: vi.fn(), clarify: vi.fn()
+} }))
 vi.mock('../api/research-api', () => ({ researchApi: { run: vi.fn(), reply: vi.fn(), status: vi.fn() } }))
 vi.mock('../api/file-api', () => ({ fileApi: { upload: vi.fn(), remove: vi.fn() } }))
 
@@ -183,7 +185,7 @@ describe('ChatView', () => {
   })
 
   it('fires PPT generation from the composer once PPT mode is selected', async () => {
-    vi.mocked(pptApi.create).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
+    vi.mocked(pptApi.message).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
     // create() 现在只提交任务，本身没跑完（RENDER 不是终态）——runPpt 提交后会立即再轮询一次
     // pptApi.status()，让它原地停在同一个状态即可，这个用例不关心后续轮询本身。
     vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
@@ -194,8 +196,9 @@ describe('ChatView', () => {
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    expect(pptApi.create).toHaveBeenCalledWith(expect.any(String), '生成战略汇报')
+    expect(pptApi.message).toHaveBeenCalledWith(expect.any(String), '生成战略汇报')
     expect(wrapper.text()).toContain('正在渲染')
+    expect(wrapper.text()).toContain('生成战略汇报')
     // 模式发完不复位（R13/R14）：PPT 仍然是选中态，用户可以接着改主题再发一版
     expect(chip(wrapper, '生成 PPT').classes()).toContain('active')
 
@@ -205,8 +208,25 @@ describe('ChatView', () => {
     await wrapper.find('textarea').setValue('再来一版，换个角度')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
-    expect(pptApi.create).toHaveBeenCalledTimes(2)
+    expect(pptApi.message).toHaveBeenCalledTimes(2)
     expect(streamChat).not.toHaveBeenCalled()
+  })
+
+  it('renders a PPT clarification as an ordinary assistant message and keeps the composer as the only input', async () => {
+    vi.mocked(pptApi.message).mockResolvedValue({
+      taskId: 13, status: 'AWAITING_INPUT', errorMsg: null, outputPath: null,
+      clarifyingQuestion: '这份 PPT 主要想讲什么主题？'
+    })
+    const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
+
+    await chip(wrapper, '生成 PPT').trigger('click')
+    await wrapper.find('textarea').setValue('做一份 PPT')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('.message-row.user').text()).toContain('做一份 PPT')
+    expect(wrapper.get('.message-row.assistant').text()).toContain('这份 PPT 主要想讲什么主题')
+    expect(wrapper.findAll('textarea')).toHaveLength(1)
   })
 
   /**
@@ -242,10 +262,10 @@ describe('ChatView', () => {
   /**
    * 协议分派的核心断言（requirements.md §7.2）：四个模式共用一个发送入口，但 `research`/`ppt`
    * 不走 `/agent/v1/chat` 的 SSE 流，而是各自创建异步任务。选中 PPT 模式后按发送，走的必须是
-   * `pptApi.create`，而且**模式保持不变**——发完不复位是 R13/R14 的核心。
+   * `pptApi.message`，而且**模式保持不变**——发完不复位是 R13/R14 的核心。
    */
   it('routes send to the task API when a task mode is selected, and keeps the mode', async () => {
-    vi.mocked(pptApi.create).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
+    vi.mocked(pptApi.message).mockResolvedValue({ taskId: 12, status: 'RENDER', errorMsg: null, outputPath: null })
     vi.mocked(pptApi.status).mockResolvedValue({ taskId: 12, status: 'SUCCESS', errorMsg: null, outputPath: 'a.pptx' })
     const wrapper = mount(ChatView, { global: { plugins: [createPinia()] } })
 
@@ -254,7 +274,7 @@ describe('ChatView', () => {
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    expect(pptApi.create).toHaveBeenCalled()
+    expect(pptApi.message).toHaveBeenCalled()
     expect(streamChat).not.toHaveBeenCalled()
     expect(useChatStore().agentKind).toBe('ppt')
   })

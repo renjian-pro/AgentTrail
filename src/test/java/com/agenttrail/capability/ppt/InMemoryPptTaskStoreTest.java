@@ -137,6 +137,22 @@ class InMemoryPptTaskStoreTest {
     }
 
     @Test
+    void appendsDetailProgressWithoutAdvancingTheTaskRevision() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        long id = store.create("conv-1", PptGenerationContext.initial("conv-1", "问题"));
+        long revision = store.findById(id).orElseThrow().revision();
+
+        store.appendProgressEvent(id, PptState.IMAGE, "图片生成完成（3/6）", null);
+
+        assertThat(store.findById(id).orElseThrow().revision()).isEqualTo(revision);
+        assertThat(store.eventsForTask(id)).singleElement().satisfies(event -> {
+            assertThat(event.outcome()).isEqualTo(PptCheckpointEvent.OUTCOME_PROGRESS);
+            assertThat(event.outputSummary()).isEqualTo("图片生成完成（3/6）");
+            assertThat(event.stage()).isEqualTo(PptState.IMAGE);
+        });
+    }
+
+    @Test
     void returnsEmptyForAnUnknownId() {
         assertThat(new InMemoryPptTaskStore().findById(999L)).isEmpty();
     }

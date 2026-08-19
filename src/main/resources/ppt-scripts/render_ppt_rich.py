@@ -358,9 +358,11 @@ def normalize_fills(page_type, fills):
             font_limit = min(template_limit, supplied_limit)
         else:
             font_limit = template_limit or supplied_limit
+        field_type = str(fill.get("type") or "text").lower()
         data[shape_name] = {
-            "type": "text",
-            "content": fill.get("text", ""),
+            "type": field_type,
+            "content": fill.get("content", fill.get("text", "")),
+            "url": fill.get("url"),
             "fontLimit": font_limit,
         }
     return data

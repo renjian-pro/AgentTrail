@@ -180,9 +180,13 @@ const toolLabel = (name: string) => TOOL_LABELS[name] ?? name
 async function send(message: string) {
   if (hasPendingApproval.value) return
   error.value = ''
-  // 异步任务链路：不推 user 气泡，问题/主题就在各自的卡片里，推一条只会重复显示。
+  // Research 仍把问题放在报告卡片里；PPT 的补充、修改、取消都属于普通会话消息，必须显示
+  // 用户气泡。PPT 卡片只展示同一任务的状态，不再承担第二个输入入口。
   if (agentKind.value === 'research') return runResearch(message)
-  if (agentKind.value === 'ppt') return runPpt(message)
+  if (agentKind.value === 'ppt') {
+    messages.value.push({ kind: 'chat', role: 'user', content: message })
+    return runPpt(message)
+  }
 
   const mode = agentKind.value === 'analytics' ? 'analytics' : undefined
   busy.value = true
@@ -324,21 +328,26 @@ async function replyToResearch(entry: ResearchEntry, answer: string) {
 }
 
 async function runPpt(prompt: string) {
-  const entry = reactive<PptEntry>({ kind: 'ppt', prompt })
   chat.ensureConversation(prompt)
-  messages.value.push(entry)
   busy.value = true
   let created: PptTask | undefined
+  let entry: PptEntry | undefined
   try {
-    created = await pptApi.create(conversationId.value!, prompt)
+    created = await pptApi.message(conversationId.value!, prompt)
+    entry = messages.value.find(message => message.kind === 'ppt'
+        && message.task?.taskId === created!.taskId) as PptEntry | undefined
+    if (!entry) {
+      entry = reactive<PptEntry>({ kind: 'ppt', prompt })
+      messages.value.push(entry)
+    }
     applyPptTask(entry, created)
   } catch (failure) {
-    entry.error = toErrorMessage(failure)
+    error.value = toErrorMessage(failure)
     return
   } finally {
     busy.value = false
   }
-  if (created.status === 'SUCCESS' || created.errorMsg) return
+  if (!entry || created.status === 'SUCCESS' || created.errorMsg) return
   try {
     await pollUntilTerminal(
       () => pptApi.status(created!.taskId),
@@ -361,6 +370,16 @@ function applyPptTask(entry: PptEntry, incoming: PptTask) {
   const next = pptRevision(incoming)
   if (current !== undefined && next !== undefined && next < current) return
   entry.task = incoming
+  appendPptAssistantNotice(entry, incoming)
+}
+
+/** 澄清问题是普通 assistant 消息；卡片只保留任务状态，不能再发明第二个问答入口。 */
+function appendPptAssistantNotice(entry: PptEntry, task: PptTask) {
+  const question = task.status === 'AWAITING_INPUT'
+    ? task.clarifyingQuestion || task.taskView?.clarification : null
+  if (!question || entry.lastNotice === question) return
+  messages.value.push({ kind: 'chat', role: 'assistant', content: question })
+  entry.lastNotice = question
 }
 
 function isPptTerminal(task: PptTask) {
@@ -382,9 +401,11 @@ async function restorePptTasks(id: string) {
       const existing = messages.value.find(message => message.kind === 'ppt'
           && message.task?.taskId === task.taskId) as PptEntry | undefined
       if (existing) applyPptTask(existing, task)
-      else messages.value.push(reactive<PptEntry>({
-        kind: 'ppt', prompt: `PPT 任务 #${task.taskId}`, task
-      }))
+      else {
+        const restored = reactive<PptEntry>({ kind: 'ppt', prompt: `PPT 任务 #${task.taskId}`, task })
+        messages.value.push(restored)
+        appendPptAssistantNotice(restored, task)
+      }
       if (!isPptTerminal(task)) activeIds.push(task.taskId)
     }
     if (activeIds.length > 0 && typeof pptApi.batchStatus === 'function') {

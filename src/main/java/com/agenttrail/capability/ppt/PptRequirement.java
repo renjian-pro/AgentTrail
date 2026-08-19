@@ -12,4 +12,39 @@ package com.agenttrail.capability.ppt;
  * @param tone       语言风格
  */
 public record PptRequirement(String title, String topic, String audience, int slideCount, String tone) {
+
+    public static final int DEFAULT_SLIDE_COUNT = 10;
+    public static final int MAX_SLIDE_COUNT = 50;
+    private static final java.util.Set<String> INVALID_TOPICS = java.util.Set.of(
+            "ppt", "做ppt", "做一个ppt", "做一份ppt", "生成ppt", "这个", "那个", "刚才那个",
+            "生成", "生成吧", "开始生成", "随便");
+
+    /** 主题是开工的唯一硬门禁；其他字段可以从上下文推断或使用稳定默认值。 */
+    public boolean hasValidTopic() {
+        if (topic == null || topic.isBlank()) return false;
+        String normalized = topic.toLowerCase(java.util.Locale.ROOT)
+                .replaceAll("[\\s\\p{P}\\p{S}]+", "");
+        return normalized.length() >= 2 && !INVALID_TOPICS.contains(normalized);
+    }
+
+    /**
+     * 把非门禁字段收敛成后续阶段可以直接使用的稳定值。这里用确定性默认值兜底，避免提示词的一次
+     * 波动让后续 Search/Outline 出现 null；模型仍可根据会话提供更准确的受众、页数和风格。
+     */
+    public PptRequirement normalized() {
+        if (!hasValidTopic()) return this;
+        String normalizedTopic = topic.strip();
+        int normalizedSlideCount = slideCount <= 0 ? DEFAULT_SLIDE_COUNT
+                : Math.min(slideCount, MAX_SLIDE_COUNT);
+        return new PptRequirement(
+                defaultIfBlank(title, normalizedTopic),
+                normalizedTopic,
+                defaultIfBlank(audience, "通用受众"),
+                normalizedSlideCount,
+                defaultIfBlank(tone, "专业简洁"));
+    }
+
+    private static String defaultIfBlank(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.strip();
+    }
 }

@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.time.Duration;
 
 /**
@@ -94,58 +95,16 @@ public class PptGenerationService {
         }
     }
 
-    /**
-     * 三分支路由入口（issue #24 骨架只做 CREATE，issue #32 补齐 MODIFY/RESUME）——按
-     * {@link PptIntentRecognizer#recognize} 识别出的意图分发到对应处理，每个分支各自负责
-     * "定位/新建任务 + 跑到底或跑到某个状态失败为止"，方法名沿用 {@code create} 是因为
-     * HTTP 层 {@code /agent/v1/ppt/create} 这一个入口本身就承担"用户发一句话，系统自己判断
-     * 该新建/该续、该改"的职责，不是调用方先自己判断意图再挑接口。
-     *
-     * @return 被处理任务的主键（CREATE/MODIFY 是新建的任务，RESUME 是找到的既有任务），
-     *         可用于后续通过 {@link #run(long)} 恢复（如果这次没能跑到 SUCCESS）
-     */
+    /** 同步测试/内部入口：显式新建并跑完；会话意图只由 {@code PptMessageRouter} 处理。 */
     public long create(String conversationId, String userMessage) {
         return create("legacy", conversationId, userMessage);
     }
 
     /** HTTP 层使用的带归属入口；userId 在这里冻结，后续断点任务只接受同一归属。 */
     public long create(String userId, String conversationId, String userMessage) {
-        long taskId = prepare(userId, conversationId, userMessage);
+        long taskId = prepareCreate(userId, conversationId, userMessage, null);
         run(taskId);
         return taskId;
-    }
-
-    /**
-     * 只做"这次该新建/续传/修改哪个任务"的判定和落库准备——意图识别 + 建/找任务行（MODIFY
-     * 顺带把 checkpoint 快进到 SCHEMA），不跑状态机本身。{@link #create} 内部就是
-     * {@code prepare} 紧接着 {@link #run(long)}，拆开是为了给异步入口用：HTTP 层拿到 taskId
-     * 后可以立即把响应返回给前端，再把耗时的 {@code run(taskId)} 丢到后台执行器上——两种调用
-     * 方式复用同一份意图识别/建档逻辑，不是分叉维护两套。
-     */
-    public long prepare(String userId, String conversationId, String userMessage) {
-        return prepare(userId, conversationId, userMessage, null);
-    }
-
-    public long prepare(String userId, String conversationId, String userMessage, String idempotencyKey) {
-        PptIntent intent = PptIntentRecognizer.recognize(userMessage);
-        if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            return prepareByIntent(userId, conversationId, userMessage, intent, null);
-        }
-        return prepareByIntent(userId, conversationId, userMessage, intent, idempotencyKey);
-    }
-
-    private long prepareByIntent(String userId, String conversationId, String userMessage) {
-        PptIntent intent = PptIntentRecognizer.recognize(userMessage);
-        return prepareByIntent(userId, conversationId, userMessage, intent, null);
-    }
-
-    private long prepareByIntent(String userId, String conversationId, String userMessage,
-            PptIntent intent, String idempotencyKey) {
-        return switch (intent) {
-            case CREATE -> prepareNew(userId, conversationId, userMessage, idempotencyKey);
-            case RESUME -> prepareResume(userId, conversationId);
-            case MODIFY -> prepareModify(userId, conversationId, userMessage, idempotencyKey);
-        };
     }
 
     public boolean consumeIdempotencyReplay(long taskId) {
@@ -162,43 +121,17 @@ public class PptGenerationService {
         return creation.taskId();
     }
 
-    /**
-     * RESUME 分支（issue #32）：按 conversationId 找到这个会话下最近一条任务，复用它已经持久化
-     * 的状态粒度 checkpoint（issue #24），直接调 {@link #run(long)} 从中断的状态继续——不是另外
-     * 实现一套续传逻辑，{@code run(long)} 本身既是"第一次跑完"的执行体也是"断点恢复"的入口，
-     * 这里只是补上"根据 conversationId 找到 taskId"这一步，调用方（聊天入口）不需要自己记 taskId。
-     */
-    private long prepareResume(String userId, String conversationId) {
-        PptTask existing = taskStore.findLatestByConversationId(userId, conversationId)
-                .orElseThrow(() -> new IllegalStateException(
-                        "会话 " + conversationId + " 下没有可以继续的 PPT 任务"));
-        if (existing.status() == PptState.SUCCESS) {
-            throw new IllegalStateException(
-                    "会话 " + conversationId + " 最近一条 PPT 任务（id=" + existing.id() + "）已经完成，没有可继续的中断状态");
+    /** 显式 CREATE 入口。统一消息路由已经完成意图判断时不能再次走旧关键词识别。 */
+    public long prepareCreate(String userId, String conversationId, String userMessage, String idempotencyKey) {
+        if (conversationId == null || conversationId.isBlank()) {
+            throw new IllegalArgumentException("conversationId 不能为空");
         }
-        if (existing.status() == PptState.CANCELLED) {
-            throw new IllegalStateException(
-                    "会话 " + conversationId + " 最近一条 PPT 任务（id=" + existing.id() + "）已经取消，没有可继续的中断状态");
+        if (userMessage == null || userMessage.isBlank()) {
+            throw new IllegalArgumentException("PPT 消息不能为空");
         }
-        return existing.id();
+        return prepareNew(userId, conversationId, userMessage, idempotencyKey);
     }
 
-    /**
-     * MODIFY 分支（issue #32）：按 conversationId 找到最近一条已经跑完（{@link PptState#SUCCESS}）
-     * 的任务，复用它 REQUIREMENT/SEARCH/TEMPLATE/OUTLINE 四个状态已经产出的内容——不是重新走一遍
-     * 完整流程，新任务的 checkpoint 直接从 {@link PptState#SCHEMA} 起跳，只重新执行
-     * SCHEMA→IMAGE→RENDER 三个状态；用户这次的修改指令通过 {@code userRequirement} 字段带给
-     * SCHEMA 状态（{@code SchemaStrategy} 会把它拼进 Prompt，见该类的类注释），不修改原任务那一行，
-     * 每次 MODIFY 都新建一条任务，原始任务和历史修改记录都完整保留在 {@code ppt_generation_task}
-     * 表里，不是原地覆盖。
-     */
-    private long prepareModify(String userId, String conversationId, String userMessage, String idempotencyKey) {
-        PptTask existing = taskStore.findLatestByConversationId(userId, conversationId)
-                .filter(task -> task.status() == PptState.SUCCESS)
-                .orElseThrow(() -> new IllegalStateException(
-                        "会话 " + conversationId + " 下没有已经生成完成的 PPT，无法在其基础上修改"));
-        return prepareModifyFromBase(userId, existing, userMessage, idempotencyKey);
-    }
 
     /**
      * 卡片修改入口按 baseTaskId 精确指定基线，不能因为会话里出现了新任务就悄悄换基线。
@@ -216,13 +149,37 @@ public class PptGenerationService {
         return prepareModifyFromBase(userId, existing, userMessage, idempotencyKey);
     }
 
+    /**
+     * 生成中的修改不能原地改变正在被 worker 读取的上下文。调用方先请求取消旧任务，再用旧需求与
+     * 最新指令创建一条关联的新任务；新任务从 INIT 重跑，避免复用尚未完成或相互矛盾的中间产物。
+     */
+    public long prepareReplacement(String userId, long baseTaskId, String userMessage, String idempotencyKey) {
+        if (userMessage == null || userMessage.isBlank()) {
+            throw new IllegalArgumentException("修改指令不能为空");
+        }
+        PptTask existing = (userId == null ? taskStore.findById(baseTaskId) : taskStore.findById(userId, baseTaskId))
+                .orElseThrow(() -> new IllegalArgumentException("PPT 基线任务不存在: " + baseTaskId));
+        PptGenerationContext previous = PptContextJson.fromJson(existing.contextJson());
+        String previousRequirement = previous.userRequirement() == null ? "" : previous.userRequirement();
+        String combined = previousRequirement + "\n用户最新修改要求：" + userMessage.trim();
+        PptGenerationContext replacement = PptGenerationContext.initial(existing.conversationId(), combined)
+                .withOperationMetadata("MODIFY", existing.id(),
+                        previous.artifactRef() == null ? null : previous.artifactRef().artifactId());
+        PptTaskCreation creation = taskStore.createIdempotent(userId, existing.conversationId(), replacement,
+                "MODIFY", idempotencyKey);
+        if (creation.replay()) idempotencyReplays.add(creation.taskId());
+        log.info("PPT active task superseded baseTaskId={} replacementTaskId={} conversationId={}",
+                existing.id(), creation.taskId(), existing.conversationId());
+        return creation.taskId();
+    }
+
     private long prepareModifyFromBase(String userId, PptTask existing, String userMessage,
             String idempotencyKey) {
         PptGenerationContext previous = PptContextJson.fromJson(existing.contextJson());
         PptGenerationContext modifyContext = new PptGenerationContext(existing.conversationId(), userMessage,
                 previous.requirement(), previous.searchMaterials(), previous.templatePath(), previous.outline(),
                 previous.schema(), previous.outputPath(), null, PptGenerationContext.CURRENT_CONTEXT_VERSION,
-                previous.warnings(), previous.visualPlan(), previous.assetTasks(), previous.templateRef(),
+                previous.warnings(), previous.visualPlan(), previous.templateRef(),
                 previous.artifactRef())
                 .withOperationMetadata("MODIFY", existing.id(),
                         previous.artifactRef() == null ? null : previous.artifactRef().artifactId());
@@ -306,15 +263,22 @@ public class PptGenerationService {
                         taskId, task.conversationId(), current, stageAttempt, revision);
                 long stageStartedAt = System.nanoTime();
                 try {
-                    context = strategy.execute(context, cancellationToken);
+                    context = strategy.execute(context, cancellationToken,
+                            (stage, message, warningCode) -> appendProgress(taskId, stage, message, warningCode));
                     metrics.stageSucceeded(current, System.nanoTime() - stageStartedAt);
                 } catch (PptCancellationException cancelled) {
                     metrics.taskCancelled();
                     taskStore.markCancelled(taskId, current);
+                    log.info("PPT stage cancelled taskId={} conversationId={} stage={} attempt={} durationMs={}",
+                            taskId, task.conversationId(), current, stageAttempt,
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - stageStartedAt));
                     return;
                 } catch (Exception executionFailed) {
                     String diagnostic = describeFailure(executionFailed);
-                    log.error("PPT 任务 {} 在状态 {} 失败: {}", taskId, current, diagnostic, executionFailed);
+                    log.error("PPT stage failed taskId={} conversationId={} stage={} attempt={} revision={} durationMs={} diagnostic={}",
+                            taskId, task.conversationId(), current, stageAttempt, revision,
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - stageStartedAt), diagnostic,
+                            executionFailed);
                     com.agenttrail.platform.error.RetryClass retryClass = PptFailureClassifier.classify(executionFailed);
                     if (retryClass == com.agenttrail.platform.error.RetryClass.NONE) {
                         retryClass = com.agenttrail.platform.error.RetryClass.FATAL;
@@ -345,14 +309,26 @@ public class PptGenerationService {
                     taskStore.markCancelled(taskId, current);
                     return;
                 }
-                // CLARIFY 判定信息不足时不往下走，落到 AWAITING_INPUT 等用户补充——用的还是
+                // 主题是进入 SEARCH 前唯一的硬门禁。CLARIFY 负责早期追问；REQUIREMENT 对结构化
+                // 输出再做一次服务端校验，避免模型返回空 topic 却被状态机继续提交。
+                if (current == PptState.REQUIREMENT
+                        && (context.requirement() == null || !context.requirement().hasValidTopic())) {
+                    context = context.withRequirement(null)
+                            .withClarifyingQuestion("这份 PPT 主要想讲什么主题？");
+                    log.info("PPT requirement gate blocked taskId={} conversationId={} state={} revision={} topicPresent=false",
+                            taskId, task.conversationId(), current, revision);
+                }
+                // CLARIFY/REQUIREMENT 判定信息不足时不往下走，落到 AWAITING_INPUT 等用户补充——用的还是
                 // advance（而不是 markFailed）：等人不是失败，errorMsg 必须保持为空，否则前端会
                 // 把一次正常的追问渲染成一条错误，而 runningTaskIdsFor 也会把它当成出错任务筛掉。
-                if (current == PptState.CLARIFY && context.clarifyingQuestion() != null) {
+                if ((current == PptState.CLARIFY || current == PptState.REQUIREMENT)
+                        && context.clarifyingQuestion() != null) {
                     if (!taskStore.conditionalAdvance(taskId, current, revision,
                             PptState.AWAITING_INPUT, PptRunStatus.WAITING_INPUT, context)) {
                         throw new PptCheckpointConflictException(taskId, current, revision);
                     }
+                    log.info("PPT awaiting input taskId={} conversationId={} fromState={} revision={} reason=missing-topic",
+                            taskId, task.conversationId(), current, revision + 1);
                     return;
                 }
                 PptState next = nextState(current);
@@ -361,8 +337,9 @@ public class PptGenerationService {
                 if (!taskStore.conditionalAdvance(taskId, current, revision, next, nextRunStatus, context)) {
                     throw new PptCheckpointConflictException(taskId, current, revision);
                 }
-                log.info("PPT checkpoint committed taskId={} conversationId={} from={} to={} revision={}",
-                        taskId, task.conversationId(), current, next, revision + 1);
+                log.info("PPT stage completed taskId={} conversationId={} stage={} nextStage={} attempt={} revision={} durationMs={}",
+                        taskId, task.conversationId(), current, next, stageAttempt, revision + 1,
+                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - stageStartedAt));
                 revision++;
                 current = next;
             }
@@ -382,11 +359,9 @@ public class PptGenerationService {
     /**
      * 用户回答澄清追问后的续接入口，对应 {@code DeepResearchService#continueAfterClarification}。
      *
-     * <p><b>只追问一轮，而且这条约束是结构性的、不靠标志位。</b>这里把 checkpoint 直接推到
-     * {@link PptState#REQUIREMENT}——{@link PptState#CLARIFY} 被整个跳过，所以物理上不存在"再问一次"
-     * 的路径。DeepResearch 那边是靠"{@code continueAfterClarification} 内部不调 {@code needsMoreInfo}"
-     * 达成同一件事，都是把"不再打断"写进控制流，而不是加一个"已经问过了"的布尔字段——布尔字段总有
-     * 忘记置位的分支，跳过状态没有。
+     * <p>回答后回到 {@link PptState#CLARIFY}，重新判断是否已经获得有效主题。此前直接跳到 REQUIREMENT
+     * 等价于“用户只要回答过一次就必须开工”，回答“随便”也会穿透门禁；现在允许只针对主题进行多轮
+     * 澄清，直到主题有效或用户取消。
      *
      * <p>拼接格式和 DeepResearch 的三段式一致：模型下一步（REQUIREMENT）读到的是"原始需求 + 我问了什么
      * + 用户答了什么"的完整上下文，而不是孤零零一句回答——只喂回答的话，"给市场部的，20 分钟"这种
@@ -415,7 +390,10 @@ public class PptGenerationService {
 
                 【用户补充】
                 %s""".formatted(context.userRequirement(), context.clarifyingQuestion(), answer);
-        taskStore.advance(taskId, PptState.REQUIREMENT, context.withUserRequirement(combined));
+        taskStore.advance(taskId, PptState.CLARIFY,
+                context.withUserRequirement(combined).withClarifyingQuestion(null));
+        log.info("PPT clarification accepted taskId={} conversationId={} nextState={} answerLength={}",
+                taskId, task.conversationId(), PptState.CLARIFY, answer.length());
     }
 
     /** 查询一条任务当前的持久化状态（HTTP 层展示用）——不驱动任何执行，纯读。 */
@@ -447,6 +425,18 @@ public class PptGenerationService {
     /** 统一任务视图装配使用的只读元数据入口；不驱动状态机。 */
     public List<PptCheckpointEvent> eventsOf(long taskId) {
         return taskStore.eventsForTask(taskId);
+    }
+
+    private void appendProgress(long taskId, PptState stage, String message, String warningCode) {
+        try {
+            taskStore.appendProgressEvent(taskId, stage, message, warningCode);
+            log.info("PPT detail progress taskId={} stage={} warningCode={} message={}",
+                    taskId, stage, warningCode, message);
+        } catch (RuntimeException persistenceFailure) {
+            // 细节进度写失败不能把已经成功生成的图片判成失败；阶段 checkpoint 仍是恢复权威。
+            log.warn("PPT detail progress persistence failed taskId={} stage={} warningCode={}",
+                    taskId, stage, warningCode, persistenceFailure);
+        }
     }
 
     public PptGenerationContext contextOf(PptTask task) {

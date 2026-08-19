@@ -2,6 +2,7 @@ package com.agenttrail.capability.ppt.strategy;
 
 import com.agenttrail.capability.ppt.PptField;
 import com.agenttrail.capability.ppt.PptGenerationContext;
+import com.agenttrail.capability.ppt.PptFieldType;
 import com.agenttrail.capability.ppt.PptPage;
 import com.agenttrail.capability.ppt.PptPageType;
 import com.agenttrail.capability.ppt.PptSchema;
@@ -36,6 +37,8 @@ class RenderStrategyDynamicSchemaTest {
         var contentFields = new LinkedHashMap<String, PptField>();
         contentFields.put("slideTitle", PptField.text("内容页"));
         contentFields.put("slideBody", PptField.text("正文"));
+        contentFields.put("image", new PptField(PptFieldType.IMAGE, null,
+                "http://localhost:9000/ppt/content.png", "科技架构配图"));
         PptSchema schema = new PptSchema("legacy", "legacy", List.of(), null, List.of(
                 new PptPage("cover-1", PptPageType.COVER, "COVER", coverFields, "封面备注"),
                 new PptPage("page-1", PptPageType.CONTENT, "CONTENT", contentFields, "演讲备注")),
@@ -50,6 +53,9 @@ class RenderStrategyDynamicSchemaTest {
                 .contains("\"templatePageRef\":\"CONTENT\"")
                 .contains("\"speakerNotes\":\"演讲备注\"")
                 .contains("\"shapeName\":\"slideTitle\"")
+                .contains("\"shapeName\":\"image\"")
+                .contains("\"type\":\"IMAGE\"")
+                .contains("\"url\":\"http://localhost:9000/ppt/content.png\"")
                 .contains("动态标题"));
     }
 }

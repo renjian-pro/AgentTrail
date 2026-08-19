@@ -63,7 +63,7 @@ class PptTemplateContractTest {
     }
 
     @Test
-    void validatesDynamicPagesAndPreservesVisualPlanAndAssetsInCheckpointJson() {
+    void validatesDynamicPagesAndPreservesVisualPlanAndSchemaInCheckpointJson() {
         PptTemplateVersion template = new PptTemplateVersion("demo", "1", "demo", "demo", Set.of(),
                 Set.of(PptPageType.CONTENT), Map.of(
                         "title", new PptTemplateField("title", PptFieldType.TEXT, true, 80),
@@ -77,31 +77,17 @@ class PptTemplateContractTest {
         PptSchemaValidator.validate(schema, template);
 
         PptVisualPlan visualPlan = PptVisualPlan.defaultFor(new PptRequirement("标题", "主题", "受众", 1, "专业"));
-        PptAssetTask asset = PptAssetTask.planned("page-1", "image", PptFieldType.IMAGE,
-                "一张图", visualPlan, PptAssetKey.digest("一张图"));
         PptGenerationContext context = PptGenerationContext.initial("conv", "做 PPT")
-                .withVisualPlan(visualPlan).withSchema(schema).withAssetTask(asset);
+                .withVisualPlan(visualPlan).withSchema(schema);
 
         PptGenerationContext restored = PptContextJson.fromJson(PptContextJson.toJson(context));
         assertThat(restored.visualPlan()).isEqualTo(visualPlan);
-        assertThat(restored.assetTasks()).containsExactly(asset);
+        assertThat(restored.schema()).isEqualTo(schema);
+        String currentJson = PptContextJson.toJson(context);
+        String legacyJson = currentJson.substring(0, currentJson.length() - 1)
+                + ",\"assetTasks\":[{\"pageId\":\"old-page\"}]}";
+        assertThat(PptContextJson.fromJson(legacyJson).schema()).isEqualTo(schema);
         assertThat(PptAssetKey.derive("task", "page-1", "image", "一张图"))
                 .isEqualTo(PptAssetKey.derive("task", "page-1", "image", "一张图"));
-    }
-
-    @Test
-    void plansImageFieldsByStablePageAndFieldIdentity() {
-        Map<String, PptField> fields = Map.of("hero", PptField.image("artifact-old"));
-        PptSchema schema = new PptSchema("标题", "副标题", List.of(), null,
-                List.of(new PptPage("page-7", PptPageType.IMAGE_TEXT, "IMAGE_TEXT", fields, null)),
-                "demo", "1");
-
-        List<PptAssetTask> planned = PptAssetPlanner.plan(schema, PptVisualPlan.defaultFor(null));
-
-        assertThat(planned).singleElement().satisfies(asset -> {
-            assertThat(asset.pageId()).isEqualTo("page-7");
-            assertThat(asset.fieldName()).isEqualTo("hero");
-            assertThat(asset.status()).isEqualTo(PptAssetStatus.PLANNED);
-        });
     }
 }

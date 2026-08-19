@@ -27,4 +27,22 @@ public interface PptGenerationStrategy {
         cancellationToken.throwIfCancellationRequested();
         return result;
     }
+
+    /**
+     * 带任务绑定进度记录器的内部入口。只有存在阶段内进度的 Strategy 需要覆盖；其他阶段继续使用
+     * 两参数实现，避免把 taskId 和 Store 暴露给每一个 Strategy。
+     */
+    default PptGenerationContext execute(PptGenerationContext context, PptCancellationToken cancellationToken,
+            ProgressReporter progressReporter) {
+        return execute(context, cancellationToken);
+    }
+
+    @FunctionalInterface
+    interface ProgressReporter {
+        void report(PptState stage, String message, String warningCode);
+
+        static ProgressReporter noop() {
+            return (stage, message, warningCode) -> { };
+        }
+    }
 }

@@ -2,14 +2,20 @@ package com.agenttrail.capability.ppt.strategy;
 
 import com.agenttrail.capability.ppt.PptContentSlideFill;
 import com.agenttrail.capability.ppt.PptGenerationContext;
+import com.agenttrail.capability.ppt.PptField;
+import com.agenttrail.capability.ppt.PptFieldType;
+import com.agenttrail.capability.ppt.PptPage;
+import com.agenttrail.capability.ppt.PptPageType;
 import com.agenttrail.capability.ppt.PptRequirement;
 import com.agenttrail.capability.ppt.PptSchema;
+import com.agenttrail.capability.ppt.PptState;
 import com.agenttrail.capability.ppt.image.PptImageException;
 import com.agenttrail.capability.ppt.image.PptImageStore;
 import com.agenttrail.capability.ppt.image.TextToImageClient;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,6 +54,43 @@ class ImageStrategyTest {
         // 除了 coverImageUrl，SCHEMA 状态原有的文字字段必须原样保留，不能被这个状态误改
         assertThat(result.schema().titleText()).isEqualTo("封面标题");
         assertThat(result.schema().contentSlides()).hasSize(1);
+    }
+
+    @Test
+    void generatesEveryDynamicImageFieldAndWritesTheMinioUrlsBackIntoTheSchema() {
+        FakeTextToImageClient imageClient = new FakeTextToImageClient("https://dashscope-temp.example.com/a.png");
+        FakeImageStore imageStore = new FakeImageStore("http://localhost:9000/ppt/page-image.png");
+        ImageStrategy strategy = new ImageStrategy(imageClient, imageStore);
+        var firstFields = new LinkedHashMap<String, PptField>();
+        firstFields.put("title", PptField.text("第一页"));
+        firstFields.put("image", new PptField(PptFieldType.IMAGE, null, null, "第一张科技配图"));
+        var secondFields = new LinkedHashMap<String, PptField>();
+        secondFields.put("title", PptField.text("第二页"));
+        secondFields.put("image", new PptField(PptFieldType.IMAGE, null, null, "第二张架构配图"));
+        PptSchema schema = new PptSchema("标题", "副标题", List.of(), null, List.of(
+                new PptPage("page-1", PptPageType.CONTENT, "CONTENT", firstFields, ""),
+                new PptPage("page-2", PptPageType.CONTENT, "CONTENT", secondFields, "")), "default", "1");
+        PptGenerationContext context = PptGenerationContext.initial("conv-images", "生成带图 PPT")
+                .withRequirement(new PptRequirement("标题", "Agent", "研发团队", 2, "科技"))
+                .withSchema(schema);
+
+        List<String> progress = new java.util.ArrayList<>();
+        PptGenerationContext result = strategy.execute(context, () -> false,
+                (stage, message, warningCode) -> progress.add(stage + "|" + message + "|" + warningCode));
+
+        assertThat(imageClient.receivedPrompts).containsExactly("第一张科技配图", "第二张架构配图");
+        assertThat(imageStore.callCount).hasValue(2);
+        assertThat(result.schema().pages())
+                .extracting(page -> page.fields().get("image").artifactId())
+                .containsExactly("http://localhost:9000/ppt/page-image.png",
+                        "http://localhost:9000/ppt/page-image.png");
+        assertThat(result.schema().pages())
+                .extracting(page -> page.fields().get("image").value())
+                .containsExactly("第一张科技配图", "第二张架构配图");
+        assertThat(progress).containsExactly(
+                PptState.IMAGE + "|开始生成图片素材（0/2）|null",
+                PptState.IMAGE + "|图片生成完成（1/2）|null",
+                PptState.IMAGE + "|图片生成完成（2/2）|null");
     }
 
     @Test
@@ -109,6 +152,7 @@ class ImageStrategyTest {
     private static final class FakeTextToImageClient implements TextToImageClient {
         private final String urlToReturn;
         private String receivedPrompt;
+        private final List<String> receivedPrompts = new java.util.ArrayList<>();
 
         private FakeTextToImageClient(String urlToReturn) {
             this.urlToReturn = urlToReturn;
@@ -117,6 +161,7 @@ class ImageStrategyTest {
         @Override
         public String generateImageUrl(String prompt) {
             this.receivedPrompt = prompt;
+            this.receivedPrompts.add(prompt);
             return urlToReturn;
         }
     }

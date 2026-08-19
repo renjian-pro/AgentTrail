@@ -3,6 +3,7 @@ package com.agenttrail.capability.ppt.support;
 import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptGenerationException;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
+import com.agenttrail.capability.ppt.PptRequirement;
 import com.agenttrail.capability.ppt.PptState;
 
 import java.util.List;
@@ -42,6 +43,10 @@ public class RecordingPptGenerationStrategy implements PptGenerationStrategy {
         executionLog.add(state.name() + "#" + thisCall);
         if (thisCall <= failFirstNCalls) {
             throw new PptGenerationException(state + " 第 " + thisCall + " 次执行故意失败（测试用）");
+        }
+        if (state == PptState.REQUIREMENT) {
+            return context.withRequirement(new PptRequirement(
+                    "测试主题", "测试主题", "通用受众", 10, "专业简洁"));
         }
         return context;
     }

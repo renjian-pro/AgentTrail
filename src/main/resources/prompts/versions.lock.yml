@@ -14,10 +14,10 @@ prompts:
   deepresearch.plan: v1#812901f2
   deepresearch.summarize: v1#990f07e9
   deepresearch.topic_generation: v1#a0edeb9e
-  ppt.clarification: v3#668a107e
+  ppt.clarification: v4#2102d156
   ppt.image: v1#ca695357
   ppt.outline: v2#d9f40cef
-  ppt.requirement: v2#f74f2173
+  ppt.requirement: v3#e39a4d86
   ppt.schema: v4#9514b2b5
   ppt.search: v2#8d54d602
   runtime.context_compaction: v1#d35f7ee8

@@ -8,19 +8,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PptPromptsTest {
 
     @Test
-    void clarificationCollectsAllConsequentialRequirementsBeforeGeneration() {
+    void clarificationTreatsTheTopicAsTheOnlyHardGate() {
         assertThat(PptPrompts.CLARIFICATION)
                 .contains("主题", "页数", "风格", "受众")
-                .contains("不得")
-                .contains("直接生成");
+                .contains("主题是唯一必须明确")
+                .contains("不能因此追问");
     }
 
     @Test
     void requirementExtractionMustNotInventMissingDecisions() {
         assertThat(PptPrompts.REQUIREMENT)
                 .contains("## 角色", "## 任务", "## 输出要求")
-                .contains("仅提取用户已确认的信息")
-                .contains("不得虚构")
+                .contains("主题不得虚构")
+                .contains("稳定默认值")
                 .contains("title", "topic", "audience", "slideCount", "tone");
     }
 

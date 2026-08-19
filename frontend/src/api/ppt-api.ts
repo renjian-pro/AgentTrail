@@ -25,6 +25,16 @@ export type PptTaskCapabilities = {
   canDownload: boolean
   canModify: boolean
 }
+export type PptProgressEvent = {
+  sequence: number
+  stage: PptState
+  level: 'STAGE' | 'DETAIL' | string
+  status: 'STARTED' | 'COMPLETED' | 'WARNING' | 'FAILED' | 'CANCELLED' | string
+  message: string
+  current: number | null
+  total: number | null
+  occurredAtMillis: number
+}
 export type PptTaskView = {
   taskId: number
   conversationId: string
@@ -35,6 +45,7 @@ export type PptTaskView = {
   currentStageLabel: string
   completedStages: PptState[]
   progressPercent: number
+  progressEvents: PptProgressEvent[]
   clarification: string | null
   failure: PptFailure | null
   warnings: PptWarning[]
@@ -57,6 +68,9 @@ export type PptTask = {
   taskView?: PptTaskView | null
 }
 export const pptApi = {
+  /** PPT 的唯一会话写入口；后端根据活跃任务状态识别新建、回答、修改、继续和取消。 */
+  message: (conversationId: string, message: string, idempotencyKey?: string) =>
+    request<PptTask>('/agent/v1/ppt/message', jsonInit({ conversationId, message, idempotencyKey })),
   // /create 和 /resume 现在都是异步的：请求一返回就代表"任务已提交/已继续"，不代表跑完了——
   // status 字段是当时的 checkpoint（八成还是 INIT 或者上一次失败时停留的那个状态），
   // 要看到真正的进度得配合下面的 status() 轮询。

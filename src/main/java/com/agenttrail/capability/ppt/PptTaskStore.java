@@ -113,6 +113,9 @@ public interface PptTaskStore {
     /** 返回任务的不可覆盖阶段事件，按写入顺序排列。 */
     List<PptCheckpointEvent> eventsForTask(long taskId);
 
+    /** 追加阶段内部进度，不推进 checkpoint；用于图片 n/总数等可恢复的细节事件。 */
+    void appendProgressEvent(long taskId, PptState stage, String outputSummary, String warningCode);
+
     /** 返回到期或租约异常后可由恢复扫描重新入队的任务，结果有界以避免启动洪峰。 */
     List<Long> recoverableTaskIds(long nowMillis, int limit);
 

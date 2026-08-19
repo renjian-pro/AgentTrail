@@ -360,6 +360,15 @@ public class JdbcPptTaskStore implements PptTaskStore {
     }
 
     @Override
+    public void appendProgressEvent(long taskId, PptState stage, String outputSummary, String warningCode) {
+        PptTask task = findById(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("PPT 任务不存在: " + taskId));
+        long now = System.currentTimeMillis();
+        insertEvent(taskId, stage, PptCheckpointEvent.OUTCOME_PROGRESS, now, now,
+                null, null, task.revision(), outputSummary, warningCode);
+    }
+
+    @Override
     public void requestCancel(long id) {
         int updated = jdbcClient.sql(REQUEST_CANCEL_SQL)
                 .param(System.currentTimeMillis())
@@ -448,6 +457,12 @@ public class JdbcPptTaskStore implements PptTaskStore {
 
     private void insertEvent(long taskId, PptState stage, String outcome, long startedAt, long finishedAt,
             String errorCode, String retryClass, long revisionAfter) {
+        insertEvent(taskId, stage, outcome, startedAt, finishedAt, errorCode, retryClass,
+                revisionAfter, null, null);
+    }
+
+    private void insertEvent(long taskId, PptState stage, String outcome, long startedAt, long finishedAt,
+            String errorCode, String retryClass, long revisionAfter, String outputSummary, String warningCode) {
         int attempt = jdbcClient.sql(SELECT_EVENT_ATTEMPT_SQL)
                 .param(taskId)
                 .param(stage.name())
@@ -461,10 +476,10 @@ public class JdbcPptTaskStore implements PptTaskStore {
                 .param(finishedAt)
                 .param(outcome)
                 .param(null)
-                .param(null)
+                .param(outputSummary)
                 .param(errorCode)
                 .param(retryClass)
-                .param(null)
+                .param(warningCode)
                 .param(null)
                 .param(null)
                 .param(revisionAfter - 1)

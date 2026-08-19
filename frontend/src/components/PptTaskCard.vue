@@ -5,11 +5,6 @@ import { saveBlob, toErrorMessage } from '../api/http'
 import type { PptEntry } from '../stores/chat'
 
 const props = defineProps<{ entry: PptEntry }>()
-const busy = ref(false)
-const answer = ref('')
-const modifyMessage = ref('')
-const cancelling = ref(false)
-const modifying = ref(false)
 // 历史记录中的旧 payload 可能存的是服务器磁盘路径；任务号才是稳定且可公开的下载凭证。
 const taskView = computed(() => props.entry.task?.taskView ?? null)
 const pipelineState = computed(() => taskView.value?.pipelineState ?? props.entry.task?.status)
@@ -51,121 +46,36 @@ const labels: Record<string, string> = {
 
 /** 状态机判定需求不够清晰、停下来等人——不是错误，也不是"运行中"，是这张卡片唯一需要用户动手的状态。 */
 const awaitingInput = computed(() => pipelineState.value === 'AWAITING_INPUT')
-/** 等人的任务点"继续"是空转（后端 run() 见到 AWAITING_INPUT 立刻返回），不给这颗按钮。 */
-const canResume = computed(() => capabilities.value?.canResume
-  ?? (!!props.entry.task && pipelineState.value !== 'SUCCESS' && pipelineState.value !== 'CANCELLED'
-    && pipelineState.value !== 'AWAITING_INPUT'))
-const canCancel = computed(() => capabilities.value?.canCancel ?? canResume.value)
-const canAnswer = computed(() => capabilities.value?.canAnswer ?? awaitingInput.value)
 const canModify = computed(() => capabilities.value?.canModify ?? pipelineState.value === 'SUCCESS')
+const progressEvents = computed(() => taskView.value?.progressEvents ?? [])
+const timelineOpen = computed(() => pipelineState.value !== 'SUCCESS' && pipelineState.value !== 'CANCELLED')
 
 const statusText = computed(() => {
   const task = props.entry.task
   if (!task) return ''
-  if (pipelineState.value === 'SUCCESS') return 'PPT 已生成，可以预览或下载。'
-  if (awaitingInput.value) return '补充之后会从需求分析这一步继续，不会从头重来。'
+  if (pipelineState.value === 'SUCCESS') return 'PPT 已生成，可以下载；继续在下方输入框发送修改要求。'
+  if (awaitingInput.value) return '请直接在下方会话输入框回复，补充后会继续当前任务。'
+  if (pipelineState.value === 'CANCELLED') return '任务已取消；在下方输入新主题可以重新生成。'
   return taskView.value?.failure?.userMessage || task.errorMsg || '任务正在等待或运行中。'
 })
 
-/**
- * 轮询到任务不再自行推进为止。终止条件必须带上 AWAITING_INPUT——它既不是 SUCCESS 也没有
- * errorMsg，漏掉这一条就是一个永不退出的 1.5 秒定时循环。
- */
-async function pollUntilSettled(taskId: number) {
-  let interval = 1500
-  let revision = props.entry.task?.taskView?.revision ?? -1
-  while (props.entry.task && pipelineState.value !== 'SUCCESS'
-      && pipelineState.value !== 'AWAITING_INPUT' && pipelineState.value !== 'CANCELLED'
-      && !props.entry.task.errorMsg) {
-    await new Promise(resolve => setTimeout(resolve, interval))
-    try {
-      const next = await pptApi.status(taskId)
-      const nextRevision = next.taskView?.revision ?? revision
-      if (nextRevision >= revision) {
-        props.entry.task = next
-        revision = nextRevision
-      }
-      interval = Math.min(interval * 2, 10000)
-    } catch (failure) {
-      props.entry.error = toErrorMessage(failure)
-      return
-    }
-  }
-}
+const interactionHint = computed(() => {
+  if (awaitingInput.value) return '请直接在下方会话输入框回复上面的追问。'
+  if (canModify.value) return '例如：第二页换成流程图。请直接在下方会话输入框发送。'
+  return '可在下方会话输入框发送“取消”或“继续生成”。'
+})
 
-async function resume() {
-  if (!props.entry.task) return
-  const taskId = props.entry.task.taskId
-  busy.value = true
-  try {
-    props.entry.task = await pptApi.resume(taskId)
-    props.entry.error = undefined
-  } catch (failure) {
-    props.entry.error = toErrorMessage(failure)
-    busy.value = false
-    return
-  }
-  // /resume 和 /create 一样是提交即返回、后台跑——释放 busy 后靠轮询把卡片更新到最新 checkpoint，
-  // 不占着"继续"按钮等整个状态机跑完。
-  busy.value = false
-  await pollUntilSettled(taskId)
-}
-
-/**
- * 回答澄清追问。后端把回答并回需求、把 checkpoint 推到 REQUIREMENT 再继续跑，
- * 所以这里和 resume 一样是"提交即返回 + 轮询"，不需要另一套协议。
- */
-async function submitAnswer() {
-  if (!props.entry.task || !answer.value.trim() || !canAnswer.value) return
-  const taskId = props.entry.task.taskId
-  busy.value = true
-  try {
-    props.entry.task = await pptApi.clarify(taskId, answer.value.trim())
-    props.entry.error = undefined
-    answer.value = ''
-  } catch (failure) {
-    props.entry.error = toErrorMessage(failure)
-    return
-  } finally {
-    busy.value = false
-  }
-  await pollUntilSettled(taskId)
-}
-
-/** 取消是协作式的：后端先写 CANCEL_REQUESTED，状态机在边界安全停止。 */
-async function cancel() {
-  if (!props.entry.task || !canCancel.value) return
-  cancelling.value = true
-  try {
-    props.entry.task = await pptApi.cancel(props.entry.task.taskId)
-    props.entry.error = undefined
-  } catch (failure) {
-    props.entry.error = toErrorMessage(failure)
-  } finally {
-    cancelling.value = false
-  }
-}
-
-/** 修改创建新版本，不覆盖当前成功版本；后端返回的新 taskView 会刷新卡片能力。 */
-async function modify() {
-  if (!props.entry.task || !modifyMessage.value.trim() || !canModify.value) return
-  modifying.value = true
-  try {
-    props.entry.task = await pptApi.modify(props.entry.task.taskId, modifyMessage.value.trim())
-    modifyMessage.value = ''
-    props.entry.error = undefined
-  } catch (failure) {
-    props.entry.error = toErrorMessage(failure)
-  } finally {
-    modifying.value = false
-  }
-  await pollUntilSettled(props.entry.task.taskId)
+function progressMark(status: string) {
+  if (status === 'COMPLETED') return '✓'
+  if (status === 'WARNING') return '!'
+  if (status === 'FAILED') return '×'
+  if (status === 'CANCELLED') return '■'
+  return '●'
 }
 </script>
 
 <template>
   <section class="task-card">
-    <header class="capability-question"><span>▣</span><div><small>PPT 生成需求</small><p>{{ entry.prompt }}</p></div></header>
     <div v-if="!entry.task" class="task-summary">
       <p class="eyebrow">PPT 生成</p>
       <h2>正在创建任务…</h2>
@@ -181,28 +91,24 @@ async function modify() {
         </div>
       </div>
       <div class="task-actions">
-        <button v-if="canResume" :disabled="busy" @click="resume">↻ 继续</button>
-        <button v-if="canCancel" :disabled="cancelling" @click="cancel">{{ cancelling ? '正在取消…' : '取消' }}</button>
         <button v-if="canDownload" :disabled="downloading" @click="download">
           {{ downloading ? '正在下载…' : '↓ 下载 PPT' }}
         </button>
       </div>
-      <section v-if="awaitingInput && canAnswer" class="clarification-card ppt-clarify">
-        <p class="eyebrow">助手追问</p>
-        <p class="clarify-question">{{ entry.task.clarifyingQuestion }}</p>
-        <form class="clarify-form" @submit.prevent="submitAnswer">
-          <textarea v-model="answer" :disabled="busy" rows="2"
-              placeholder="补充一下这份 PPT 要讲什么、给谁看…" @keydown.enter.exact.prevent="submitAnswer" />
-          <button type="submit" :disabled="busy || !answer.trim()">提交并继续</button>
-        </form>
-      </section>
-      <section v-if="canModify" class="clarification-card ppt-clarify">
-        <p class="eyebrow">基于当前版本修改</p>
-        <form class="clarify-form" @submit.prevent="modify">
-          <textarea v-model="modifyMessage" :disabled="modifying" rows="2"
-              placeholder="例如：把第 2 页改成对比表…" />
-          <button type="submit" :disabled="modifying || !modifyMessage.trim()">提交修改</button>
-        </form>
+      <details v-if="taskView" class="ppt-timeline" :open="timelineOpen">
+        <summary><span>生成过程</span><small>{{ progressEvents.length }} 条 · {{ taskView.progressPercent }}%</small></summary>
+        <ol v-if="progressEvents.length">
+          <li v-for="event in progressEvents" :key="event.sequence"
+              :class="[`is-${event.status.toLowerCase()}`, `is-${event.level.toLowerCase()}`]">
+            <span class="ppt-event-mark">{{ progressMark(event.status) }}</span>
+            <span>{{ event.message }}</span>
+          </li>
+        </ol>
+        <p v-else class="ppt-timeline-empty">{{ taskView.currentStageLabel }}</p>
+      </details>
+      <section v-if="interactionHint" class="ppt-conversation-hint" aria-live="polite">
+        <b>{{ awaitingInput ? '需要补充主题' : '继续操作' }}</b>
+        <span>{{ interactionHint }}</span>
       </section>
     </template>
     <p v-if="entry.error" class="error">{{ entry.error }}</p>

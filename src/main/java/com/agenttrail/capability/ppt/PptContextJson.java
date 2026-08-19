@@ -50,7 +50,7 @@ final class PptContextJson {
                             parsed.searchMaterials(), parsed.templatePath(), parsed.outline(), parsed.schema(),
                             parsed.outputPath(), parsed.clarifyingQuestion(),
                             PptGenerationContext.CURRENT_CONTEXT_VERSION, parsed.warnings(), parsed.visualPlan(),
-                            parsed.assetTasks(), parsed.templateRef(), parsed.artifactRef(), parsed.operation(),
+                            parsed.templateRef(), parsed.artifactRef(), parsed.operation(),
                             parsed.baseTaskId(), parsed.baseArtifactId());
         } catch (PptContextMigrationException migrationFailed) {
             throw migrationFailed;

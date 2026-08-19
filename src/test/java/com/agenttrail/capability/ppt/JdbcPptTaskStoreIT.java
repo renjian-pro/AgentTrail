@@ -76,6 +76,22 @@ class JdbcPptTaskStoreIT {
     }
 
     @Test
+    void detailProgressEventsSurviveAStoreReload() {
+        long id = store.create("conv-progress",
+                PptGenerationContext.initial("conv-progress", "生成产品介绍 PPT"));
+
+        store.appendProgressEvent(id, PptState.IMAGE, "图片生成完成（3/6）", null);
+
+        JdbcPptTaskStore reloaded = new JdbcPptTaskStore(dataSource);
+        assertThat(reloaded.eventsForTask(id)).singleElement().satisfies(event -> {
+            assertThat(event.stage()).isEqualTo(PptState.IMAGE);
+            assertThat(event.outcome()).isEqualTo(PptCheckpointEvent.OUTCOME_PROGRESS);
+            assertThat(event.outputSummary()).isEqualTo("图片生成完成（3/6）");
+            assertThat(event.warningCode()).isNull();
+        });
+    }
+
+    @Test
     void idempotentCreationUsesTheDatabaseUniqueBinding() {
         PptGenerationContext context = PptGenerationContext.initial("conv-1", "帮我做一份介绍 PPT");
 

@@ -169,6 +169,20 @@ public class InMemoryPptTaskStore implements PptTaskStore {
     }
 
     @Override
+    public void appendProgressEvent(long taskId, PptState stage, String outputSummary, String warningCode) {
+        PptTask task = tasks.get(taskId);
+        if (task == null) throw new IllegalArgumentException("PPT 任务不存在: " + taskId);
+        long now = System.currentTimeMillis();
+        List<PptCheckpointEvent> taskEvents = events.computeIfAbsent(taskId, ignored -> new ArrayList<>());
+        synchronized (taskEvents) {
+            int attempt = Math.max(1, task.attempt());
+            taskEvents.add(new PptCheckpointEvent(taskId, stage, attempt, now, now,
+                    PptCheckpointEvent.OUTCOME_PROGRESS, null, outputSummary, null, null,
+                    warningCode, null, null, task.revision(), task.revision()));
+        }
+    }
+
+    @Override
     public void requestCancel(long id) {
         tasks.compute(id, (ignored, existing) -> {
             if (existing == null) {

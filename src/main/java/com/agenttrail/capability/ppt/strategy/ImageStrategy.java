@@ -1,10 +1,6 @@
 package com.agenttrail.capability.ppt.strategy;
 
 import com.agenttrail.capability.ppt.PptAssetKey;
-import com.agenttrail.capability.ppt.PptAssetProvenance;
-import com.agenttrail.capability.ppt.PptAssetSource;
-import com.agenttrail.capability.ppt.PptAssetTask;
-import com.agenttrail.capability.ppt.PptAssetPlanner;
 import com.agenttrail.capability.ppt.PptCancellationException;
 import com.agenttrail.capability.ppt.PptCancellationToken;
 import com.agenttrail.capability.ppt.PptFieldType;
@@ -21,7 +17,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
-import java.util.ArrayList;
 
 /**
  * IMAGE 状态：把第三方临时图片链接立即转存为稳定 artifact，并以逐页素材任务记录 attempt、
@@ -52,38 +47,111 @@ public class ImageStrategy implements PptGenerationStrategy {
 
     @Override
     public PptGenerationContext execute(PptGenerationContext context, PptCancellationToken cancellationToken) {
+        return execute(context, cancellationToken, ProgressReporter.noop());
+    }
+
+    @Override
+    public PptGenerationContext execute(PptGenerationContext context, PptCancellationToken cancellationToken,
+            ProgressReporter progressReporter) {
         cancellationToken.throwIfCancellationRequested();
-        String prompt = buildCoverImagePrompt(context);
-        String contentDigest = PptAssetKey.digest(prompt);
-        PptAssetTask planned = PptAssetTask.planned("cover", "coverImage", PptFieldType.IMAGE,
-                prompt, context.visualPlan(), contentDigest);
-        // 先把 Schema 中所有图片字段登记为 PLANNED，再执行当前支持的封面图；未来的图片执行器
-        // 可以复用同一列表，不会因为新增页面类型而再造一套素材任务协议。
-        List<PptAssetTask> mergedPlan = new ArrayList<>(context.assetTasks());
-        for (PptAssetTask candidate : PptAssetPlanner.plan(context.schema(), context.visualPlan())) {
-            boolean exists = mergedPlan.stream().anyMatch(existing -> existing.pageId().equals(candidate.pageId())
-                    && existing.fieldName().equals(candidate.fieldName()));
-            if (!exists) mergedPlan.add(candidate);
+        if (!context.schema().pages().isEmpty()) {
+            return generateDynamicImages(context, cancellationToken, progressReporter);
         }
-        PptGenerationContext working = context.withAssetTasks(mergedPlan).replaceAssetTask(planned.running());
+        return generateLegacyCover(context, cancellationToken, progressReporter);
+    }
+
+    /** 动态 Schema 自身就是任务清单：逐个生成空 artifactId 的 IMAGE 字段并原位回写。 */
+    private PptGenerationContext generateDynamicImages(PptGenerationContext context,
+            PptCancellationToken cancellationToken, ProgressReporter progressReporter) {
+        PptSchema schema = context.schema();
+        PptGenerationContext working = context;
+        int total = (int) context.schema().pages().stream()
+                .flatMap(page -> page.fields().values().stream())
+                .filter(field -> field.type() == PptFieldType.IMAGE)
+                .filter(field -> field.artifactId() == null || field.artifactId().isBlank())
+                .filter(field -> {
+                    String prompt = field.value() == null ? field.text() : String.valueOf(field.value());
+                    return prompt != null && !prompt.isBlank();
+                })
+                .count();
+        progressReporter.report(PptState.IMAGE, "开始生成图片素材（0/" + total + "）", null);
+        int current = 0;
+        for (var page : context.schema().pages()) {
+            for (var entry : page.fields().entrySet()) {
+                var field = entry.getValue();
+                if (field.type() != PptFieldType.IMAGE
+                        || (field.artifactId() != null && !field.artifactId().isBlank())) {
+                    continue;
+                }
+                String prompt = field.value() == null ? field.text() : String.valueOf(field.value());
+                if (prompt == null || prompt.isBlank()) continue;
+                current++;
+                long imageStartedAt = System.nanoTime();
+                try {
+                    cancellationToken.throwIfCancellationRequested();
+                    long generationStartedAt = System.nanoTime();
+                    String temporaryUrl = imageClient.generateImageUrl(prompt, cancellationToken);
+                    long generationMillis = elapsedMillis(generationStartedAt);
+                    String stableKey = PptAssetKey.derive(context.conversationId(), page.pageId(),
+                            entry.getKey(), prompt);
+                    long storeStartedAt = System.nanoTime();
+                    String minioUrl = imageStore.downloadAndStore(temporaryUrl, context.conversationId(),
+                            stableKey, cancellationToken);
+                    long storeMillis = elapsedMillis(storeStartedAt);
+                    schema = schema.withImageArtifact(page.pageId(), entry.getKey(), minioUrl);
+                    working = working.withSchema(schema);
+                    progressReporter.report(PptState.IMAGE,
+                            "图片生成完成（" + current + "/" + total + "）", null);
+                    log.info("PPT image completed conversationId={} pageId={} fieldName={} current={} total={} generationMs={} storeMs={} durationMs={}",
+                            context.conversationId(), page.pageId(), entry.getKey(), current, total,
+                            generationMillis, storeMillis, elapsedMillis(imageStartedAt));
+                } catch (PptCancellationException cancelled) {
+                    throw cancelled;
+                } catch (Exception imageFailed) {
+                    log.warn("PPT image degraded conversationId={} pageId={} fieldName={} current={} total={} durationMs={}",
+                            context.conversationId(), page.pageId(), entry.getKey(), current, total,
+                            elapsedMillis(imageStartedAt), imageFailed);
+                    progressReporter.report(PptState.IMAGE,
+                            "图片生成失败，已保留模板图片（" + current + "/" + total + "）",
+                            "PPT_IMAGE_DEGRADED");
+                    working = working.withWarning(new PptWarning("PPT_IMAGE_DEGRADED", PptState.IMAGE,
+                            "页面配图生成失败，已保留模板图片", List.of(page.pageId())));
+                }
+            }
+        }
+        return working;
+    }
+
+    /** 兼容没有动态 pages 的历史 Schema，仍生成原有封面图。 */
+    private PptGenerationContext generateLegacyCover(PptGenerationContext context,
+            PptCancellationToken cancellationToken, ProgressReporter progressReporter) {
+        String prompt = buildCoverImagePrompt(context);
+        progressReporter.report(PptState.IMAGE, "开始生成封面图片（0/1）", null);
+        long startedAt = System.nanoTime();
         try {
             String temporaryUrl = imageClient.generateImageUrl(prompt, cancellationToken);
             String stableKey = PptAssetKey.derive(context.conversationId(), "cover", "coverImage", prompt);
             String minioUrl = imageStore.downloadAndStore(temporaryUrl, context.conversationId(), stableKey,
                     cancellationToken);
             PptSchema schemaWithImage = context.schema().withCoverImageUrl(minioUrl);
-            PptAssetTask completed = planned.running().succeeded(minioUrl,
-                    new PptAssetProvenance(PptAssetSource.TEXT_TO_IMAGE, null, null, null, 0, 0, 0));
-            return working.withSchema(schemaWithImage).replaceAssetTask(completed);
+            progressReporter.report(PptState.IMAGE, "封面图片生成完成（1/1）", null);
+            log.info("PPT cover image completed conversationId={} current=1 total=1 durationMs={}",
+                    context.conversationId(), elapsedMillis(startedAt));
+            return context.withSchema(schemaWithImage);
         } catch (PptCancellationException cancelled) {
             throw cancelled;
         } catch (Exception imageFailed) {
-            log.warn("PPT 会话 {} 配图生成/转存失败，降级为无封面图继续后续渲染: {}",
-                    context.conversationId(), imageFailed.getMessage(), imageFailed);
-            return working.replaceAssetTask(planned.running().failed())
-                    .withWarning(new PptWarning("PPT_IMAGE_DEGRADED", PptState.IMAGE,
+            log.warn("PPT cover image degraded conversationId={} current=1 total=1 durationMs={}",
+                    context.conversationId(), elapsedMillis(startedAt), imageFailed);
+            progressReporter.report(PptState.IMAGE, "封面图片生成失败，已降级继续（1/1）",
+                    "PPT_IMAGE_DEGRADED");
+            return context.withWarning(new PptWarning("PPT_IMAGE_DEGRADED", PptState.IMAGE,
                             "封面图生成失败，已降级为无图版本继续生成", List.of()));
         }
+    }
+
+    private static long elapsedMillis(long startedAt) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     private static String buildCoverImagePrompt(PptGenerationContext context) {

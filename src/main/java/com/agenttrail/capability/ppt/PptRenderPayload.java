@@ -15,8 +15,8 @@ import java.util.List;
  * "封面图怎么进渲染流程"和"内容页装饰图怎么进渲染流程"走的是同一套图片嵌入机制，不是各自
  * 发明一套。
  */
-public record PptRenderPayload(List<PptTextFill> titleSlideFills, List<PptContentSlidePayload> contentSlides,
-        String titleSlideImageUrl, List<PptDynamicPagePayload> pages) {
+public record PptRenderPayload(List<TextFill> titleSlideFills, List<ContentSlide> contentSlides,
+        String titleSlideImageUrl, List<DynamicPage> pages) {
 
     public PptRenderPayload {
         titleSlideFills = titleSlideFills == null ? List.of() : List.copyOf(titleSlideFills);
@@ -25,12 +25,30 @@ public record PptRenderPayload(List<PptTextFill> titleSlideFills, List<PptConten
     }
 
     /** 兼容 issue #24/#30 时期只有两个字段的调用点/测试——{@code titleSlideImageUrl} 默认为 null。 */
-    public PptRenderPayload(List<PptTextFill> titleSlideFills, List<PptContentSlidePayload> contentSlides) {
+    public PptRenderPayload(List<TextFill> titleSlideFills, List<ContentSlide> contentSlides) {
         this(titleSlideFills, contentSlides, null, List.of());
     }
 
-    public PptRenderPayload(List<PptTextFill> titleSlideFills, List<PptContentSlidePayload> contentSlides,
+    public PptRenderPayload(List<TextFill> titleSlideFills, List<ContentSlide> contentSlides,
             String titleSlideImageUrl) {
         this(titleSlideFills, contentSlides, titleSlideImageUrl, List.of());
     }
+
+    /** Java→Python 渲染边界的机械 DTO 只在本载荷内使用，收拢后避免五个只有一行字段的顶层文件。 */
+    public record TextFill(String shapeName, String text, int fontLimit) { }
+
+    public record ContentSlide(List<TextFill> fills) {
+        public ContentSlide {
+            fills = fills == null ? List.of() : List.copyOf(fills);
+        }
+    }
+
+    public record DynamicPage(String pageId, String pageType, String templatePageRef,
+            List<RenderField> fills, String speakerNotes) {
+        public DynamicPage {
+            fills = fills == null ? List.of() : List.copyOf(fills);
+        }
+    }
+
+    public record RenderField(String shapeName, String type, String content, String url, Integer fontLimit) { }
 }

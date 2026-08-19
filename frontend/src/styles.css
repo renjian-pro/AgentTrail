@@ -364,17 +364,25 @@ button { cursor: pointer; }
 .dark .report-body { color: #d4d6d1; }
 .dark .clarification-card { background: #302d20; }
 
-/* PPT 卡片里的澄清区块：.task-card 是两列网格（内容 / 操作按钮），追问要横跨整行，
-   否则会被挤进右侧那条 auto 列里变成一条竖着的窄带。 */
-/* grid-column 只对 PPT 卡片有意义：.task-card 是两列网格，.research-entry 不是。
-   下面 .clarify-question / .clarify-form 两套则是两张卡片共用——同一件事（追问 + 回答框）
-   在两处长得不一样，是这类"能力各自实现一遍"最先漂起来的地方。 */
-.ppt-clarify { grid-column: 1 / -1; }
 /* 统一任务视图提供进度和阶段标签，卡片只负责展示，不复制后端状态机。 */
 .ppt-progress { display: grid; gap: 5px; margin-top: 12px; }
 .ppt-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--line); }
 .ppt-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .25s ease; }
 .ppt-progress small { color: var(--faint); font-size: 11px; }
+.ppt-timeline { grid-column: 1 / -1; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+.ppt-timeline summary { display: flex; justify-content: space-between; gap: 16px; padding: 12px 14px; cursor: pointer; font-size: 13px; font-weight: 650; }
+.ppt-timeline summary small { color: var(--faint); font-weight: 400; }
+.ppt-timeline ol { display: grid; gap: 8px; margin: 0; padding: 2px 14px 14px; list-style: none; }
+.ppt-timeline li { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.ppt-timeline li.is-detail { padding-left: 16px; font-size: 11px; }
+.ppt-timeline li.is-completed .ppt-event-mark { color: #2ea66f; }
+.ppt-timeline li.is-warning .ppt-event-mark { color: #c9983e; }
+.ppt-timeline li.is-failed .ppt-event-mark { color: #c7534b; }
+.ppt-timeline li.is-started .ppt-event-mark { color: var(--accent); animation: pulse .9s ease-in-out infinite alternate; }
+.ppt-event-mark { font-weight: 800; }
+.ppt-timeline-empty { margin: 0; padding: 2px 14px 14px; font-size: 12px; }
+.ppt-conversation-hint { grid-column: 1 / -1; display: grid; gap: 4px; padding: 12px 14px; border-left: 3px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 12px; }
+.ppt-conversation-hint span { color: var(--muted); }
 .clarify-question { margin: 0 0 12px; color: var(--fg); line-height: 1.6; }
 .clarify-form { display: flex; align-items: flex-start; gap: 9px; }
 .clarify-form textarea { flex: 1; min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: inherit; font: inherit; line-height: 1.5; resize: vertical; }

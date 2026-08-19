@@ -1,7 +1,5 @@
 package com.agenttrail.capability.ppt.strategy;
 
-import com.agenttrail.capability.ppt.PptContentSlidePayload;
-import com.agenttrail.capability.ppt.PptDynamicPagePayload;
 import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptGenerationException;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
@@ -13,9 +11,14 @@ import com.agenttrail.capability.ppt.PptRenderPayload;
 import com.agenttrail.capability.ppt.PptSchema;
 import com.agenttrail.capability.ppt.PptState;
 import com.agenttrail.capability.ppt.PptTemplateSpec;
-import com.agenttrail.capability.ppt.PptTextFill;
+import com.agenttrail.capability.ppt.PptRenderPayload.ContentSlide;
+import com.agenttrail.capability.ppt.PptRenderPayload.DynamicPage;
+import com.agenttrail.capability.ppt.PptRenderPayload.RenderField;
+import com.agenttrail.capability.ppt.PptRenderPayload.TextFill;
 import com.agenttrail.capability.ppt.PptField;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -41,6 +44,7 @@ import java.util.concurrent.Executor;
 public class RenderStrategy implements PptGenerationStrategy {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Logger log = LoggerFactory.getLogger(RenderStrategy.class);
 
     private final RenderPort renderPort;
     private final Path outputDir;
@@ -82,6 +86,11 @@ public class RenderStrategy implements PptGenerationStrategy {
         Path outputFile = workDir.resolve("presentation.pptx");
 
         PptRenderPayload payload = toRenderPayload(context.schema());
+        long renderStartedAt = System.nanoTime();
+        log.info("PPT render started conversationId={} templateName={} pageCount={} dynamicPages={}",
+                context.conversationId(), templateName(context),
+                payload.pages().isEmpty() ? payload.contentSlides().size() + 1 : payload.pages().size(),
+                !payload.pages().isEmpty());
         try {
             Files.createDirectories(workDir);
             Files.writeString(schemaFile, MAPPER.writeValueAsString(payload), StandardCharsets.UTF_8);
@@ -115,33 +124,52 @@ public class RenderStrategy implements PptGenerationStrategy {
         }
 
         cancellationToken.throwIfCancellationRequested();
+        try {
+            log.info("PPT render completed conversationId={} templateName={} pageCount={} sizeBytes={} durationMs={}",
+                    context.conversationId(), templateName(context),
+                    payload.pages().isEmpty() ? payload.contentSlides().size() + 1 : payload.pages().size(),
+                    Files.size(outputFile), java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                            System.nanoTime() - renderStartedAt));
+        } catch (IOException sizeUnavailable) {
+            log.info("PPT render completed conversationId={} templateName={} pageCount={} sizeBytes=-1 durationMs={}",
+                    context.conversationId(), templateName(context),
+                    payload.pages().isEmpty() ? payload.contentSlides().size() + 1 : payload.pages().size(),
+                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - renderStartedAt));
+        }
         return context.withOutputPath(outputFile.toAbsolutePath().toString());
+    }
+
+    private static String templateName(PptGenerationContext context) {
+        String value = context.templateRef() == null ? context.templatePath() : context.templateRef().templatePath();
+        if (value == null || value.isBlank()) return "UNKNOWN";
+        try { return Path.of(value).getFileName().toString(); }
+        catch (RuntimeException invalidPath) { return "INVALID"; }
     }
 
     private static PptRenderPayload toRenderPayload(PptSchema schema) {
         if (schema.pages() != null && !schema.pages().isEmpty()) {
-            List<PptDynamicPagePayload> pages = schema.pages().stream()
-                    .map(page -> new PptDynamicPagePayload(page.pageId(), page.pageType().name(),
+            List<DynamicPage> pages = schema.pages().stream()
+                    .map(page -> new DynamicPage(page.pageId(), page.pageType().name(),
                             page.templatePageRef(), page.fields().entrySet().stream()
-                                    .map(entry -> toTextFill(entry.getKey(), entry.getValue()))
+                                    .map(entry -> toRenderField(entry.getKey(), entry.getValue()))
                                     .toList(), page.speakerNotes()))
                     .toList();
             // 动态页也提供 legacy 填充，旧渲染脚本/旧模板仍能安全降级；新脚本优先消费 pages。
-            PptDynamicPagePayload cover = pages.get(0);
-            List<PptTextFill> titleFills = cover.fills();
-            List<PptContentSlidePayload> content = pages.subList(1, pages.size()).stream()
-                    .map(page -> new PptContentSlidePayload(page.fills())).toList();
+            DynamicPage cover = pages.get(0);
+            List<TextFill> titleFills = legacyTextFills(cover.fills());
+            List<ContentSlide> content = pages.subList(1, pages.size()).stream()
+                    .map(page -> new ContentSlide(legacyTextFills(page.fills()))).toList();
             return new PptRenderPayload(titleFills, content, schema.coverImageUrl(), pages);
         }
-        List<PptTextFill> titleSlideFills = List.of(
-                new PptTextFill(PptTemplateSpec.TITLE_SHAPE, schema.titleText(), PptTemplateSpec.TITLE_FONT_LIMIT),
-                new PptTextFill(PptTemplateSpec.SUBTITLE_SHAPE, schema.subtitleText(),
+        List<TextFill> titleSlideFills = List.of(
+                new TextFill(PptTemplateSpec.TITLE_SHAPE, schema.titleText(), PptTemplateSpec.TITLE_FONT_LIMIT),
+                new TextFill(PptTemplateSpec.SUBTITLE_SHAPE, schema.subtitleText(),
                         PptTemplateSpec.SUBTITLE_FONT_LIMIT));
-        List<PptContentSlidePayload> contentSlides = schema.contentSlides().stream()
-                .map(fill -> new PptContentSlidePayload(List.of(
-                        new PptTextFill(PptTemplateSpec.CONTENT_TITLE_SHAPE, fill.slideTitleText(),
+        List<ContentSlide> contentSlides = schema.contentSlides().stream()
+                .map(fill -> new ContentSlide(List.of(
+                        new TextFill(PptTemplateSpec.CONTENT_TITLE_SHAPE, fill.slideTitleText(),
                                 PptTemplateSpec.CONTENT_TITLE_FONT_LIMIT),
-                        new PptTextFill(PptTemplateSpec.CONTENT_BODY_SHAPE, fill.slideBodyText(),
+                        new TextFill(PptTemplateSpec.CONTENT_BODY_SHAPE, fill.slideBodyText(),
                                 PptTemplateSpec.CONTENT_BODY_FONT_LIMIT))))
                 .toList();
         // schema.coverImageUrl()（issue #31）此前从没被翻译进渲染载荷——render_ppt.py 之前根本
@@ -152,13 +180,24 @@ public class RenderStrategy implements PptGenerationStrategy {
         return new PptRenderPayload(titleSlideFills, contentSlides, schema.coverImageUrl(), List.of());
     }
 
-    private static PptTextFill toTextFill(String fieldName, PptField field) {
-        String text = field.text() != null ? field.text() : field.value() == null ? "" : String.valueOf(field.value());
+    private static RenderField toRenderField(String fieldName, PptField field) {
+        String content = field.text() != null ? field.text()
+                : field.value() == null ? "" : String.valueOf(field.value());
         // 动态 Schema 的字段名就是模板 shape name，不能在渲染 seam 再翻译成旧模板字段。
         int fontLimit = fieldName.equals(PptTemplateSpec.TITLE_SHAPE) ? PptTemplateSpec.TITLE_FONT_LIMIT
                 : fieldName.equals(PptTemplateSpec.SUBTITLE_SHAPE) ? PptTemplateSpec.SUBTITLE_FONT_LIMIT
                 : fieldName.equals(PptTemplateSpec.CONTENT_TITLE_SHAPE) ? PptTemplateSpec.CONTENT_TITLE_FONT_LIMIT
                 : PptTemplateSpec.CONTENT_BODY_FONT_LIMIT;
-        return new PptTextFill(fieldName, text, fontLimit);
+        String url = field.type() == com.agenttrail.capability.ppt.PptFieldType.IMAGE
+                || field.type() == com.agenttrail.capability.ppt.PptFieldType.BACKGROUND
+                        ? field.artifactId() : null;
+        return new RenderField(fieldName, field.type().name(), content, url, fontLimit);
+    }
+
+    /** 仅为旧渲染脚本保留文本降级载荷；动态 Python 适配器消费完整 fields。 */
+    private static List<TextFill> legacyTextFills(List<RenderField> fields) {
+        return fields.stream().filter(field -> "TEXT".equals(field.type()))
+                .map(field -> new TextFill(field.shapeName(), field.content(), field.fontLimit()))
+                .toList();
     }
 }

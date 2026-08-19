@@ -27,4 +27,6 @@ public record PptCheckpointEvent(
     public static final String OUTCOME_SUCCEEDED = "SUCCEEDED";
     public static final String OUTCOME_FAILED = "FAILED";
     public static final String OUTCOME_CANCELLED = "CANCELLED";
+    /** 阶段内部的持久化进度，例如 IMAGE 的 3/6；不代表业务 checkpoint 已推进。 */
+    public static final String OUTCOME_PROGRESS = "PROGRESS";
 }

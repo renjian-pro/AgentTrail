@@ -18,7 +18,7 @@ import java.util.Optional;
  * 内容，不是会话的执行状态（requirements §7.4）。
  *
  * <p><b>触发按会话状态判定，不按语义</b>：在已有会话里发起任务就带摘要，新会话里发起就不带。
- * 不去判断用户有没有说"根据前面的"——沿用 {@code PptIntentRecognizer} 和 DeepResearch 需求澄清
+ * 不去判断用户有没有说"根据前面的"——沿用 PPT 状态路由和 DeepResearch 需求澄清
  * 已经定案的那条（踩坑点 #52）：判定成本低、行为可预测、说得清依据。
  */
 public final class ConversationDigest {
