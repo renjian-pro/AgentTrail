@@ -69,6 +69,16 @@ def apply_fill(shapes, fill):
         print("[warn] shape has no text frame, skip: %s" % shape_name, file=sys.stderr)
 
 
+def apply_speaker_notes(slide, notes):
+    """把动态 Schema 的演讲备注落到真实 notes slide；旧模板没有备注时安全降级。"""
+    if not notes:
+        return
+    try:
+        slide.notes_slide.notes_text_frame.text = notes
+    except AttributeError:
+        print("[warn] template has no notes text frame, skip speaker notes", file=sys.stderr)
+
+
 def _download_to_file(url, dest_path, timeout_seconds=20):
     request = urllib.request.Request(url, headers={"User-Agent": "AgentTrail-PPT-Render/1.0"})
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response, open(dest_path, "wb") as out:
@@ -142,6 +152,27 @@ def duplicate_slide(prs, source_slide):
     return new_slide
 
 
+def template_slide_for_ref(prs, template_ref, fallback):
+    """按稳定 templatePageRef 选择版式；旧/未知引用退化到默认内容模板并告警。"""
+    if not template_ref:
+        return fallback
+    normalized = str(template_ref).strip().lower()
+    if normalized in ("content", "default", "content-1"):
+        return fallback
+    if normalized in ("cover", "title"):
+        return prs.slides[0]
+    for prefix in ("slide-", "index-"):
+        if normalized.startswith(prefix):
+            try:
+                index = int(normalized[len(prefix):])
+                if 0 <= index < len(prs.slides):
+                    return prs.slides[index]
+            except ValueError:
+                pass
+    print("[warn] template page ref not found, fallback: %s" % template_ref, file=sys.stderr)
+    return fallback
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--template", required=True)
@@ -165,7 +196,24 @@ def main():
         (fill.get("text") for fill in payload.get("titleSlideFills", []) if fill.get("shapeName") == "title_text"),
         "")
 
-    content_slides_payload = payload.get("contentSlides", [])
+    # 新版动态 Schema 保留 pageId/pageType/templateRef/notes；旧任务没有 pages 时继续使用
+    # contentSlides。两条协议在渲染边界收敛，保证断点恢复的旧快照无需重新生成 Schema。
+    dynamic_pages = payload.get("pages", [])
+    if dynamic_pages:
+        cover_page = dynamic_pages[0]
+        for fill in cover_page.get("fills", []):
+            apply_fill(title_slide.shapes, fill)
+        apply_speaker_notes(title_slide, cover_page.get("speakerNotes"))
+        title_text_for_seed = next(
+            (fill.get("text") for fill in cover_page.get("fills", [])
+             if fill.get("shapeName") == "title_text"), title_text_for_seed)
+        content_slides_payload = [
+            {"fills": page.get("fills", []), "speakerNotes": page.get("speakerNotes"),
+             "templatePageRef": page.get("templatePageRef")}
+            for page in dynamic_pages[1:]
+        ]
+    else:
+        content_slides_payload = payload.get("contentSlides", [])
 
     # 复制幻灯片（duplicate_slide）和贴装饰图片（issue #33）必须分成两个独立的循环，不能在
     # 同一次遍历里对第 0 张内容页边填字边贴图——duplicate_slide 是把 content_template_slide
@@ -174,10 +222,15 @@ def main():
     # 所以：第一个循环只管"复制 + 填字"，此时 content_template_slide 还没有被贴过任何图片；
     # 全部复制完成之后，第二个循环才逐张贴装饰图片，互不干扰。
     target_slides = []
+    used_template_ids = set()
     for index, slide_payload in enumerate(content_slides_payload):
-        target_slide = content_template_slide if index == 0 else duplicate_slide(prs, content_template_slide)
+        source_slide = template_slide_for_ref(prs, slide_payload.get("templatePageRef"), content_template_slide)
+        source_id = id(source_slide)
+        target_slide = source_slide if source_id not in used_template_ids else duplicate_slide(prs, source_slide)
+        used_template_ids.add(source_id)
         for fill in slide_payload.get("fills", []):
             apply_fill(target_slide.shapes, fill)
+        apply_speaker_notes(target_slide, slide_payload.get("speakerNotes"))
         target_slides.append(target_slide)
 
     with tempfile.TemporaryDirectory(prefix="agenttrail-ppt-assets-") as temp_dir:

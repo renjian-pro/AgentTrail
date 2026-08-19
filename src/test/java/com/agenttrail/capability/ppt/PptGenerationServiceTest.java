@@ -26,8 +26,8 @@ class PptGenerationServiceTest {
 
     private static List<PptGenerationStrategy> allStates(List<String> log) {
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER)) {
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.VISUAL_PLAN, PptState.TEMPLATE,
+                PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER, PptState.VERIFY)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
         return strategies;
@@ -52,13 +52,13 @@ class PptGenerationServiceTest {
         long taskId = service.create("conv-1", "帮我做一份介绍 PPT");
 
         assertThat(log).containsExactly(
-                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1",
-                "IMAGE#1", "RENDER#1");
+                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "VISUAL_PLAN#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1",
+                "IMAGE#1", "RENDER#1", "VERIFY#1");
         assertThat(service.describe(taskId)).isPresent();
         assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
         assertThat(service.describe(taskId).orElseThrow().runStatus()).isEqualTo(PptRunStatus.SUCCEEDED);
         // 初次执行先 claim 一次，再为 9 个阶段各提交一次 checkpoint。
-        assertThat(service.describe(taskId).orElseThrow().revision()).isEqualTo(10);
+        assertThat(service.describe(taskId).orElseThrow().revision()).isEqualTo(12);
         assertThat(service.describe(taskId).orElseThrow().errorMsg()).isNull();
         assertThat(service.runningTaskIdsFor("legacy")).isEmpty();
     }
@@ -110,8 +110,8 @@ class PptGenerationServiceTest {
     void resumeIntentContinuesFromCheckpointedStateByConversationIdNotFromInit() {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.VISUAL_PLAN, PptState.TEMPLATE,
+                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER, PptState.VERIFY)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
         // SCHEMA 第一次调用失败，第二次（通过 RESUME 意图触发的续跑）成功
@@ -131,7 +131,7 @@ class PptGenerationServiceTest {
 
         assertThat(resumedTaskId).as("RESUME 找到的应该是同一条中断的任务").isEqualTo(taskId);
         // 只重跑了 SCHEMA（这次成功）和它之后的 IMAGE/RENDER，INIT~OUTLINE 一次都没有重跑
-        assertThat(log).containsExactly("SCHEMA#2", "IMAGE#1", "RENDER#1");
+        assertThat(log).containsExactly("SCHEMA#2", "IMAGE#1", "RENDER#1", "VERIFY#1");
         assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
     }
 
@@ -182,7 +182,7 @@ class PptGenerationServiceTest {
         assertThat(modifiedTaskId).as("MODIFY 新建一条任务，不覆盖原任务").isNotEqualTo(originalTaskId);
         // 只有 SCHEMA/IMAGE/RENDER 被真正执行过——INIT/REQUIREMENT/SEARCH/TEMPLATE/OUTLINE
         // 一次都没跑，证明 MODIFY 不是重新走一遍完整流程
-        assertThat(log).containsExactly("SCHEMA#1", "IMAGE#1", "RENDER#1");
+        assertThat(log).containsExactly("SCHEMA#1", "IMAGE#1", "RENDER#1", "VERIFY#1");
 
         PptTask modifiedTask = taskStore.findById(modifiedTaskId).orElseThrow();
         assertThat(modifiedTask.status()).isEqualTo(PptState.SUCCESS);
@@ -213,8 +213,8 @@ class PptGenerationServiceTest {
     void modifyIntentThrowsWhenTheLatestTaskForThatConversationIsStillMidFlight() {
         InMemoryPptTaskStore taskStore = new InMemoryPptTaskStore();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.VISUAL_PLAN, PptState.TEMPLATE,
+                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER, PptState.VERIFY)) {
             strategies.add(new RecordingPptGenerationStrategy(state, new ArrayList<>()));
         }
         strategies.add(new RecordingPptGenerationStrategy(PptState.SCHEMA, new ArrayList<>(), Integer.MAX_VALUE));
@@ -249,8 +249,8 @@ class PptGenerationServiceTest {
     void checkpointStaysOnTheFailingStateAndDoesNotAdvanceOptimistically() {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.VISUAL_PLAN, PptState.TEMPLATE,
+                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER, PptState.VERIFY)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
         // SCHEMA 永远失败——验证状态机不会把 checkpoint 提前推进到 RENDER
@@ -264,7 +264,7 @@ class PptGenerationServiceTest {
 
         // 只跑到 SCHEMA 就失败了，RENDER 完全没有被调用过——不能因为异常路径而误触发下游状态
         assertThat(log).containsExactly(
-                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1");
+                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "VISUAL_PLAN#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1");
 
         // create() 抛异常时拿不到返回值——这个测试只创建了一条任务，InMemoryPptTaskStore 的主键
         // 序列从 1 开始，白盒断言用这个已知的第一个 id
@@ -279,8 +279,8 @@ class PptGenerationServiceTest {
     void resumingAfterAFailureRerunsOnlyTheFailedStateNotFromInit() {
         List<String> log = new ArrayList<>();
         List<PptGenerationStrategy> strategies = new ArrayList<>();
-        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
-                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER)) {
+        for (PptState state : List.of(PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.VISUAL_PLAN, PptState.TEMPLATE,
+                PptState.OUTLINE, PptState.IMAGE, PptState.RENDER, PptState.VERIFY)) {
             strategies.add(new RecordingPptGenerationStrategy(state, log));
         }
         // SCHEMA 第一次调用失败，第二次（也就是恢复重跑）成功
@@ -297,7 +297,7 @@ class PptGenerationServiceTest {
         service.run(taskId);
 
         // 恢复只重跑了 SCHEMA（这次成功）和它之后的 IMAGE/RENDER，之前已经成功过的状态一次都没有重跑
-        assertThat(log).containsExactly("SCHEMA#2", "IMAGE#1", "RENDER#1");
+        assertThat(log).containsExactly("SCHEMA#2", "IMAGE#1", "RENDER#1", "VERIFY#1");
         assertThat(taskStore.findById(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
         assertThat(taskStore.findById(taskId).orElseThrow().errorMsg()).isNull();
     }
@@ -369,8 +369,8 @@ class PptGenerationServiceTest {
         service.run(taskId);
 
         assertThat(log).containsExactly(
-                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1",
-                "IMAGE#1", "RENDER#1");
+                "INIT#1", "CLARIFY#1", "REQUIREMENT#1", "SEARCH#1", "VISUAL_PLAN#1", "TEMPLATE#1", "OUTLINE#1", "SCHEMA#1",
+                "IMAGE#1", "RENDER#1", "VERIFY#1");
         assertThat(service.describe(taskId).orElseThrow().status()).isEqualTo(PptState.SUCCESS);
     }
 

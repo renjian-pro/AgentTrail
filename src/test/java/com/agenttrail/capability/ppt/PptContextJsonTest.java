@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** 验证 {@link PptContextJson} 能把一份跑到 RENDER 状态、字段全部非空的完整快照原样往返。 */
 class PptContextJsonTest {
@@ -24,6 +25,19 @@ class PptContextJsonTest {
 
         assertThat(PptContextJson.fromJson(legacyJson).contextVersion())
                 .isEqualTo(PptGenerationContext.CURRENT_CONTEXT_VERSION);
+    }
+
+    @Test
+    void migratesVersionZeroSnapshotAndRejectsUnknownFutureVersionWithStableCode() {
+        PptGenerationContext migrated = PptContextJson.fromJson(
+                "{\"contextVersion\":0,\"conversationId\":\"conv-1\",\"userRequirement\":\"问题\"}");
+        assertThat(migrated.contextVersion()).isEqualTo(PptGenerationContext.CURRENT_CONTEXT_VERSION);
+
+        assertThatThrownBy(() -> PptContextJson.fromJson(
+                "{\"contextVersion\":99,\"conversationId\":\"conv-1\"}"))
+                .isInstanceOf(PptContextMigrationException.class)
+                .extracting("code")
+                .isEqualTo("PPT_CONTEXT_MIGRATION_FAILED");
     }
 
     @Test

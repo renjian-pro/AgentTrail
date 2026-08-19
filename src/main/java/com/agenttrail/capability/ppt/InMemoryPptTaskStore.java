@@ -101,7 +101,7 @@ public class InMemoryPptTaskStore implements PptTaskStore {
             updated.set(true);
             return new PptTask(id, existing.userId(), existing.conversationId(), newState, newRunStatus, null,
                     PptContextJson.toJson(context), context.contextVersion(), nextRevision,
-                    null, PptWarningsJson.toJson(context.warnings()), existing.attempt(), 0,
+                    null, PptWarningsJson.toJson(context.warnings()), 1, 0,
                     existing.createdAtMillis(), now);
         });
         return updated.get();
@@ -240,6 +240,7 @@ public class InMemoryPptTaskStore implements PptTaskStore {
         return tasks.values().stream()
                 .filter(task -> task.runStatus() == PptRunStatus.QUEUED
                         || task.runStatus() == PptRunStatus.RUNNING
+                        || task.runStatus() == PptRunStatus.CANCEL_REQUESTED
                         || (task.runStatus() == PptRunStatus.RETRY_WAIT
                         && task.nextRetryAtMillis() <= nowMillis))
                 .sorted(java.util.Comparator.comparingLong(PptTask::updatedAtMillis))

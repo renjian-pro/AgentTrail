@@ -31,6 +31,7 @@ import com.agenttrail.capability.ppt.strategy.SchemaStrategy;
 import com.agenttrail.capability.ppt.strategy.SearchStrategy;
 import com.agenttrail.capability.ppt.strategy.TemplateStrategy;
 import com.agenttrail.capability.ppt.strategy.VerifyStrategy;
+import com.agenttrail.capability.ppt.strategy.VisualPlanStrategy;
 import com.agenttrail.runtime.lifecycle.InMemoryLeaseManager;
 import com.agenttrail.runtime.lifecycle.LeaseManager;
 import com.agenttrail.infrastructure.lease.RedisLeaseManager;
@@ -211,6 +212,12 @@ public class PptGenerationConfig {
     public SchemaStrategy pptSchemaStrategy(AgentLoopExecutorFactory executorFactory,
             @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
         return new SchemaStrategy(executorFactory.forInternalOrchestration(modelId, false));
+    }
+
+    /** 视觉规划独立落 checkpoint，后续模板/Schema/素材阶段共享同一份规划。 */
+    @Bean
+    public VisualPlanStrategy pptVisualPlanStrategy() {
+        return new VisualPlanStrategy();
     }
 
     @Bean

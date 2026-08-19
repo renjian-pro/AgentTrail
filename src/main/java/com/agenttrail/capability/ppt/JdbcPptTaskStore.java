@@ -87,7 +87,8 @@ public class JdbcPptTaskStore implements PptTaskStore {
     private static final String CONDITIONAL_ADVANCE_SQL = """
             UPDATE ppt_generation_task
             SET status = ?, run_status = ?, error_msg = NULL, context_version = ?, revision = revision + 1,
-                failure_json = NULL, warnings_json = ?, next_retry_at = 0, context_json = ?, updated_at = ?
+                failure_json = NULL, warnings_json = ?, attempt = 1, next_retry_at = 0,
+                context_json = ?, updated_at = ?
             WHERE id = ? AND status = ? AND revision = ?
             """;
 
@@ -140,7 +141,7 @@ public class JdbcPptTaskStore implements PptTaskStore {
 
     private static final String RECOVERABLE_TASK_IDS_SQL = """
             SELECT id FROM ppt_generation_task
-            WHERE run_status IN ('QUEUED', 'RUNNING')
+            WHERE run_status IN ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED')
                OR (run_status = 'RETRY_WAIT' AND next_retry_at <= ?)
             ORDER BY updated_at, id
             LIMIT ?

@@ -1,6 +1,7 @@
 package com.agenttrail.capability.ppt.strategy;
 
 import com.agenttrail.capability.ppt.PptContentSlidePayload;
+import com.agenttrail.capability.ppt.PptDynamicPagePayload;
 import com.agenttrail.capability.ppt.PptGenerationContext;
 import com.agenttrail.capability.ppt.PptGenerationException;
 import com.agenttrail.capability.ppt.PptGenerationStrategy;
@@ -13,6 +14,7 @@ import com.agenttrail.capability.ppt.PptSchema;
 import com.agenttrail.capability.ppt.PptState;
 import com.agenttrail.capability.ppt.PptTemplateSpec;
 import com.agenttrail.capability.ppt.PptTextFill;
+import com.agenttrail.capability.ppt.PptField;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -117,6 +119,20 @@ public class RenderStrategy implements PptGenerationStrategy {
     }
 
     private static PptRenderPayload toRenderPayload(PptSchema schema) {
+        if (schema.pages() != null && !schema.pages().isEmpty()) {
+            List<PptDynamicPagePayload> pages = schema.pages().stream()
+                    .map(page -> new PptDynamicPagePayload(page.pageId(), page.pageType().name(),
+                            page.templatePageRef(), page.fields().entrySet().stream()
+                                    .map(entry -> toTextFill(entry.getKey(), entry.getValue()))
+                                    .toList(), page.speakerNotes()))
+                    .toList();
+            // 动态页也提供 legacy 填充，旧渲染脚本/旧模板仍能安全降级；新脚本优先消费 pages。
+            PptDynamicPagePayload cover = pages.get(0);
+            List<PptTextFill> titleFills = cover.fills();
+            List<PptContentSlidePayload> content = pages.subList(1, pages.size()).stream()
+                    .map(page -> new PptContentSlidePayload(page.fills())).toList();
+            return new PptRenderPayload(titleFills, content, schema.coverImageUrl(), pages);
+        }
         List<PptTextFill> titleSlideFills = List.of(
                 new PptTextFill(PptTemplateSpec.TITLE_SHAPE, schema.titleText(), PptTemplateSpec.TITLE_FONT_LIMIT),
                 new PptTextFill(PptTemplateSpec.SUBTITLE_SHAPE, schema.subtitleText(),
@@ -133,6 +149,22 @@ public class RenderStrategy implements PptGenerationStrategy {
         // 共用同一套"渲染载荷带图片信息、render_ppt.py 负责真正贴图"机制，见 PptRenderPayload
         // 类注释。为 null（没配图/断点续传时旧任务没有这个字段）时 render_ppt.py 自己退化成
         // Pillow 装饰图形兜底，这里不需要做任何 null 特判。
-        return new PptRenderPayload(titleSlideFills, contentSlides, schema.coverImageUrl());
+        return new PptRenderPayload(titleSlideFills, contentSlides, schema.coverImageUrl(), List.of());
+    }
+
+    private static PptTextFill toTextFill(String fieldName, PptField field) {
+        String text = field.text() != null ? field.text() : field.value() == null ? "" : String.valueOf(field.value());
+        String shapeName = switch (fieldName) {
+            case "title", "titleText", "title_text" -> PptTemplateSpec.TITLE_SHAPE;
+            case "subtitle", "subtitleText", "subtitle_text" -> PptTemplateSpec.SUBTITLE_SHAPE;
+            case "slideTitle", "slideTitleText", "slide_title_text" -> PptTemplateSpec.CONTENT_TITLE_SHAPE;
+            case "body", "content", "slideBody", "slideBodyText", "slide_body_text" -> PptTemplateSpec.CONTENT_BODY_SHAPE;
+            default -> fieldName;
+        };
+        int fontLimit = shapeName.equals(PptTemplateSpec.TITLE_SHAPE) ? PptTemplateSpec.TITLE_FONT_LIMIT
+                : shapeName.equals(PptTemplateSpec.SUBTITLE_SHAPE) ? PptTemplateSpec.SUBTITLE_FONT_LIMIT
+                : shapeName.equals(PptTemplateSpec.CONTENT_TITLE_SHAPE) ? PptTemplateSpec.CONTENT_TITLE_FONT_LIMIT
+                : PptTemplateSpec.CONTENT_BODY_FONT_LIMIT;
+        return new PptTextFill(shapeName, text, fontLimit);
     }
 }

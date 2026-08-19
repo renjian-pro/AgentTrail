@@ -97,6 +97,7 @@ watch(navigationSeq, () => {
   aborter = undefined
   busy.value = false
   error.value = ''
+  if (conversationId.value) void restorePptTasks(conversationId.value)
 })
 
 // Only the chat SSE owns an AbortController. Synchronous Research/PPT calls
@@ -246,10 +247,13 @@ async function pollUntilTerminal<T>(fetchStatus: () => Promise<T>, isTerminal: (
     onUpdate: (task: T) => void, intervalMs = 1500): Promise<void> {
   let task = await fetchStatus()
   onUpdate(task)
+  let currentInterval = intervalMs
   while (!isTerminal(task)) {
-    await new Promise(resolve => setTimeout(resolve, intervalMs))
+    await new Promise(resolve => setTimeout(resolve, currentInterval))
     task = await fetchStatus()
     onUpdate(task)
+    // 后台任务通常几秒才推进一次；退避减少刷新/恢复页面时对服务端的无效压力。
+    currentInterval = Math.min(currentInterval * 2, 10000)
   }
 }
 
@@ -327,7 +331,7 @@ async function runPpt(prompt: string) {
   let created: PptTask | undefined
   try {
     created = await pptApi.create(conversationId.value!, prompt)
-    entry.task = created
+    applyPptTask(entry, created)
   } catch (failure) {
     entry.error = toErrorMessage(failure)
     return
@@ -340,10 +344,77 @@ async function runPpt(prompt: string) {
       () => pptApi.status(created!.taskId),
       // AWAITING_INPUT 也是终止条件：需求不够清晰时状态机停下来等用户在卡片里回答，
       // 它既不是 SUCCESS 也没有 errorMsg，漏掉就是一个永不退出的轮询。
-      task => task.status === 'SUCCESS' || task.status === 'AWAITING_INPUT' || !!task.errorMsg,
-      task => { entry.task = task })
+      task => isPptTerminal(task),
+      task => applyPptTask(entry, task))
   } catch (failure) {
     entry.error = toErrorMessage(failure)
+  }
+}
+
+function pptRevision(task: PptTask | undefined): number | undefined {
+  return task?.taskView?.revision
+}
+
+/** 轮询结果可能乱序返回；旧 revision 不能覆盖已经展示的新 checkpoint。 */
+function applyPptTask(entry: PptEntry, incoming: PptTask) {
+  const current = pptRevision(entry.task)
+  const next = pptRevision(incoming)
+  if (current !== undefined && next !== undefined && next < current) return
+  entry.task = incoming
+}
+
+function isPptTerminal(task: PptTask) {
+  return task.status === 'SUCCESS' || task.status === 'FAILED' || task.status === 'CANCELLED'
+      || task.status === 'AWAITING_INPUT' || !!task.errorMsg
+}
+
+/**
+ * 会话重新打开时恢复所有 PPT 卡片，并用批量接口补齐仍在运行的任务。
+ * 这里不把整份上下文快照塞进前端，只消费后端的任务视图，避免泄露内部提示词和路径。
+ */
+async function restorePptTasks(id: string) {
+  if (typeof pptApi.conversation !== 'function' || conversationId.value !== id) return
+  try {
+    const tasks = await pptApi.conversation(id)
+    if (conversationId.value !== id) return
+    const activeIds: number[] = []
+    for (const task of tasks) {
+      const existing = messages.value.find(message => message.kind === 'ppt'
+          && message.task?.taskId === task.taskId) as PptEntry | undefined
+      if (existing) applyPptTask(existing, task)
+      else messages.value.push(reactive<PptEntry>({
+        kind: 'ppt', prompt: `PPT 任务 #${task.taskId}`, task
+      }))
+      if (!isPptTerminal(task)) activeIds.push(task.taskId)
+    }
+    if (activeIds.length > 0 && typeof pptApi.batchStatus === 'function') {
+      void pollPptBatch(id, activeIds)
+    }
+  } catch (failure) {
+    // PPT 历史接口不可用时不阻断聊天历史；下次导航仍会再次尝试恢复。
+    error.value = toErrorMessage(failure)
+  }
+}
+
+async function pollPptBatch(id: string, taskIds: number[]) {
+  let interval = 1500
+  let pending = [...taskIds]
+  while (pending.length > 0 && conversationId.value === id) {
+    await new Promise(resolve => setTimeout(resolve, interval))
+    try {
+      const tasks = await pptApi.batchStatus(taskIds)
+      pending = []
+      for (const task of tasks) {
+        const entry = messages.value.find(message => message.kind === 'ppt'
+            && message.task?.taskId === task.taskId) as PptEntry | undefined
+        if (entry) applyPptTask(entry, task)
+        if (!isPptTerminal(task)) pending.push(task.taskId)
+      }
+      interval = Math.min(interval * 2, 10000)
+    } catch (failure) {
+      error.value = toErrorMessage(failure)
+      return
+    }
   }
 }
 

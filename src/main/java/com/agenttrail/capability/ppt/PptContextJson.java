@@ -1,5 +1,6 @@
 package com.agenttrail.capability.ppt;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
@@ -30,9 +31,31 @@ final class PptContextJson {
 
     static PptGenerationContext fromJson(String json) {
         try {
-            return JSON.readValue(json, PptGenerationContext.class);
+            JsonNode root = JSON.readTree(json);
+            if (root == null || !root.isObject()) {
+                throw new PptContextMigrationException("PPT_CONTEXT_MIGRATION_FAILED", "上下文快照必须是 JSON 对象");
+            }
+            // 缺失版本的历史快照按 0 读取，然后在这里一次性迁移到当前版本，避免每个
+            // Strategy 都各自猜测旧字段。未来版本明确拒绝，任务会留在可诊断的迁移错误上。
+            int persistedVersion = root.has("contextVersion") && !root.get("contextVersion").isNull()
+                    ? root.get("contextVersion").asInt(-1) : 0;
+            if (persistedVersion < 0 || persistedVersion > PptGenerationContext.CURRENT_CONTEXT_VERSION) {
+                throw new PptContextMigrationException("PPT_CONTEXT_MIGRATION_FAILED",
+                        "不支持的 PPT 上下文版本: " + persistedVersion);
+            }
+            PptGenerationContext parsed = JSON.treeToValue(root, PptGenerationContext.class);
+            return parsed.contextVersion() == PptGenerationContext.CURRENT_CONTEXT_VERSION
+                    ? parsed
+                    : new PptGenerationContext(parsed.conversationId(), parsed.userRequirement(), parsed.requirement(),
+                            parsed.searchMaterials(), parsed.templatePath(), parsed.outline(), parsed.schema(),
+                            parsed.outputPath(), parsed.clarifyingQuestion(),
+                            PptGenerationContext.CURRENT_CONTEXT_VERSION, parsed.warnings(), parsed.visualPlan(),
+                            parsed.assetTasks(), parsed.templateRef(), parsed.artifactRef(), parsed.operation(),
+                            parsed.baseTaskId(), parsed.baseArtifactId());
+        } catch (PptContextMigrationException migrationFailed) {
+            throw migrationFailed;
         } catch (Exception deserializationFailed) {
-            throw new PptGenerationException(
+            throw new PptContextMigrationException("PPT_CONTEXT_MIGRATION_FAILED",
                     "反序列化 PPT 生成上下文失败: " + deserializationFailed.getMessage(), deserializationFailed);
         }
     }

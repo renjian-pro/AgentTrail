@@ -44,6 +44,45 @@ class CapabilityControllersTest {
     private static final java.util.concurrent.Executor DIRECT_EXECUTOR = Runnable::run;
 
     @Test
+    void exposesConversationHistoryAndBatchStatusThroughTheHttpControllerContract() {
+        PptGenerationService pptService = mock(PptGenerationService.class);
+        CapabilityConversationService conversationService = mock(CapabilityConversationService.class);
+        PptTask task = new PptTask(9L, "conversation-http", PptState.RENDER, null, "{}", 1L, 2L);
+        when(pptService.describeConversation("legacy", "conversation-http")).thenReturn(List.of(task));
+        when(pptService.describeMany("legacy", List.of(9L, 10L))).thenReturn(List.of(task));
+        when(pptService.describe(9L)).thenReturn(Optional.of(task));
+        PptGenerationController controller = new PptGenerationController(pptService, conversationService, DIRECT_EXECUTOR);
+
+        assertThat(controller.conversationHistory("conversation-http")).extracting(PptGenerationResponse::taskId)
+                .containsExactly(9L);
+        assertThat(controller.batchStatus("9,10")).extracting(PptGenerationResponse::taskId)
+                .containsExactly(9L);
+        verify(pptService).describeConversation("legacy", "conversation-http");
+        verify(pptService).describeMany("legacy", List.of(9L, 10L));
+    }
+
+    @Test
+    void rejectsResumeForTerminalTaskAndSchedulesModifyAsANewVersion() {
+        PptGenerationService pptService = mock(PptGenerationService.class);
+        CapabilityConversationService conversationService = mock(CapabilityConversationService.class);
+        PptTask completed = new PptTask(9L, "conversation-http", PptState.SUCCESS, null, "{}", 1L, 2L);
+        PptTask modified = new PptTask(10L, "conversation-http", PptState.SCHEMA, null, "{}", 1L, 2L);
+        when(pptService.describe(9L)).thenReturn(Optional.of(completed));
+        when(pptService.prepareModify("legacy", 9L, "改第二页", null)).thenReturn(10L);
+        when(pptService.describe(10L)).thenReturn(Optional.of(modified));
+        when(pptService.consumeIdempotencyReplay(10L)).thenReturn(false);
+        PptGenerationController controller = new PptGenerationController(pptService, conversationService, DIRECT_EXECUTOR);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.resume(9L))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .extracting("statusCode")
+                .isEqualTo(HttpStatus.CONFLICT);
+        PptGenerationResponse response = controller.modify(9L, new com.agenttrail.web.dto.PptModifyRequest("改第二页"));
+        assertThat(response.taskId()).isEqualTo(10L);
+        verify(pptService).run(10L);
+    }
+
+    @Test
     void deepResearchRecordsItsStructuredResultInTheRequestedConversationOnceTheBackgroundRunCompletes() {
         DeepResearchService researchService = mock(DeepResearchService.class);
         CapabilityConversationService conversationService = mock(CapabilityConversationService.class);

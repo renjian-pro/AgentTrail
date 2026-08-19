@@ -16,7 +16,7 @@ import java.time.Duration;
 /**
  * PPT 生成状态机的编排入口（issue #24）——把 Spring 自动收集的全部 {@link PptGenerationStrategy}
  * bean 按 {@link PptGenerationStrategy#handledState()} 建成一张分发表，{@link #run(long)}
- * 沿着固定顺序 {@code INIT→REQUIREMENT→SEARCH→TEMPLATE→OUTLINE→SCHEMA→IMAGE→RENDER→VERIFY→SUCCESS}
+ * 沿着固定顺序 {@code INIT→REQUIREMENT→SEARCH→VISUAL_PLAN→TEMPLATE→OUTLINE→SCHEMA→IMAGE→RENDER→VERIFY→SUCCESS}
  * （{@code IMAGE} 是 issue #31 新增的状态：立即把文生图 API 返回的临时图片链接下载转存进 MinIO）
  * 逐个状态推进，不是散落的 if-else 链。
  *
@@ -39,7 +39,8 @@ public class PptGenerationService {
 
     /** {@link PptState#AWAITING_INPUT} 刻意不在这条链路里：它是等人的暂停态，不是流程里的一环。 */
     private static final List<PptState> ORDER = List.of(
-            PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.TEMPLATE,
+            PptState.INIT, PptState.CLARIFY, PptState.REQUIREMENT, PptState.SEARCH, PptState.VISUAL_PLAN,
+            PptState.TEMPLATE,
             PptState.OUTLINE, PptState.SCHEMA, PptState.IMAGE, PptState.RENDER, PptState.VERIFY,
             PptState.SUCCESS);
 
@@ -85,9 +86,9 @@ public class PptGenerationService {
         this.strategiesByState = strategies.stream()
                 .collect(Collectors.toMap(PptGenerationStrategy::handledState, strategy -> strategy));
         for (PptState state : ORDER) {
-            // VERIFY 是新协议的可选升级点：旧测试/旧装配没有对象存储时仍可跑到 SUCCESS；生产配置
-            // 会提供 VerifyStrategy，此时 SUCCESS 必须经过硬门禁和上传。
-            if (state != PptState.SUCCESS && state != PptState.VERIFY && !strategiesByState.containsKey(state)) {
+            // VERIFY 是 SUCCESS 前的硬门禁：没有验签、重新打开和对象存储上传，就不能把任务标成成功。
+            // 这样断点恢复也不会绕过交付链路，避免数据库里出现“成功但没有可下载产物”的任务。
+            if (state != PptState.SUCCESS && !strategiesByState.containsKey(state)) {
                 throw new IllegalStateException("缺少状态 " + state + " 对应的 PptGenerationStrategy 实现");
             }
         }
@@ -252,11 +253,29 @@ public class PptGenerationService {
             log.info("PPT 任务 {} 已由另一个 worker 持有执行租约，跳过重复执行", taskId);
             return;
         }
-        PptGenerationContext context = PptContextJson.fromJson(task.contextJson());
         PptState current = task.status();
         long revision = task.revision();
         PptCancellationToken cancellationToken = cancellationRegistry.tokenFor(taskId);
         try {
+            PptGenerationContext context;
+            try {
+                context = PptContextJson.fromJson(task.contextJson());
+            } catch (PptContextMigrationException migrationFailed) {
+                // 快照迁移发生在 Strategy 之前，不能让异常绕过失败 checkpoint；否则恢复扫描会
+                // 不断重试同一份坏数据。将它落成不可重试 FAILED，管理员可以按稳定 code 处理。
+                String code = migrationFailed.code();
+                PptFailure failure = new PptFailure(code, current, false,
+                        com.agenttrail.platform.error.RetryClass.FATAL,
+                        Math.max(task.attempt(), 1), "PPT 上下文版本无法迁移，请重新创建任务",
+                        System.currentTimeMillis());
+                if (current != PptState.SUCCESS && current != PptState.CANCELLED
+                        && current != PptState.AWAITING_INPUT) {
+                    taskStore.recordFailureIfCurrent(taskId, current, revision, failure,
+                            PptRunStatus.FAILED, 0);
+                }
+                metrics.taskFailed();
+                throw new PptGenerationException("PPT 上下文迁移失败: " + code, migrationFailed);
+            }
             if (task.runStatus() == PptRunStatus.CANCEL_REQUESTED || taskStore.isCancelRequested(taskId)) {
                 taskStore.markCancelled(taskId, current);
                 return;
@@ -500,11 +519,7 @@ public class PptGenerationService {
     private PptState nextState(PptState current) {
         int index = ORDER.indexOf(current);
         for (int i = index + 1; i < ORDER.size(); i++) {
-            PptState candidate = ORDER.get(i);
-            if (candidate == PptState.VERIFY && !strategiesByState.containsKey(candidate)) {
-                continue;
-            }
-            return candidate;
+            return ORDER.get(i);
         }
         throw new IllegalStateException("状态没有后继: " + current);
     }
@@ -517,6 +532,7 @@ public class PptGenerationService {
     /** 任务表只保存稳定、有限长度的用户提示；原始异常仅留在服务端日志。 */
     private static String userFailureMessage(PptState state, String code) {
         return switch (code) {
+            case "PPT_CONTEXT_MIGRATION_FAILED" -> "PPT 上下文版本无法迁移，请重新创建任务";
             case "PPT_TIMEOUT" -> "PPT 生成超时，请稍后重试";
             case "PPT_SCHEMA_INVALID" -> "PPT 结构生成失败，请检查需求后重试";
             case "PPT_TEMPLATE_INVALID" -> "PPT 模板不可用，请更换模板后重试";
@@ -527,6 +543,7 @@ public class PptGenerationService {
 
     /** 稳定错误码只由异常类型/受控关键字生成，不把供应商响应或本机路径返回给前端。 */
     private static String stableFailureCode(Throwable failure) {
+        if (failure instanceof PptContextMigrationException migrationFailed) return migrationFailed.code();
         Throwable current = failure;
         while (current != null) {
             String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase();

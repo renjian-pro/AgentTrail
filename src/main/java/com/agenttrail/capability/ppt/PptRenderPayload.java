@@ -16,10 +16,21 @@ import java.util.List;
  * 发明一套。
  */
 public record PptRenderPayload(List<PptTextFill> titleSlideFills, List<PptContentSlidePayload> contentSlides,
-        String titleSlideImageUrl) {
+        String titleSlideImageUrl, List<PptDynamicPagePayload> pages) {
+
+    public PptRenderPayload {
+        titleSlideFills = titleSlideFills == null ? List.of() : List.copyOf(titleSlideFills);
+        contentSlides = contentSlides == null ? List.of() : List.copyOf(contentSlides);
+        pages = pages == null ? List.of() : List.copyOf(pages);
+    }
 
     /** 兼容 issue #24/#30 时期只有两个字段的调用点/测试——{@code titleSlideImageUrl} 默认为 null。 */
     public PptRenderPayload(List<PptTextFill> titleSlideFills, List<PptContentSlidePayload> contentSlides) {
-        this(titleSlideFills, contentSlides, null);
+        this(titleSlideFills, contentSlides, null, List.of());
+    }
+
+    public PptRenderPayload(List<PptTextFill> titleSlideFills, List<PptContentSlidePayload> contentSlides,
+            String titleSlideImageUrl) {
+        this(titleSlideFills, contentSlides, titleSlideImageUrl, List.of());
     }
 }

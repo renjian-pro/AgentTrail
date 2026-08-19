@@ -396,6 +396,7 @@ public class PptGenerationController {
         List<com.agenttrail.capability.ppt.PptState> stages = List.of(
                 com.agenttrail.capability.ppt.PptState.INIT, com.agenttrail.capability.ppt.PptState.CLARIFY,
                 com.agenttrail.capability.ppt.PptState.REQUIREMENT, com.agenttrail.capability.ppt.PptState.SEARCH,
+                com.agenttrail.capability.ppt.PptState.VISUAL_PLAN,
                 com.agenttrail.capability.ppt.PptState.TEMPLATE, com.agenttrail.capability.ppt.PptState.OUTLINE,
                 com.agenttrail.capability.ppt.PptState.SCHEMA, com.agenttrail.capability.ppt.PptState.IMAGE,
                 com.agenttrail.capability.ppt.PptState.RENDER, com.agenttrail.capability.ppt.PptState.VERIFY);

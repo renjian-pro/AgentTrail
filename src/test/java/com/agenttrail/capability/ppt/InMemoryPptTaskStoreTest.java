@@ -39,6 +39,7 @@ class InMemoryPptTaskStoreTest {
         assertThat(task.status()).isEqualTo(PptState.CLARIFY);
         assertThat(task.runStatus()).isEqualTo(PptRunStatus.RUNNING);
         assertThat(task.revision()).isEqualTo(1);
+        assertThat(task.attempt()).as("推进到下一阶段时，该阶段从第 1 次执行开始计数").isEqualTo(1);
         assertThat(store.eventsForTask(id)).singleElement().satisfies(event -> {
             assertThat(event.stage()).isEqualTo(PptState.INIT);
             assertThat(event.outcome()).isEqualTo(PptCheckpointEvent.OUTCOME_SUCCEEDED);
@@ -74,6 +75,16 @@ class InMemoryPptTaskStoreTest {
         assertThat(store.findById(id).orElseThrow().attempt()).isEqualTo(1);
         assertThat(store.recoverableTaskIds(System.currentTimeMillis(), 10)).isEmpty();
         assertThat(store.recoverableTaskIds(retryAt, 10)).containsExactly(id);
+    }
+
+    @Test
+    void recoveryIncludesCancelRequestedTasksSoAWorkerCanFinishCancellationAfterCrash() {
+        InMemoryPptTaskStore store = new InMemoryPptTaskStore();
+        long id = store.create("user-1", "conv-1", PptGenerationContext.initial("conv-1", "问题"));
+
+        store.requestCancel(id);
+
+        assertThat(store.recoverableTaskIds(System.currentTimeMillis(), 10)).containsExactly(id);
     }
 
     @Test

@@ -43,7 +43,7 @@ async function download() {
 }
 
 const labels: Record<string, string> = {
-  INIT: '初始化', CLARIFY: '需求澄清', REQUIREMENT: '需求分析', SEARCH: '资料检索', TEMPLATE: '读取模板',
+  INIT: '初始化', CLARIFY: '需求澄清', REQUIREMENT: '需求分析', SEARCH: '资料检索', VISUAL_PLAN: '视觉规划', TEMPLATE: '读取模板',
   OUTLINE: '生成大纲', SCHEMA: '编排页面', IMAGE: '生成配图', RENDER: '正在渲染', VERIFY: '校验产物',
   SUCCESS: '已完成', FAILED: '生成失败',
   AWAITING_INPUT: '需要补充信息', CANCELLED: '已取消'
@@ -72,12 +72,20 @@ const statusText = computed(() => {
  * errorMsg，漏掉这一条就是一个永不退出的 1.5 秒定时循环。
  */
 async function pollUntilSettled(taskId: number) {
+  let interval = 1500
+  let revision = props.entry.task?.taskView?.revision ?? -1
   while (props.entry.task && pipelineState.value !== 'SUCCESS'
       && pipelineState.value !== 'AWAITING_INPUT' && pipelineState.value !== 'CANCELLED'
       && !props.entry.task.errorMsg) {
-    await new Promise(resolve => setTimeout(resolve, 1500))
+    await new Promise(resolve => setTimeout(resolve, interval))
     try {
-      props.entry.task = await pptApi.status(taskId)
+      const next = await pptApi.status(taskId)
+      const nextRevision = next.taskView?.revision ?? revision
+      if (nextRevision >= revision) {
+        props.entry.task = next
+        revision = nextRevision
+      }
+      interval = Math.min(interval * 2, 10000)
     } catch (failure) {
       props.entry.error = toErrorMessage(failure)
       return

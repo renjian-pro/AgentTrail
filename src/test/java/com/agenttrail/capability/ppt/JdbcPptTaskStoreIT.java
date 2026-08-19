@@ -66,6 +66,7 @@ class JdbcPptTaskStoreIT {
         PptTask task = store.findById(id).orElseThrow();
         assertThat(task.status()).isEqualTo(PptState.CLARIFY);
         assertThat(task.revision()).isEqualTo(1);
+        assertThat(task.attempt()).isEqualTo(1);
         assertThat(store.eventsForTask(id)).singleElement().satisfies(event -> {
             assertThat(event.stage()).isEqualTo(PptState.INIT);
             assertThat(event.outcome()).isEqualTo(PptCheckpointEvent.OUTCOME_SUCCEEDED);
