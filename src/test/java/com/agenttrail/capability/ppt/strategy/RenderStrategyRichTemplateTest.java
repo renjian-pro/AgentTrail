@@ -23,12 +23,40 @@ import java.util.Map;
 import java.util.Base64;
 import java.util.Arrays;
 import java.util.zip.ZipFile;
+import javax.xml.parsers.DocumentBuilderFactory;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** 覆盖动态 Schema 到富模板渲染器的最短真实链路。 */
 class RenderStrategyRichTemplateTest {
+
+    @Test
+    void keepsRichContentInsideItsTemplateFrameAndDropsIncompleteBullet(@TempDir Path tempDir)
+            throws Exception {
+        String firstBullet = "• 培养跨学科团队：融合业务、技术、数据与治理能力。";
+        String secondBullet = "• 推动员工技能升级，从执行者转向监督与优化者。";
+        String thirdBullet = "• 建立内部沟通机制，管理变革预期与阻力。";
+        PptSchema schema = new PptSchema("标题", "副标题", List.of(), null,
+                List.of(page("content", PptPageType.CONTENT, Map.of(
+                        "title", PptField.text("组织与人才准备"),
+                        "subTitle", PptField.text("组织保障"),
+                        "content", PptField.text(String.join("\n", firstBullet, secondBullet, thirdBullet))))),
+                "default", "1");
+        String template = new ClassPathResource("ppt-templates/rich-template.pptx").getFile().getAbsolutePath();
+        String script = new ClassPathResource("ppt-scripts/render_ppt_rich.py").getFile().getAbsolutePath();
+        RenderStrategy strategy = new RenderStrategy(new PptPythonRenderer("python", script, 60),
+                tempDir.toString());
+
+        Path output = Path.of(strategy.execute(PptGenerationContext.initial("rich-text-fit", "unused")
+                .withTemplatePath(template).withSchema(schema)).outputPath());
+        ContentShapeSnapshot content = readContentShape(output);
+
+        assertThat(content.text()).isEqualTo(firstBullet + "\n" + secondBullet);
+        assertThat(content.normalAutoFit()).as("正文必须收缩在模板文本框内，不能向下扩张出边框").isTrue();
+    }
 
     @Test
     void failsInsteadOfReportingSuccessWhenARequestedImageCannotBeDownloaded(@TempDir Path tempDir)
@@ -137,4 +165,38 @@ class RenderStrategyRichTemplateTest {
         }
         return false;
     }
+
+    private static ContentShapeSnapshot readContentShape(Path output) throws Exception {
+        try (ZipFile zip = new ZipFile(output.toFile())) {
+            var entry = zip.stream()
+                    .filter(candidate -> candidate.getName().matches("ppt/slides/slide\\d+\\.xml"))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("rendered PPT does not contain a slide XML"));
+            var factory = DocumentBuilderFactory.newInstance();
+            factory.setNamespaceAware(true);
+            var document = factory.newDocumentBuilder().parse(zip.getInputStream(entry));
+            var properties = document.getElementsByTagNameNS(
+                    "http://schemas.openxmlformats.org/presentationml/2006/main", "cNvPr");
+            for (int index = 0; index < properties.getLength(); index++) {
+                Element property = (Element) properties.item(index);
+                if (!"content".equals(property.getAttribute("name"))) continue;
+                Node shape = property;
+                while (shape != null && !"sp".equals(shape.getLocalName())) shape = shape.getParentNode();
+                if (!(shape instanceof Element shapeElement)) break;
+                var textNodes = shapeElement.getElementsByTagNameNS(
+                        "http://schemas.openxmlformats.org/drawingml/2006/main", "t");
+                StringBuilder text = new StringBuilder();
+                for (int textIndex = 0; textIndex < textNodes.getLength(); textIndex++) {
+                    if (textIndex > 0) text.append('\n');
+                    text.append(textNodes.item(textIndex).getTextContent());
+                }
+                boolean normalAutoFit = shapeElement.getElementsByTagNameNS(
+                        "http://schemas.openxmlformats.org/drawingml/2006/main", "normAutofit").getLength() > 0;
+                return new ContentShapeSnapshot(text.toString(), normalAutoFit);
+            }
+        }
+        throw new AssertionError("rendered PPT does not contain shape named content");
+    }
+
+    private record ContentShapeSnapshot(String text, boolean normalAutoFit) { }
 }

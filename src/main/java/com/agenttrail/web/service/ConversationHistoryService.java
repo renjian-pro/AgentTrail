@@ -84,7 +84,7 @@ public class ConversationHistoryService {
     }
 
     /**
-     * 标题固定使用首轮提问，排序使用最新轮次时间——对齐 dodo-agentx 的会话语义：会话继续进行时
+     * 标题固定使用首轮提问，排序使用最新轮次时间：会话继续进行时
      * 标题不能每问一句就变化；列表仍要让最近活跃的会话排在最上面。
      */
     public ConversationPageResponse findConversations(int page, int size) {

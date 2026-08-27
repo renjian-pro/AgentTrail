@@ -23,7 +23,6 @@ class ConfigurationTemplateTest {
     private static final Path LOCAL_TEMPLATE = Path.of("application-local.example.yml");
     private static final Pattern VALUE_KEY = Pattern.compile("@Value\\(\"\\$\\{([^}:]+)");
     private static final Set<String> LOCAL_ONLY_SETTINGS = Set.of(
-            "spring.ai.deepseek.api-key",
             "spring.ai.openai.api-key",
             "spring.datasource.url",
             "spring.datasource.username",
@@ -62,6 +61,31 @@ class ConfigurationTemplateTest {
             assertThat(resources.map(path -> path.getFileName().toString()))
                     .noneMatch(name -> name.startsWith("application") && name.endsWith(".properties"));
         }
+    }
+
+    @Test
+    void chatModelHasOneConfigurationSourceAndNoUnusedProvider() throws Exception {
+        Properties defaults = loadYaml(APPLICATION_DEFAULTS);
+        String yaml = Files.readString(APPLICATION_DEFAULTS, StandardCharsets.UTF_8);
+        String localTemplate = Files.readString(LOCAL_TEMPLATE, StandardCharsets.UTF_8);
+        String pom = Files.readString(Path.of("pom.xml"), StandardCharsets.UTF_8);
+        String productionWiring = String.join("\n",
+                Files.readString(Path.of("src/main/java/com/agenttrail/web/config/AgentLoopExecutorConfig.java"),
+                        StandardCharsets.UTF_8),
+                Files.readString(Path.of("src/main/java/com/agenttrail/web/config/DeepResearchConfig.java"),
+                        StandardCharsets.UTF_8),
+                Files.readString(Path.of("src/main/java/com/agenttrail/web/config/PptGenerationConfig.java"),
+                        StandardCharsets.UTF_8),
+                Files.readString(Path.of("frontend/src/views/ChatView.vue"), StandardCharsets.UTF_8));
+
+        assertThat(defaults.getProperty("agenttrail.model.id")).isEqualTo("qwen-plus");
+        assertThat(yaml).contains("model: ${agenttrail.model.id}");
+        assertThat(yaml).doesNotContain("deepseek:", "deepseek-chat", "search-model:");
+        assertThat(localTemplate).doesNotContain("deepseek:");
+        assertThat(pom).doesNotContain("spring-ai-starter-model-deepseek");
+        assertThat(productionWiring)
+                .doesNotContain("qwen-plus", "deepseek-chat", "agenttrail.ppt.model",
+                        "agenttrail.deepresearch.model", "agenttrail.deepresearch.search-model");
     }
 
     @Test

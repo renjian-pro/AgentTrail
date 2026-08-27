@@ -38,9 +38,9 @@ public final class ChatApplicationService {
         this.pausedRuns = pausedRuns;
     }
 
-    public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId, String modelId,
+    public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId,
                                     String message, ToolScope toolScope) {
-        return send(principal, conversationId, modelId, message, toolScope, null);
+        return send(principal, conversationId, message, toolScope, null);
     }
 
     /**
@@ -53,9 +53,9 @@ public final class ChatApplicationService {
      *             执行器切到 {@code AgentLoopExecutorFactory#forAnalytics}。
      * @throws IllegalArgumentException mode 传了但不认识，或该模式不由本端点承载
      */
-    public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId, String modelId,
+    public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId,
                                     String message, ToolScope toolScope, String mode) {
-        return send(principal, conversationId, modelId, message, toolScope, mode, java.util.List.of());
+        return send(principal, conversationId, message, toolScope, mode, java.util.List.of());
     }
 
     /**
@@ -65,7 +65,7 @@ public final class ChatApplicationService {
      *                归属校验不在这一层做，收口在数据访问侧（{@code buildFileSection} 天然按会话查、
      *                绑定 SQL 带 {@code AND conversation_id = ?}），那里绕不过去。
      */
-    public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId, String modelId,
+    public Flux<EventEnvelope> send(ExecutionPrincipal principal, String conversationId,
                                     String message, ToolScope toolScope, String mode,
                                     java.util.List<Long> fileIds) {
         String id = conversationId == null || conversationId.isBlank()
@@ -73,17 +73,17 @@ public final class ChatApplicationService {
         ToolScope scope = toolScope == null ? ToolScope.none() : toolScope;
         // 解析放在最前面：模式不认识就不该建会话号、不该起 runtime，直接 400 出去
         boolean analyticsEnabled = CapabilityMode.require(mode) == CapabilityMode.ANALYTICS;
-        AgentRuntimePort runtime = profiles.resolve("chat-default", modelId, scope);
+        AgentRuntimePort runtime = profiles.resolve("chat-default", null, scope);
         AgentRunHandle handle = runtime.start(
                 request(principal, id, message, scope, analyticsEnabled, fileIds));
         return toEvents(handle, ConversationId.of(id));
     }
 
     public Flux<EventEnvelope> approve(ExecutionPrincipal principal, String conversationId,
-                                       String modelId, boolean approved, String rejectionReason) {
+                                       boolean approved, String rejectionReason) {
         PausedRunPort.PausedRun paused = requireOwnedPause(principal, conversationId);
-        // 旧快照没有 modelId 时也不能相信恢复请求重传的值；传 null 让服务端注册表选择默认模型，
-        // 否则客户端能把同一份服务端上下文切到任意模型上继续执行。
+        // 旧快照没有 modelId 时传 null，让服务端注册表选择统一配置的默认模型；恢复接口不接收模型，
+        // 客户端不能把同一份服务端上下文切到另一台模型上继续执行。
         String originalModelId = paused.modelId() == null || paused.modelId().isBlank()
                 ? null : paused.modelId();
         ToolScope originalScope = new ToolScope(paused.webSearchEnabled(), true, java.util.Set.of());

@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.openai.OpenAiChatOptions;
 
 import java.time.Duration;
 import java.util.List;
@@ -20,14 +20,12 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 工具调用轮结束后落进历史的那条助手消息，必须扛得住真实 DeepSeekChatModel 的两个硬要求
- * （见 engineering-pitfalls-and-highlights.md #5a⑤，静态证据来自反编译 spring-ai-deepseek
- * 2.0.0 的 {@code DeepSeekChatModel#createRequest}）：
+ * 工具调用轮结束后落进历史的那条助手消息，必须满足供应商客户端的两个硬要求：
  *
  * <ol>
  *   <li>assistant 消息的 {@code content} 不能是 null——{@code Assert.state(text != null, "text must not be null")}；
  *   <li>发给 {@code stream()} 的 {@code ChatOptions} 不能被换成通用类型——{@code createRequest}
- *       会把 {@code prompt.getOptions()} 硬转成 {@code DeepSeekChatOptions}。
+ *       不能把客户端提供的具体 options 类型替换成通用实现。
  * </ol>
  */
 class AgentLoopExecutorHistoryMessageTest {
@@ -72,11 +70,11 @@ class AgentLoopExecutorHistoryMessageTest {
         assertThat(historyMessage.getMetadata().get("reasoning_content")).isEqualTo("先想想要不要调用 echo");
     }
 
-    /** 用真实的 DeepSeekChatOptions（测试范围依赖）验证 LlmInvoker 不会用通用实现覆盖掉厂商具体类型。 */
+    /** 用生产供应商的 options 类型验证 LlmInvoker 不会用通用实现覆盖掉厂商具体类型。 */
     @Test
     void preservesProviderSpecificOptionsTypeInsteadOfReplacingWithGenericImplementation() {
         RecordingToolCallback echoTool = new RecordingToolCallback("echo", "Echoes the input back", "pong");
-        DeepSeekChatOptions providerDefaults = DeepSeekChatOptions.builder().model("deepseek-chat").build();
+        OpenAiChatOptions providerDefaults = OpenAiChatOptions.builder().model("test-model").build();
         ScriptedChatModel chatModel = new ScriptedChatModel(List.of(ChatResponses.text("done")))
                 .withDefaultOptions(providerDefaults);
         AgentLoopExecutor executor = new AgentLoopExecutor(chatModel, List.of(echoTool), 5);
@@ -84,7 +82,7 @@ class AgentLoopExecutorHistoryMessageTest {
         executor.stream("hello", new RunnableParams("conv-1", "user-1"))
                 .collectList().block(Duration.ofSeconds(5));
 
-        assertThat(chatModel.optionsAtRound(0)).isInstanceOf(DeepSeekChatOptions.class);
+        assertThat(chatModel.optionsAtRound(0)).isInstanceOf(OpenAiChatOptions.class);
         assertThat(((ToolCallingChatOptions) chatModel.optionsAtRound(0)).getToolCallbacks())
                 .containsExactly(echoTool);
     }

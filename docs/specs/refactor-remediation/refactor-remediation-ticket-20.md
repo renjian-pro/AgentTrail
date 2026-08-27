@@ -78,7 +78,7 @@ public record AgentDefinition(
 
 **默认嵌套深度上限建议值：3 层**。理由：真实的多 Agent 协作场景（比如 Supervisor 分发给若干
 执行 Agent，执行 Agent 内部再调用一次专门的验证/格式化 Agent）三层足够表达；超过三层通常意味着
-职责划分有问题——应该拆成更清晰的阶段/状态（照抄 Ticket 15/17 的 Task/Checkpoint 模式，不是复用
+职责划分有问题——应该拆成更清晰的阶段/状态（沿用 Ticket 15/17 的 Task/Checkpoint 模式，不是复用
 某个通用 Workflow 引擎，见第 4 节），而不是
 用嵌套 Agent 调用去表达复杂编排逻辑，嵌套越深，失败时的可观测性和预算追踪越难做对。这个数字
 不是压测校准值，是"面试时能讲清楚为什么是这个数"的经验性上限，实现时如果有更具体的业务场景
@@ -96,7 +96,7 @@ public record AgentDefinition(
 
 **2026-08-11 已定案：不存在通用 Workflow 引擎，`SupervisorWorkflow` 是一个具体类**（本节原来假设
 `refactor-blueprint.md` §2.8 会提供一个 `WorkflowDefinition<S>` 接口，这个接口已经废弃，见
-`refactor-remediation-ticket-17.md` §0）。本票 Blocked by Ticket 17/18 的原因改成：**照抄 Ticket
+`refactor-remediation-ticket-17.md` §0）。本票 Blocked by Ticket 17/18 的原因改成：**沿用 Ticket
 17 落地后 `DeepResearchWorkflow` 的具体写法**（`DeepResearchStage` 枚举 + 显式驱动方法 + 复用 Ticket 15 的
 `TaskCoordinator`/`CheckpointStore`），不是"复用同一个引擎实例"，是"复用同一套已经验证过的实现
 模式"——`SupervisorWorkflow` 自己定义一个 `SupervisorStage` 枚举（`FAN_OUT → MERGE_RESULTS →

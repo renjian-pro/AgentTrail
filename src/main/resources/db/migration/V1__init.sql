@@ -182,7 +182,7 @@ CREATE TABLE IF NOT EXISTS agent_file
 
 -- 注意：CREATE TABLE IF NOT EXISTS 只在表不存在时生效——issue #21/#26 阶段已经建好的
 -- agent_file 老表不会因为这次改了列定义就自动加上 kind/raw_bytes。MySQL（不同于 Postgres）
--- 不支持 ALTER TABLE ... ADD COLUMN IF NOT EXISTS 语法，没有一条能在这里直接照抄的幂等语句；
+-- 不支持 ALTER TABLE ... ADD COLUMN IF NOT EXISTS 语法，不能直接复用单条幂等迁移语句；
 -- 这个项目目前还没有真实生产数据，issue #27 上线时手动 DROP TABLE agent_file 一次即可让它
 -- 用新列定义重建。真的有生产数据需要保留时，要么手写"先查 information_schema 再决定要不要
 -- ALTER"的存储过程，要么引入 Flyway/Liquibase 这类迁移工具——这两者都不是这一票的范围。

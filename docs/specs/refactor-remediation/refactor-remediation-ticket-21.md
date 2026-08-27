@@ -153,7 +153,7 @@ Middleware 组合方式/结构化输出重试策略里，有没有 Spring AI 当
 预期结论就是"设计思路层面小范围参考，不引入依赖"，除非调研中发现 Spring AI 有明显缺陷需要另外
 立项解决）。
 
-## 3. PoC 成功标准（照抄 `refactor-blueprint.md` §6 Phase 10）
+## 3. PoC 成功标准（沿用 `refactor-blueprint.md` §6 Phase 10）
 
 对每个"决定要跑 Golden Task 验证"的框架（2.1/2.4/2.6，其余四个按第 2 节各自说明的理由不要求跑
 Golden Task），用以下标准判断这个框架是否值得进一步跟进，不是判断"PoC 本身有没有做完"：

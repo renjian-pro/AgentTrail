@@ -33,11 +33,11 @@ class ChatApplicationServiceTest {
     private static final PausedRunPort NO_PAUSED_RUNS = PausedRunPort.NONE;
 
     @Test
-    void sendResolvesTheToolCallingFallbackAndMapsRuntimeEventsToTheStableEnvelope() {
+    void sendUsesTheConfiguredModelForToolsAndMapsRuntimeEventsToTheStableEnvelope() {
         AgentRuntimePort defaultRuntime = mock(AgentRuntimePort.class);
         AgentRuntimePort toolRuntime = mock(AgentRuntimePort.class);
         RunId runId = RunId.of("run-1");
-        when(toolRuntime.start(any())).thenReturn(new AgentRunHandle(runId, Flux.just(
+        when(defaultRuntime.start(any())).thenReturn(new AgentRunHandle(runId, Flux.just(
                 new AgentEvent.Started(runId, ConversationId.of("conversation-1")),
                 new AgentEvent.TextDelta(runId, "answer"),
                 new AgentEvent.Completed(runId, ConversationId.of("conversation-1"), 7L))));
@@ -47,14 +47,14 @@ class ChatApplicationServiceTest {
                 mock(ConversationPort.class), NO_PAUSED_RUNS);
 
         List<EventEnvelope> events = service.send(new ExecutionPrincipal("user-1", "tenant-1"),
-                        "conversation-1", "qwen-plus", "run a tool", new ToolScope(true, true, Set.of()))
+                        "conversation-1", "run a tool", new ToolScope(true, true, Set.of()))
                 .collectList().block();
 
         assertThat(events).extracting(EventEnvelope::type)
                 .containsExactly("RunStarted", "ModelDelta", "RunCompleted");
         assertThat(events).extracting(EventEnvelope::sequence).containsExactly(1L, 2L, 3L);
-        verify(toolRuntime).start(any());
-        verify(defaultRuntime, never()).start(any());
+        verify(defaultRuntime).start(any());
+        verify(toolRuntime, never()).start(any());
     }
 
     /**
@@ -72,7 +72,7 @@ class ChatApplicationServiceTest {
                 new RuntimeProfileRegistry(Map.of("qwen-plus", runtime), "qwen-plus"),
                 mock(ConversationPort.class), NO_PAUSED_RUNS);
 
-        service.send(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1", "qwen-plus",
+        service.send(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1",
                         "上个月的订单量是多少", ToolScope.none(), "analytics")
                 .collectList().block();
 
@@ -91,8 +91,7 @@ class ChatApplicationServiceTest {
                 new RuntimeProfileRegistry(Map.of("qwen-plus", runtime), "qwen-plus"),
                 mock(ConversationPort.class), NO_PAUSED_RUNS);
 
-        service.send(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1", "qwen-plus",
-                        "你好", ToolScope.none())
+        service.send(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1", "你好", ToolScope.none())
                 .collectList().block();
 
         ArgumentCaptor<AgentRequest> captor = ArgumentCaptor.forClass(AgentRequest.class);
@@ -133,7 +132,7 @@ class ChatApplicationServiceTest {
                 conversations, pausedRuns);
 
         service.approve(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1",
-                "qwen-plus", true, null).collectList().block();
+                true, null).collectList().block();
 
         verify(deepSeek).resume(runId, new ResumeCommand.Approve());
         verify(qwen, never()).resume(any(), any());
@@ -141,11 +140,11 @@ class ChatApplicationServiceTest {
     }
 
     @Test
-    void approveLegacySnapshotUsesTheServerDefaultInsteadOfTrustingTheRequestedModel() {
+    void approveLegacySnapshotUsesTheServerDefault() {
         AgentRuntimePort qwen = mock(AgentRuntimePort.class);
         AgentRuntimePort deepSeek = mock(AgentRuntimePort.class);
         RunId runId = RunId.of("conversation-1");
-        when(deepSeek.resume(any(), any())).thenReturn(new AgentRunHandle(runId, Flux.empty()));
+        when(qwen.resume(any(), any())).thenReturn(new AgentRunHandle(runId, Flux.empty()));
         PausedRunPort pausedRuns = id -> java.util.Optional.of(new PausedRunPort.PausedRun(
                 id, "user-1", null, "HITL_APPROVAL", 10L,
                 false, false, List.of()));
@@ -154,10 +153,10 @@ class ChatApplicationServiceTest {
                 mock(ConversationPort.class), pausedRuns);
 
         service.approve(new ExecutionPrincipal("user-1", "tenant-1"), "conversation-1",
-                "attacker-controlled-model", true, null).collectList().block();
+                true, null).collectList().block();
 
-        verify(deepSeek).resume(runId, new ResumeCommand.Approve());
-        verify(qwen, never()).resume(any(), any());
+        verify(qwen).resume(runId, new ResumeCommand.Approve());
+        verify(deepSeek, never()).resume(any(), any());
     }
 
     @Test
@@ -169,11 +168,11 @@ class ChatApplicationServiceTest {
                 false, false, List.of()));
 
         assertThatThrownBy(() -> new ChatApplicationService(profiles, mock(ConversationPort.class), foreign)
-                .approve(new ExecutionPrincipal("user-1", null), "conversation-1", null, true, null))
+                .approve(new ExecutionPrincipal("user-1", null), "conversation-1", true, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Paused conversation does not exist");
         assertThatThrownBy(() -> new ChatApplicationService(profiles, mock(ConversationPort.class), PausedRunPort.NONE)
-                .approve(new ExecutionPrincipal("user-1", null), "conversation-1", null, true, null))
+                .approve(new ExecutionPrincipal("user-1", null), "conversation-1", true, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Paused conversation does not exist");
     }

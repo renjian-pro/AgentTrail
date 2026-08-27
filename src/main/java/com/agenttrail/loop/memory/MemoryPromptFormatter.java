@@ -6,8 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 把记忆条目按类型分组，格式化成注入 prompt 用的文本块（issue #19）。移植自 agentx-core 的
- * {@code MemoryPromptFormatter}，格式不变：
+ * 把记忆条目按类型分组，格式化成注入 prompt 用的稳定文本块（issue #19）：
  *
  * <pre>
  * # 长期记忆

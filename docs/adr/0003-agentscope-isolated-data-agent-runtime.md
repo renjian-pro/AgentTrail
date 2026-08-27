@@ -7,7 +7,7 @@ date: 2026-08-03
 
 ## 背景
 
-Clippings 与 dodo-agentx 的数据分析实现表明，DataAgent 的核心不是某个 ReAct 框架，而是 M-Schema/YAML 语义目录、业务消歧、SQL AST 安全、数据范围改写、脱敏、只读执行和结果校验。dodo-agentx 本身使用的是定制 AgentX `ReactAgent`，不是 AgentScope。
+DataAgent 的工程边界不应由某个 ReAct 框架定义。真正需要稳定控制的是 M-Schema/YAML 语义目录、业务消歧、SQL AST 安全、数据范围改写、脱敏、只读执行和结果校验；这些能力必须由 AgentTrail 的业务层独立负责。
 
 AgentTrail 已有手写 `AgentLoopExecutor`、流式事件、暂停恢复、TraceAudit 和 Task/Artifact 重构路线。全局切换 AgentScope 会同时引入第二套状态、事件和工具执行语义，扩大迁移风险。
 

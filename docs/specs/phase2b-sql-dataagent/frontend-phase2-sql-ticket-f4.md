@@ -71,7 +71,7 @@ const modeLabel = computed(() =>
   : pendingMode.value === 'analytics' ? '数据分析' : '')
 ```
 
-模板里照抄现有 research/ppt 按钮的写法加第三个，`@click="toggleMode('analytics')"`。**不要**新写一套按钮组样式。
+模板里沿用现有 research/ppt 按钮的写法加第三个，`@click="toggleMode('analytics')"`。**不要**新写一套按钮组样式。
 
 ### 4.2 `send()` 不加新分支，只传 mode
 

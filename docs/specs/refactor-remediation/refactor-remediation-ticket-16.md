@@ -80,7 +80,7 @@ com.agenttrail.web.service.AgentLoopExecutorFactory`（第 2 行）——这些�
 **先验证**：Ticket 14 落地后 `RuntimeProfile`/`RuntimeModule` 的实际接口形状以 Ticket 14 合并的代码为准；
 `refactor-blueprint.md` §1.8 只给了装配摘要格式示例（`profile=chat-default model=deepseek-chat
 tools=[web-search,chart] pause=false memory=false trace=true persistence=jdbc`），没有给出 Java 接口签名，
-不要凭空杜撰一份签名再假装是"照抄"。
+不要凭空杜撰一份签名再声称是复用既有契约。
 
 **范围边界**：`AgentLoopExecutorFactory` 里 `forAnalytics`/`forInternalOrchestration` 服务的场景（数据分析、
 DeepResearch/PPT 内部编排）不在这一票改造范围——`forAnalytics` 留给 SQL 能力包后续迁移票处理，

@@ -69,7 +69,7 @@ volumes:
 
 **先验证**：`langfuse/langfuse` 镜像的实际必需环境变量列表以官方文档为准，上面这份是最小
 猜测集，不保证一次 `docker compose up` 就能正常跑起来——Langfuse 本身版本迭代较快，环境变量
-名称可能变化，实现时要对照 Langfuse 官方 self-hosting 文档核实一遍，不要照抄这份文档就当作
+名称可能变化，实现时要对照 Langfuse 官方 self-hosting 文档核实一遍，不要把这份文档直接当作
 最终答案。
 
 ## 3. `deploy/prometheus.yml`

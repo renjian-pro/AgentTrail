@@ -58,7 +58,6 @@ const { conversationId, messages, todos, navigationSeq, agentKind, hasPendingApp
 const busy = ref(false)
 const error = ref('')
 const webSearch = ref(false)
-const modelId = ref('qwen-plus')
 const files = ref<AttachedFile[]>([])
 const uploadBusy = ref(false)
 const uploadError = ref('')
@@ -207,7 +206,6 @@ async function send(message: string) {
     for await (const event of streamChat({
       message,
       conversationId: conversationId.value,
-      modelId: modelId.value,
       webSearchEnabled: webSearch.value,
       mode,
       // 显式带上这一轮附的文件（issue #110）——后端据此绑定，不再扫全会话
@@ -333,7 +331,13 @@ async function runPpt(prompt: string) {
   let created: PptTask | undefined
   let entry: PptEntry | undefined
   try {
-    created = await pptApi.message(conversationId.value!, prompt)
+    const outcome = await pptApi.converse(conversationId.value!, prompt)
+    if (outcome.assistantMessage) {
+      messages.value.push({ kind: 'chat', role: 'assistant', content: outcome.assistantMessage })
+    }
+    // 需求确认阶段只保留普通对话，不提前制造一张“正在创建任务”的空卡片。
+    if (outcome.kind === 'MESSAGE' || !outcome.task) return
+    created = outcome.task
     entry = messages.value.find(message => message.kind === 'ppt'
         && message.task?.taskId === created!.taskId) as PptEntry | undefined
     if (!entry) {
@@ -551,10 +555,6 @@ async function removeFile(fileId: number) {
            从来不会同时可用——同一个位置换个状态就够了。 -->
       <MessageInput :busy="interactionBusy" :can-stop="canStop" :initial-value="initialMessage"
           :placeholder="PLACEHOLDERS[agentKind]" @send="send" @stop="stop" />
-      <div class="controls">
-        <span>当前模型</span>
-        <select v-model="modelId" aria-label="当前模型"><option>qwen-plus</option><option>deepseek-chat</option></select>
-      </div>
       <p v-if="error" class="error">对话出错：{{ error }}</p>
     </div>
   </div>

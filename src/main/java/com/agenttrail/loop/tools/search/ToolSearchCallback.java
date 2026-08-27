@@ -56,7 +56,7 @@ final class ToolSearchCallback implements ToolCallback {
     private static final String LLM_SEARCH_SYSTEM_PROMPT = """
             你是工具检索助手。给定一个查询和一份候选工具清单（每行"名称: 描述"），
             从候选清单中选出与查询最相关的工具，最多 %d 个。
-            只输出一个 JSON 数组，元素是工具名称字符串，原样照抄候选清单里的名称；
+            只输出一个 JSON 数组，元素是工具名称字符串，必须与候选清单里的名称完全一致；
             一个都不匹配就输出空数组 []。不要输出任何解释文字，不要输出候选清单之外的名称。
             """;
 

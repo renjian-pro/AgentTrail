@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 真实限速行为需要真实 Redis 服务端（滑动窗口的原子性是 Redis 自己的行为，mock 一个客户端测不出
- * 真正的限流效果），照抄 {@code RedisTaskLockIT} 的 Testcontainers 用法（issue #11）。
+ * 真正的限流效果），沿用 {@code RedisTaskLockIT} 的 Testcontainers 用法（issue #11）。
  */
 @Testcontainers
 class ToolRateLimiterIT {

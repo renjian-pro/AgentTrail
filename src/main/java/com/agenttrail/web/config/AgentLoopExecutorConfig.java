@@ -11,6 +11,7 @@ import com.agenttrail.web.service.CapabilityConversationService;
 import com.agenttrail.capability.analytics.AnalyticsToolProvider;
 import com.agenttrail.capability.file.FileStore;
 import com.agenttrail.conversation.digest.ConversationDigestService;
+import com.agenttrail.platform.model.AgentModelProperties;
 import com.agenttrail.loop.hook.SessionBudgetTracker;
 import com.agenttrail.platform.tools.ToolRiskLevel;
 import com.agenttrail.loop.hook.ToolRiskRegistry;
@@ -52,6 +53,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.slf4j.Logger;
@@ -70,11 +72,9 @@ import javax.sql.DataSource;
 
 /**
  * V1 引擎（{@code loop.core.AgentLoopExecutor}）的生产装配——issue #20 起不再是单一模型的单例，
- * 而是按模型标识可选的一批执行器（见 {@link AgentLoopExecutorFactory}）。默认模型是
- * {@code qwen-plus}（{@code spring-ai-starter-model-openai} 根据 {@code spring.ai.openai.*}
- * 配置自动装配的 bean 名为 {@code openAiChatModel}，走 DashScope 的 OpenAI 兼容模式），
- * {@code deepseek-chat} 作为第二个可选模型保留（{@code spring-ai-starter-model-deepseek}
- * 装配的 bean 名为 {@code deepSeekChatModel}）。
+ * 而是按模型标识创建执行器（见 {@link AgentLoopExecutorFactory}）。文本模型统一由
+ * {@link AgentModelProperties} 提供标识，{@code spring-ai-starter-model-openai} 根据
+ * {@code spring.ai.openai.*} 自动装配走 DashScope 兼容端点的 {@code openAiChatModel}。
  *
  * <p>issue #22 起额外挂了一个可选的联网搜索工具（Tavily，条件挂载）；issue #23 起再挂一个
  * 图表生成工具（mcp-echarts，streamable-HTTP，见 {@link AgentLoopExecutorFactory#forModelWithCharts}）——
@@ -84,6 +84,7 @@ import javax.sql.DataSource;
  * 仍按场景作为可选机制扩展，见 {@code docs/architecture.md} 第四节。
  */
 @Configuration
+@EnableConfigurationProperties(AgentModelProperties.class)
 public class AgentLoopExecutorConfig {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoopExecutorConfig.class);
@@ -227,8 +228,8 @@ public class AgentLoopExecutorConfig {
     }
 
     /**
-     * 用便宜的非思考模型（qwen-plus）做分类，不占用主对话模型的配额，也不需要为它单独接一个
-     * 第三方分类模型——分类任务本身足够简单，复用现有已注册的模型就够了（ticket 09）。
+     * 用统一的非思考文本模型做分类，不占用额外供应商配额，也不需要为它单独接一个第三方分类模型——
+     * 分类任务本身足够简单，复用现有已注册的模型就够了（ticket 09）。
      */
     @Bean
     public PromptInjectionGuard promptInjectionGuard(@Qualifier("openAiChatModel") ChatModel qwenChatModel) {
@@ -283,16 +284,14 @@ public class AgentLoopExecutorConfig {
      */
     @Bean
     public com.agenttrail.capability.chat.application.RuntimeProfileRegistry runtimeProfileRegistry(
-            AgentLoopExecutorFactory executorFactory, AgentTaskManager agentTaskManager, PauseConfig pauseConfig) {
+            AgentLoopExecutorFactory executorFactory, AgentTaskManager agentTaskManager, PauseConfig pauseConfig,
+            AgentModelProperties modelProperties) {
         // pauseConfig 是给 resume 用的：恢复时接口只给 RunId，变体要从暂停快照的 toolParams 里取，
         // 否则被中断的分析会话会恢复成普通聊天执行器（issue #96）。
+        String modelId = modelProperties.id();
         return new com.agenttrail.capability.chat.application.RuntimeProfileRegistry(
-                Map.of(
-                        "qwen-plus",
-                        new ChatToolScopeRuntimeAdapter(executorFactory, "qwen-plus", agentTaskManager, pauseConfig),
-                        "deepseek-chat",
-                        new ChatToolScopeRuntimeAdapter(executorFactory, "deepseek-chat", agentTaskManager, pauseConfig)),
-                "qwen-plus", "deepseek-chat");
+                Map.of(modelId, new ChatToolScopeRuntimeAdapter(
+                        executorFactory, modelId, agentTaskManager, pauseConfig)), modelId);
     }
 
     @Bean
@@ -364,8 +363,8 @@ public class AgentLoopExecutorConfig {
 
     @Bean
     public AgentLoopExecutorFactory agentLoopExecutorFactory(
-            @Qualifier("deepSeekChatModel") ChatModel deepSeekChatModel,
             @Qualifier("openAiChatModel") ChatModel qwenChatModel,
+            AgentModelProperties modelProperties,
             AgentTaskManager agentTaskManager,
             TavilySearchToolProvider tavilySearchToolProvider,
             ChartToolProvider chartToolProvider,
@@ -386,13 +385,12 @@ public class AgentLoopExecutorConfig {
             ObjectProvider<SkillManager> skillManagerProvider,
             ObjectProvider<MemoryStore> memoryStoreProvider,
             ObjectProvider<org.springframework.transaction.PlatformTransactionManager> transactionManagerProvider) {
+        String modelId = modelProperties.id();
         List<RegisteredModel> models = List.of(
-                new RegisteredModel("deepseek-chat", deepSeekChatModel, ThinkingMode.REASONING_CONTENT),
-                // qwen-plus 是非思考变体，先按 DISABLED 处理——等真实 DashScope 配置到位后要实测校正
-                new RegisteredModel("qwen-plus", qwenChatModel, ThinkingMode.DISABLED));
+                new RegisteredModel(modelId, qwenChatModel, ThinkingMode.DISABLED));
         // 具名装配，不用位置槽（issue #99）：漏传/传错顺序在这里是编译错误，
         // 而不是运行时某个机制静默失效——DataAgent 拿不到 SOP 就是位置槽时代的产物
-        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(models, "qwen-plus")
+        AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(models, modelId)
                 .taskManager(agentTaskManager)
                 .webSearch(tavilySearchToolProvider)
                 .charts(chartToolProvider)
@@ -420,7 +418,7 @@ public class AgentLoopExecutorConfig {
                 .build();
         log.info("agentLoopExecutorFactory configured: profile=chat-default model={} models={} "
                         + "tools=[web-search,chart] pause={} memory={} trace={} metrics={}",
-                "qwen-plus", models.stream().map(RegisteredModel::id).toList(), pauseConfig != null,
+                modelId, models.stream().map(RegisteredModel::id).toList(), pauseConfig != null,
                 memoryStoreProvider.getIfAvailable() != null, traceStore != null,
                 meterRegistryProvider.getIfAvailable() != null);
         return factory;

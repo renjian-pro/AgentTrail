@@ -67,7 +67,18 @@ export type PptTask = {
   /** 新统一视图；旧历史消息没有该字段时，卡片继续使用上面的兼容字段。 */
   taskView?: PptTaskView | null
 }
+export type PptConversationResponse = {
+  kind: 'MESSAGE' | 'TASK'
+  assistantMessage: string | null
+  task: PptTask | null
+}
 export const pptApi = {
+  /**
+   * PPT 模式的会话入口。需求未确认时只返回普通助手消息；确认完成或操作已有任务时才返回 task。
+   */
+  converse: (conversationId: string, message: string, idempotencyKey?: string) =>
+    request<PptConversationResponse>('/agent/v1/ppt/converse',
+      jsonInit({ conversationId, message, idempotencyKey })),
   /** PPT 的唯一会话写入口；后端根据活跃任务状态识别新建、回答、修改、继续和取消。 */
   message: (conversationId: string, message: string, idempotencyKey?: string) =>
     request<PptTask>('/agent/v1/ppt/message', jsonInit({ conversationId, message, idempotencyKey })),

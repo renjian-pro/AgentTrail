@@ -304,7 +304,7 @@ agenttrail:
 - **不要**引入新的分布式锁库——刷新保护用已有的 `RedisTaskLock`
 - **不要**给刷新锁开 `startAutoRenewal()`
 - **不要**在这一票里把工具挂到 `AgentLoopExecutorFactory` 上（Ticket 12 统一做）
-- 其余共享约束（集成测试连本机真实 MySQL/Redis、不用 H2、不用 Testcontainers、中文注释、不点名来源仓库）同 Ticket 06
+- 其余共享约束（集成测试连本机真实 MySQL/Redis、不用 H2、不用 Testcontainers、中文注释、只记录项目内证据）同 Ticket 06
 
 ## 11. 和现有代码的边界
 

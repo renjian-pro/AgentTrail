@@ -24,6 +24,9 @@ public final class PptPrompts {
     /** 澄清判定输出"信息充足"时的固定标记，对应 {@code DeepResearchPrompts.READY_MARKER}。 */
     public static final String READY_MARKER = "【开始生成】";
 
+    /** 任务创建前的四项需求预检；未确认时只返回普通会话追问，不进入 PPT 状态机。 */
+    public static final String PREFLIGHT = PROMPTS.text("ppt.preflight");
+
     /**
      * CLARIFY 状态：只判断需求够不够清晰，不生成任何 PPT 内容。两个 {@code %s} 依次是
      * {@link #NEEDS_INFO_MARKER}/{@link #READY_MARKER}——标记由代码注入而不是写死在正文里，

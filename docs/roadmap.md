@@ -2,14 +2,14 @@
 
 > 配套 ADR：[0001](adr/0001-runtime-scope-and-stack.md)（Runtime 定位、LlmClient 抽象，仍有效）、[0002](adr/0002-hand-rolled-loop-as-v1-mainline.md)（手写 loop 是 V1 主线，AgentScope Java 2.0 延后为有计划的后续阶段）。
 >
-> 这是 AgentTrail 完整能力集（Runtime 核心 + SQL 数据分析 + 深度研究 + PPT 生成 + 多 Agent 编排）的落地路线，按"依赖关系"而不是"日期"排阶段。每一项机制的具体做法都来自对真实企业级 Java Agent 项目源码 + 设计笔记的研读（见 `engineering-pitfalls-and-highlights.md` 的踩坑点，实现时逐条对照）。自己根据实际进度增减、加速。
+> 这是 AgentTrail 完整能力集（Runtime 核心 + SQL 数据分析 + 深度研究 + PPT 生成 + 多 Agent 编排）的落地路线，按“依赖关系”而不是“日期”排阶段。每项机制都应由 ADR、当前代码、失败测试、基准数据和必要的公开规范共同支撑（见 `engineering-pitfalls-and-highlights.md`），并随实际验证结果调整。
 
 ## 技术决策（已定，不再讨论）
 
-> **2026-08-03 交叉核对补充**：已核对现有设计与真实生产形态 DataAgent 实现的对照结果，详见内部笔记和 [ADR 0003](adr/0003-agentscope-isolated-data-agent-runtime.md)。DataAgent 采用 AgentScope 仅限于隔离的 Runtime Adapter；M-Schema/YAML、SQL AST 安全、数据权限重写、脱敏、结果校验和 Artifact 仍属于 AgentTrail 业务/平台层。认证与租户主体必须先于 SQL 能力包，不能继续让生产路径使用 `anonymous`。
+> **2026-08-03 约束审计补充**：根据当前领域模型、威胁模型和 [ADR 0003](adr/0003-agentscope-isolated-data-agent-runtime.md)，DataAgent 采用 AgentScope 仅限于隔离的 Runtime Adapter；M-Schema/YAML、SQL AST 安全、数据权限重写、脱敏、结果校验和 Artifact 仍属于 AgentTrail 业务/平台层。认证与租户主体必须先于 SQL 能力包，不能继续让生产路径使用 `anonymous`。
 
 - **模型接入直调 `ChatModel.stream(Prompt)`，不经过 `ChatClient`/Advisor 链**——`internalToolExecutionEnabled` 只存在于 ChatClient 这一层，绕开它就不需要关心 Spring AI 1.1.0/2.0 的差异，两个版本行为一致。**结论：上 Spring AI 2.0 GA**（原生匹配 Boot 4.1.0）。
-- **版本映射提醒**：研读的参考框架源码基于 **Spring AI 1.1.0 + Boot 3.5.6**，本项目是 **Spring AI 2.0 GA + Boot 4.1.x**——研读时对 ChatClient/Advisor/Tool 注册相关的 API 要做版本映射笔记（1.x 的 `internalToolExecutionEnabled` → 2.0 的 `ToolCallingAdvisor`；Function Bean → 显式 `ToolCallback` Bean；`spring.ai.*.chat.options.*` 配置扁平化），面试被追问"2.0 和 1.x 区别"时这本身就是答案素材。
+- **版本映射提醒**：本项目使用 **Spring AI 2.0 GA + Boot 4.1.x**。任何基于 1.x API 的既有结论都必须重新验证 ChatClient/Advisor/Tool 注册行为（`internalToolExecutionEnabled` → `ToolCallingAdvisor`；Function Bean → 显式 `ToolCallback` Bean；`spring.ai.*.chat.options.*` 配置扁平化），不能直接套用旧版本经验。
 - **SQL 场景库用 sakila**（MySQL 官方 DVD 租赁库，通用示例数据集）。
 - **不删除** V0（`AgentLoop`/`AgentScopeRuntime` 两条早期路径），但收敛进单一文件 `com.agenttrail.legacy.V0`，作为决策演进的对比参考保留，不再演进；`agentscope-bom` 依赖同理保留。
 
@@ -25,11 +25,10 @@
 
 > **2026-07-31 更新（第三次修正）**：issue #15-#19 已全部关闭，补齐了上一次修正发现的
 > 0.11-0.15 五项engine缺口（同步调用、分层记忆中间层、分阶段输出、TraceAudit、结构化输出
-> 基础机制）。至此 **Phase 0 + Phase 1 完整做完**——引擎已经和参考框架 `docs/core/` 的 19 篇
-> 能力文档对齐（分层记忆的语义摘要层、结构化输出的 Reviewer 二次确认、SubAgent 的业务化演示
-> 三处例外，前两处按设计留给 Phase 4/Phase 3，最后一处只是缺少 Capability Pack 场景来演示，
-> 机制本身随时可以补）。下一步进 Phase 2（SQL 数据分析能力包），不用再犹豫"引擎是不是真的
-> 做完了"。
+> 基础机制）。至此 **Phase 0 + Phase 1 完整做完**——引擎的既定验收项已完成；分层记忆的
+> 语义摘要层、结构化输出的 Reviewer 二次确认、SubAgent 的业务化演示仍是三项明确例外。
+> 前两项按设计留给 Phase 4/Phase 3，后一项等待合适的 Capability Pack 场景。下一步进入
+> Phase 2（SQL 数据分析能力包）。
 >
 > 每行的 issue 号可以在 `gh issue view <n> --json state,body` 里查到验收标准。
 
@@ -92,7 +91,7 @@
 ### 0.5 会话持久化（接口已定义，JDBC 实现待写）
 - `TurnPersistenceHook` 接口：loop 结束时同步回调一次，拿到 `sessionId` 塞进 `Complete` 事件
 - JDBC 实现：写 `question`/`answer`/`think`/`timeline_json`/`created_at`；历史消息重建按 `conversation_id` 查最近 N 轮拼回 `Message` 列表——N 不能拍脑袋定死，按 token 预算倒推（用 `TokenEstimator` 估算，超预算从最老的轮次截断）
-- **持久化时序**：必须在 `tryEmitComplete()` 之前同步完成入库，不能放在 `doFinally` 里（踩坑点 #63，参考框架源码里真实踩过：doFinally 时序问题导致 JVM 退出时历史丢失）
+- **持久化时序**：必须在 `tryEmitComplete()` 之前同步完成入库，不能只放在 `doFinally` 里；对应回归测试需覆盖终止回调未完成时进程退出导致历史丢失的风险（踩坑点 #63）
 - 会话表用 `conversation_id`（跨轮可见）+ `session_id`（历史回放归属）两个独立 key——Phase 4 的文件生命周期依赖这个结构，一开始就按这个建表（踩坑点 #49）
 
 ### 0.6 ToolSearch 延迟工具发现（雏形已写，待完善）
@@ -122,7 +121,7 @@
 - **背压有界化**：`Sinks.many().unicast().onBackpressureBuffer()` 无上限 buffer 在"长输出+慢消费端"场景有 OOM 风险，生产要换有界 buffer 或 `limitRate()`（踩坑点 #64）
 - **超时分阶段**：thinking 模型首 token 延迟远高于后续 token，超时不能一刀切——TTFT 超时和 token 间隔超时分开设；且 `timeout` 操作符只断下游，要配合 `cancel()` 真正释放上游订阅
 - **线程池隔离**：工具并发执行和流式聚合如果共用 `Schedulers.boundedElastic()`（默认 10×CPU 上限），高并发下互相阻塞，拆独立 `Schedulers.fromExecutor` 池（踩坑点 #62）
-- **上下文传播**：MDC/trace 上下文跨线程用 Reactor Context / Micrometer ContextPropagation（踩坑点 #39）。对照：另一种常见方案是 TransmittableThreadLocal（`AgentSessionContextHolder`，TTL 自动传播到 boundedElastic 线程）——两种方案的取舍（Reactor 原生 vs TTL 侵入性低但依赖 agent 包装线程池）本身是面试可讲的对比题；研读过的参考框架源码两者都没用（其上下文靠显式参数传递）
+- **上下文传播**：MDC/trace 上下文跨线程用 Reactor Context / Micrometer ContextPropagation（踩坑点 #39）。备选方案是 TransmittableThreadLocal；取舍点是 Reactor 原生语义与线程池包装侵入性。最终方案必须用跨调度器测试验证，而不是依赖 ThreadLocal 直觉。
 
 ---
 
@@ -159,10 +158,8 @@
 
 ## Phase 3：治理层（Hooks + 可观测性 + 评测体系）—— ✅ 已完成（issue #63-#71）
 
-> **2026-07-31 修正**：本 Phase 原本的定位是"不属于参考框架自带的 19 项能力，是本项目
-> 自己的增强"，这句话现在只对本表剩下的这几行成立——"审计日志"和"结构化输出校验"的**基础
-> 机制**其实是参考框架自己的 core/17、core/13，已经挪到上面 Phase 0 状态表的 0.14/0.15。
-> 这里两行改成明确"建立在 0.14/0.15 之上"的业务层增强，不是从零开始。
+> **2026-07-31 修正**：“审计日志”和“结构化输出校验”的基础机制已经归入 Phase 0 状态表的
+> 0.14/0.15；本阶段只保留建立在这些基础能力之上的业务治理增强，避免重复建设。
 >
 > **2026-08-06 更新**：9 张实现票（详细设计见 `docs/specs/phase3-governance/backend-phase3-governance*.md`）全部
 > 落地并关闭。落地时顺带把上一轮"下一步"记录的四条技术债（Redis 任务锁未接线、DeepResearch/PPT
@@ -197,7 +194,7 @@
 |---|---|
 | 文件解析 | 统一解析 PDF/Office/HTML/纯文本，走 Apache Tika（issue #21）——tika-core 2.9.2 自带的 commons-io 版本比它实际需要的旧，已在 pom.xml 显式钉到 2.18.0 |
 | 小文件直出 / 大文件 RAG 路由 | 按字符数阈值（默认 5000）分流，避免所有文件都走 RAG 的延迟成本（issue #21） |
-| RAG 检索管线 | 查询压缩（`CompressionQueryTransformer`）→ 多查询扩展（`MultiQueryExpander`，3 个改写+原始）→ PgVector 相似度检索（按 fileId 过滤）→ 去重合并（issue #26）；向量化失败直接抛异常，不像参考实现那样打个 warn 日志就静默降级 |
+| RAG 检索管线 | 查询压缩（`CompressionQueryTransformer`）→ 多查询扩展（`MultiQueryExpander`，3 个改写+原始）→ PgVector 相似度检索（按 fileId 过滤）→ 去重合并（issue #26）；向量化失败直接抛异常，禁止仅记录 warn 后静默降级 |
 | 多轮文件生命周期 | `conversation_id`（跨轮可见性）vs `turn_id`（历史回放归属，指向 `agent_session.id`）两个独立 key；system prompt 里按"本轮上传"成组渲染，避免"这两个文件"被模型理解成单个列表项（issue #28，复用 issue #19 memoryStore 的注入缝） |
 | 图片多模态 | 走 qwen3-vl-plus，懒加载（首次被问到才调用）+ 结果写回缓存，不对没人问起的图片烧多模态调用成本（issue #27） |
 
@@ -246,11 +243,9 @@
 
 ## Phase 8：多 Agent 编排
 
-> **2026-07-31 修正**：下面"SubAgent 子代理机制"这一行本身**不需要等任何 Capability Pack**——
-> 参考框架里这个机制是通用的（`SubAgentTool.create()` 包一个 `Supplier<ReactAgent>` 就能用，
-> 官方示例挂的是"翻译""代码分析"这种不依赖业务包的简单子代理），已经在上面 Phase 0 状态表
-> 标成 `8*` 单独说明。放在 Phase 8 这里，是因为"拿真实业务 Agent 演示多 Agent 协作"这件事
-> 需要 Phase 2/6/7 至少存在两个，机制本身随时可以先做。
+> **2026-07-31 修正**：下面“SubAgent 子代理机制”本身**不需要等待任何 Capability Pack**，
+> 已在 Phase 0 状态表标成 `8*` 单独说明。它保留在 Phase 8，是因为业务化的多 Agent 协作演示
+> 需要 Phase 2/6/7 至少已有两个能力包；机制本身可以提前实现与测试。
 
 | 机制 | 说明 |
 |---|---|
@@ -298,12 +293,11 @@
 
 ## 阶段间的依赖关系（谁先谁后有硬约束，谁先谁后没硬约束可以自己插队）
 
-> **状态（2026-07-31 三次修正）**：issue #1-#19 全部关闭，Phase 0 + Phase 1 完整做完，和参考
-> 框架 `docs/core/` 的 19 篇能力文档对齐（三处有意例外见上方状态速览的更新说明）。下面这条
-> 硬约束现在真正清空——可以放心开始 Phase 2。
+> **状态（2026-07-31 三次修正）**：issue #1-#19 全部关闭，Phase 0 + Phase 1 的既定验收项
+> 已完成（三处有意例外见上方状态速览）。下面这条硬约束已经满足，可以开始 Phase 2。
 
-**核心排序原则**：Phase 0 + Phase 1 是"引擎"——通用、不含任何业务知识，对应参考框架
-框架本身的能力集，**必须完整做完才能开始任何 Capability Pack**。这不是任意排的先后顺序，
+**核心排序原则**：Phase 0 + Phase 1 是“引擎”——通用、不含任何业务知识，
+**必须完成既定运行时契约才能开始任何 Capability Pack**。这不是任意排的先后顺序，
 是 `loop/` 分包原则（不知道 SQL、不知道 PPT）在构建顺序上的延伸：业务代码不应该在引擎接口
 还没定型的时候就依赖上它。Phase 1 的 Redis 生产化本质是 Phase 0.4 任务管理能力的生产形态，
 和 Phase 0 属于同一层，不是可以随意插队的独立项。
@@ -316,7 +310,7 @@ Phase 0（Runtime 核心）+ Phase 1（Redis 生产化）—— 引擎，必须�
        ├─ Phase 5（联网搜索+图表）── 联网搜索无前置依赖；图表生成只是"要等 Phase 2 有数据可画"（运行时数据流关系，不是构建顺序约束）
        ├─ Phase 6（PPT 生成）── 依赖 Phase 5 的联网搜索（收集素材阶段用）
        └─ Phase 7（DeepResearch）── 依赖 Phase 5 的联网搜索
-Phase 3（治理层）—— 不属于参考框架自带的 19 项能力，是本项目自己的增强；Phase 0.9 的内置
+Phase 3（治理层）—— 建立在 Phase 0 的 Runtime 契约之上；Phase 0.9 的内置
   工具（Bash/FileSystem/Grep）本身就是"真实工具调用"，Phase 0 做完即可开始 Phase 3，不需要等
   任何 Capability Pack
 Phase 8（多 Agent 编排）—— 依赖至少 2-3 个 Capability Pack 已存在（Phase 2/6/7 至少两个），否则没有"协作"的意义
@@ -325,24 +319,24 @@ Phase 10（框架迁移评估）—— 依赖 Phase 0 手写版本已经稳定�
 Phase 11（部署）—— 每个 Capability Pack 做完都可以顺手补一版 Demo，不用等全部做完
 ```
 
-## 参考来源映射（每个阶段的设计从哪来，面试被问"这个设计怎么来的"时有据可查）
+## 设计证据映射（每个阶段的结论如何复核）
 
-| 阶段 | 来源 |
+| 阶段 | 项目内证据与公开依据 |
 |---|---|
-| Phase 0.1-0.4 loop 核心 | 研读真实生产级 Java Agent 框架源码（`AgentLoopExecutor`/`ToolCallExecutor`/`ContextCompactor` 等核心机制）+ 系统整理的流式响应、任务管理、Think 模型输出解析、上下文压缩（micro/auto_compact）相关工程笔记 |
-| Phase 0.6 ToolSearch | 研读参考框架的工具检索模块（jieba 中文分词 + HYBRID 兜底）+ 按需工具披露机制相关工程笔记 |
-| Phase 0.7 Skills | 研读参考框架的 Skills 工具实现 + Skills 机制设计、单机版管理相关工程笔记 |
-| Phase 0.9 文件/Bash 工具 | 研读参考框架的内置工具实现（文件系统/Bash/Grep）+ Agent 操作系统能力相关工程笔记 |
-| Phase 1 分布式任务管理 | 多实例 Agent 任务管理改造相关工程笔记；分布式锁的注解化实现对照了同类开源方案的 `@DistributeLock` 模式（`@Order(MIN_VALUE)` 保证锁在事务外，含真实缺陷可当反例，踩坑点 #65） |
-| Phase 2 SQL/权限 | M-Schema、SQL 安全校验、执行流程、权限模型改造、数据权限计算与改写、敏感字段脱敏、业务术语消歧相关工程笔记 + 数据分析类 Agent 项目的工具设计模式 |
-| Phase 3 治理层 | 研发效能 Agent 平台的 Hooks 设计笔记 + 参考框架的 `TraceManager` 实现 |
-| Phase 4 文件问答 RAG | 文件问答实现、大文件处理、文件与联网搜索重构相关工程笔记 |
-| Phase 5 搜索+图表 | 复杂计算与图表生成相关工程笔记 |
-| Phase 6 PPT | PPT 生成智能体系列工程笔记（选型/需求分析/稳定输出/Python渲染/失败恢复/重写Skill） |
-| Phase 7 DeepResearch | DeepResearch 实现、智能体自主规划相关工程笔记 |
-| Phase 8 多 Agent | 研读参考框架的 SubAgent 工具化实现；对照另一种常见实现——注意实测口径：它是 SubAgent-as-Tool 架构（LLM 串行决定调哪个子 Agent，**没有**并行 fan-out/结果合并），实际挂载 4 个子 Agent；真正值得抄的是三层意图路由（规则→向量→LLM）+ 影子历史补偿（#70）+ Tool 粒度手写熔断（#71）+ 注册表集群教训（#69） |
-| Phase 9 MCP | 研发效能 Agent 平台的 MCP 设计笔记 + 相关工程笔记 |
-| 待补充 | 中断恢复实现、多节点部署改造、data-agent 评测体系相关笔记——已列入整理清单，后续补充对应阶段细节 |
+| Phase 0.1-0.4 loop 核心 | 流式分片重组测试、工具调用顺序测试、上下文信息保留率 Golden QA、超时与取消回归 |
+| Phase 0.6 ToolSearch | 工具规模基线、中文查询召回率、零命中回退测试、工具披露 token 成本 |
+| Phase 0.7 Skills | `SKILL.md` 契约测试、工具白名单、指令冲突与越权用例 |
+| Phase 0.9 文件/Bash 工具 | 路径穿越测试、命令白名单、工作目录隔离、输出上限与超时测试 |
+| Phase 1 分布式任务管理 | 跨实例竞争测试、Redis 故障注入、锁租约续期、任务恢复与事件重放测试 |
+| Phase 2 SQL/权限 | SQL AST 改写回归、最小权限账号、越权/脱敏 Golden Tasks、查询资源上限与审计记录 |
+| Phase 3 治理层 | Hook 契约测试、审计哈希链验证、OTel 指标与 SLO、成本预算和限流回归 |
+| Phase 4 文件问答 RAG | 检索召回率、引用完整性、大文件全局/局部问题评测、向量化补偿测试 |
+| Phase 5 搜索+图表 | 计算正确性、图表 schema 校验、Artifact 可访问性和大结果集限制 |
+| Phase 6 PPT | 状态机恢复、模板兼容矩阵、渲染视觉回归、失败重试与 Artifact 验证 |
+| Phase 7 DeepResearch | 任务分层恢复、引用可追溯性、批判轮次上限、结果一致性评测 |
+| Phase 8 多 Agent | 路由准确率、多意图依赖顺序、失败隔离、熔断与跨实例注册一致性（#69-#71） |
+| Phase 9 MCP | 官方协议版本、契约测试、鉴权/权限边界、兼容性回归 |
+| 待补充 | 为中断恢复、多节点部署和 DataAgent 评测补齐可复现实验与验收数据 |
 
 ## 面试叙事主线
 

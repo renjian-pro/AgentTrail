@@ -3,7 +3,7 @@
 > 状态：草案，按 `to-spec` 模板整理，尚未发布为 GitHub issue（`ready-for-agent` 标签）。
 > 前提：`docs/roadmap.md` Phase 2（SQL 数据分析能力包）目前后端还没有任何代码——没有 `sys_user` 表，没有认证依赖，`RunnableParams.userId()` 在所有生产调用点都是硬编码占位符（`"anonymous"`/`"deepresearch"`/`"ppt-generation"`）。这份 spec 是 Phase 2 的前置子集：只做"有真实登录用户 + 能解析出这个用户的数据可见范围"，不做 SQL 分析工具本身。
 > 关联文档：与 [`frontend-phase2-auth.md`](frontend-phase2-auth.md) 是同一个契约的前后端两侧——前端 spec 已经假设了这里要交付的接口形状（登录三接口、用户管理 CRUD、部门树只读、`sys_user`/`sys_role`/`sys_dept`），这份 spec 落地后字段细节回填给前端票。
-> 披露规则：同其余 spec，方法论表述为"研读了真实生产形态权限模型设计后独立实现"，不点名具体来源仓库。
+> 证据规则：同其余 spec，只陈述 AgentTrail 的权限边界、架构决策、代码事实和测试结论，不记录私人素材、本机路径或历史项目名。
 
 ## Problem Statement
 

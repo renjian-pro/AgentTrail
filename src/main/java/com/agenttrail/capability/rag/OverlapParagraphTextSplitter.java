@@ -10,8 +10,8 @@ import java.util.List;
 /**
  * 按段落（{@code \n+}）切分 + 块内按 chunkSize 续写 + 块间 overlap 重叠的文本切分器（issue #26）。
  *
- * <p>移植自参考实现（dodo-agentx {@code OverlapParagraphTextSplitter}）——分块策略这一块
- * 参考实现和本项目规划几乎逐字一致，直接照抄。
+ * <p>优先保持自然段边界；超长段落按 chunkSize 续写，并用 overlap 保留跨块语义。
+ * 构造参数约束用于避免空块、负重叠和无法推进的切分循环。
  */
 public class OverlapParagraphTextSplitter extends TextSplitter {
 

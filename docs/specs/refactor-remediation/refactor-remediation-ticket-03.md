@@ -108,7 +108,7 @@ private static final Scheduler TOOL_EXECUTION_SCHEDULER = Schedulers.newBoundedE
         "agent-tool-exec");
 ```
 
-这是 Reactor 的 `Scheduler`，不是 `ExecutorService`，两者 API 不同，不能直接照抄调用方式——但
+这是 Reactor 的 `Scheduler`，不是 `ExecutorService`，两者 API 不同，不能直接套用调用方式——但
 要抄的是"有界"这个原则本身：`newBoundedElastic` 除了限制线程数，**同时**限制了排队任务数
 （`DEFAULT_BOUNDED_ELASTIC_QUEUESIZE`，超出后新任务直接被拒绝/报错，不会无限堆积）。
 `PptGenerationConfig`/`DeepResearchConfig` 要复刻的正是这个"线程数 + 队列容量都有上限"的组合，

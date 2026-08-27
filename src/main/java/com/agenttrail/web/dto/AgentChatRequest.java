@@ -1,6 +1,4 @@
 package com.agenttrail.web.dto;
-import com.agenttrail.web.service.AgentLoopExecutorFactory;
-
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
@@ -8,8 +6,6 @@ import java.util.List;
 
 /**
  * @param conversationId   会话标识；首次请求不传时由服务端创建，后续轮次必须原样带回
- * @param modelId          可选的模型标识（issue #20），不传时由 {@link AgentLoopExecutorFactory} 落到
- *                         默认模型（{@code qwen-plus}）
  * @param webSearchEnabled 这次对话要不要挂联网搜索工具（issue #22）。不传按 false 处理——
  *                         "条件工具"的语义是关闭时工具列表里压根没有它，不是默认打开
  * @param mode             前端选中的能力模式，取值见 {@code CapabilityMode}（issue #106）。
@@ -25,7 +21,6 @@ import java.util.List;
 public record AgentChatRequest(
         @NotBlank @Size(max = 20000) String message,
         @Size(max = 100) String conversationId,
-        @Size(max = 100) String modelId,
         boolean webSearchEnabled,
         @Size(max = 50) String mode,
         @Size(max = 50) List<Long> fileIds) {
@@ -35,9 +30,8 @@ public record AgentChatRequest(
     }
 
     /** 不带附件的简写——Jackson 走 canonical 构造，这个只服务于直接 new 的调用方。 */
-    public AgentChatRequest(String message, String conversationId, String modelId, boolean webSearchEnabled,
-            String mode) {
-        this(message, conversationId, modelId, webSearchEnabled, mode, List.of());
+    public AgentChatRequest(String message, String conversationId, boolean webSearchEnabled, String mode) {
+        this(message, conversationId, webSearchEnabled, mode, List.of());
     }
 
 }

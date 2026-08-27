@@ -10,7 +10,7 @@ Bash 工具执行环境的凭据隔离审查。四块彼此独立，可以任选
 
 ## 1. Prompt Injection 检测
 
-新增 `PromptInjectionGuard`（`loop.security` 新包），用一次小模型调用做意图分类——照抄
+新增 `PromptInjectionGuard`（`loop.security` 新包），用一次小模型调用做意图分类——沿用
 `MemoryExtractor`（`loop/memory/MemoryExtractor.java` 第 75-78 行）已经验证过的"单次同步
 `chatModel.call(prompt)`"模式，不新发明一套调用方式：
 

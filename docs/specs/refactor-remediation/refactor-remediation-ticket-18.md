@@ -26,7 +26,7 @@
 `capability/ppt/strategy/RenderStrategy.java`、`capability/ppt/PptPythonRenderer.java`、
 `capability/ppt/JdbcPptTaskStore.java`、`capability/ppt/image/MinioPptImageStore.java`、
 `web/controller/PptGenerationController.java`、`web/config/PptGenerationConfig.java`，把票面
-描述的每一条"现状问题"对照真实代码核实一遍，不是照抄 `refactor-blueprint.md` §2.3/§2.8 的结论
+描述的每一条“现状问题”对照真实代码核实一遍，不是机械复述 `refactor-blueprint.md` §2.3/§2.8 的结论
 就假设都对：
 
 - **① Controller 不直接运行 Python——核实结论：Controller 本身没有直接持有
@@ -93,7 +93,7 @@
 **2026-08-11 已定案：`PptGenerationService` 现有的 `PptState` 枚举 + `Map<PptState,
 PptGenerationStrategy>` 状态机骨架不做任何形式上的迁移，原样保留**——本项目已经决定不引入通用
 `WorkflowDefinition<S>`/`WorkflowNode` 抽象（见 `refactor-blueprint.md` §2.8、Ticket 17 §0），
-PPT 这套状态机反而是 DeepResearch（Ticket 17）在照抄的对象，不存在"PPT 要不要也迁移成 Workflow
+PPT 这套状态机反而是 DeepResearch（Ticket 17）正在复用的对象，不存在“PPT 要不要也迁移成 Workflow
 接口"这个问题——**这一票只做** `RenderPort`/`PptWorker` 两个具体件，把渲染动作和并发/资源安全
 规则接进去，不改状态机本身的实现方式。
 
@@ -264,7 +264,7 @@ TaskPayload, String idempotencyKey)` 接口形状为准，`TaskCoordinator` 本�
 - **RetryClass 分类测试**：第 9 节表格里的每一行分类各构造一个测试用例，断言异常被正确归类，
   不是笼统地"失败了就重试"或"失败了就不重试"。
 
-## 验收标准（照抄 `refactor-blueprint.md` §6 Phase 7）
+## 验收标准（沿用 `refactor-blueprint.md` §6 Phase 7）
 
 - PPT 不再占用 HTTP 请求线程。
 - 同一个幂等键最多创建一个任务。

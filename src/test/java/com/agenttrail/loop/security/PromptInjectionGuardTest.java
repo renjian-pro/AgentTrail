@@ -12,7 +12,7 @@ import static com.agenttrail.loop.core.support.ChatResponses.text;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 分类器调用模式照抄 {@code MemoryExtractorTest}——不打真实模型的桩，用一个固定返回值的
+ * 分类器调用模式沿用 {@code MemoryExtractorTest}——不打真实模型的桩，用一个固定返回值的
  * {@link ChatModel} 验证 {@link PromptInjectionGuard} 自己的逻辑（解析结果、失败降级）。
  * 真实分类准确率不是这一票要保证的（见 ticket 09 的范围说明），这里只验证机制本身工作正常。
  */

@@ -93,7 +93,7 @@ class HttpContractSnapshotTest {
         try (var ignored = mockStatic(StpUtil.class)) {
             ignored.when(StpUtil::getLoginIdAsString).thenReturn("user-1");
             List<ServerSentEvent<EventEnvelope>> events = controller.chat(
-                    new AgentChatRequest("hello", null, null, false, null)).collectList().block();
+                    new AgentChatRequest("hello", null, false, null)).collectList().block();
             assertThat(events).extracting(ServerSentEvent::event)
                     .containsExactly("RunStarted", "ModelDelta", "RunCompleted");
         }
@@ -114,7 +114,7 @@ class HttpContractSnapshotTest {
         try (var ignored = mockStatic(StpUtil.class)) {
             ignored.when(StpUtil::getLoginIdAsString).thenReturn("user-1");
             List<ServerSentEvent<EventEnvelope>> events = controller.chat(
-                    new AgentChatRequest("charge", "conv-1", "qwen-plus", false, null))
+                    new AgentChatRequest("charge", "conv-1", false, null))
                     .collectList().block();
 
             assertThat(events).extracting(ServerSentEvent::event).containsExactly("RunStarted", "Paused");
@@ -148,7 +148,7 @@ class HttpContractSnapshotTest {
                     .extracting(tool -> tool.toolName()).containsExactly("chargeCard");
 
             List<ServerSentEvent<EventEnvelope>> events = controller.approve("conv-1",
-                    new AgentApprovalRequest(false, "金额异常", "qwen-plus", false, null))
+                    new AgentApprovalRequest(false, "金额异常"))
                     .collectList().block();
             assertThat(events).extracting(ServerSentEvent::event).containsExactly("RunCompleted");
 
@@ -182,7 +182,7 @@ class HttpContractSnapshotTest {
         try (var ignored = mockStatic(StpUtil.class)) {
             ignored.when(StpUtil::getLoginIdAsString).thenReturn("user-1");
             assertThatThrownBy(() -> controller.approve("conv-1",
-                    new AgentApprovalRequest(true, null, null, false, null)))
+                    new AgentApprovalRequest(true, null)))
                     .isInstanceOfSatisfying(ResponseStatusException.class,
                             failure -> assertThat(failure.getStatusCode().value()).isEqualTo(409));
         }

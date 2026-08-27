@@ -3,9 +3,8 @@ package com.agenttrail.capability.deepresearch;
 import com.agenttrail.loop.prompt.PromptRegistry;
 
 /**
- * DeepResearch 各阶段的提示词（issue #25）。需求澄清和研究主题生成两段移植自参考实现
- * （dodo-agent {@code PlanExecutePrompts}）——判定标记、判定倾向（"能推断方向就直接开始，
- * 不追问细节"）都是原样保留，这条本身就是"和 PPT 需求澄清同一套解法"的复用证据。
+ * DeepResearch 各阶段的提示词（issue #25）。需求澄清和主题生成采用明确判定标记；当上下文
+ * 足以推断研究方向时直接开始，避免为非关键细节反复追问。这一语义与 PPT 需求澄清保持一致。
  *
  * <p>PLAN 提示词现在会生成 {@code order} 分层字段（issue #34）。CRITIQUE（issue #35）是结构化
  * 通过/不通过判定，不通过时的反馈文本会被拼进下一轮的 PLAN 调用，让模型针对性补充而不是

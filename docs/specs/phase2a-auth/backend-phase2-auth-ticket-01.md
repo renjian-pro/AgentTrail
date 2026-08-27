@@ -60,7 +60,7 @@ Redis 连接复用项目已有配置（Phase 1 分布式锁已经在用 Redis）
 
 ## 4. 建表 SQL（追加到 `src/main/resources/db/schema.sql`，风格必须对齐文件里现有的表）
 
-对齐点（照抄现有表的风格，不要发明新风格）：
+对齐点（沿用现有表的风格，不要另起一套）：
 - `CREATE TABLE IF NOT EXISTS`
 - 每张表前面一段中文注释，解释"为什么这么设计"而不是复述字段名
 - 表尾统一 `ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT '...'`
@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS sys_user_dept
 - **不要**把密码明文存库或用 `.equals()` 比较——必须 `BCryptPasswordEncoder`
 - **不要**给 `RunnableParams` 这个 record 新增字段或方法——这一票不涉及 Agent 调用链路改动（那是 Ticket 3 的范围），不要提前碰 `loop/model/RunnableParams.java`
 - **不要**用递归 CTE 查部门子树——用 `ancestors` 字段的前缀 `LIKE` 查询（第 4 节的表注释已经说明原因）
-- **不要**在代码注释、commit message 或本项目任何文档里点名具体的参考实现来源仓库——方法论可以写"参照了真实 RBAC 权限模型设计后独立实现"，不点具体项目名（`AGENTS.md` 的披露规则）
+- 代码注释、commit message 和项目文档只说明 AgentTrail 的 RBAC 约束与验证证据，不记录私人素材、本机路径或历史项目名（见 `AGENTS.md`）
 - **不要**在集成测试里用 H2 替代 MySQL——`AGENTS.md` 明确要求 Testcontainers 起真实容器，H2 在 SQL 行为上和 MySQL 不一致会掩盖真实 bug
 - **不要**做自助注册/找回密码接口——账号只能通过种子数据或后续 Ticket 2 的管理员后台创建
 - **不要**做角色/部门的新增编辑删除接口——这次角色和部门都是种子数据，动态管理接口不在这几张票的范围内（`backend-phase2-auth.md` 的 Out of Scope 已经写明）

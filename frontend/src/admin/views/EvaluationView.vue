@@ -62,7 +62,7 @@ function toggleCompare(taskId: string) {
   compareIds.value.push(taskId)
 }
 
-/** 提交后反复轮询直到终态——照抄 ChatView.vue 里 PPT/DeepResearch 已验证过的轮询写法。 */
+/** 提交后反复轮询直到终态——沿用 ChatView.vue 里 PPT/DeepResearch 已验证过的轮询写法。 */
 async function pollUntilTerminal<T>(fetchStatus: () => Promise<T>, isTerminal: (value: T) => boolean,
     onUpdate: (value: T) => void, intervalMs = 1500): Promise<void> {
   let current = await fetchStatus()

@@ -29,7 +29,7 @@ import java.util.List;
  * 触发本次生成的原始需求文本，和大纲信息重复，附带上不会有副作用；MODIFY 流程里
  * （{@link com.agenttrail.capability.ppt.PptGenerationService}）这个字段被替换成用户这次的具体修改
  * 指令（例如"把第二页标题改成……"），SCHEMA 状态是 MODIFY 分支唯一重新执行的 LLM 调用，
- * 只有让它看到修改指令，"在已有 PPT 基础上改"才是真的在改，而不是照抄一遍旧大纲。
+ * 只有让它看到修改指令，“在已有 PPT 基础上改”才是真的在改，而不是重复输出旧大纲。
  */
 public class SchemaStrategy implements PptGenerationStrategy {
 

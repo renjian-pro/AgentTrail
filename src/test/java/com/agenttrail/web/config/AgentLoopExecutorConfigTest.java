@@ -17,6 +17,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.test.util.TestPropertyValues;
 
 import javax.sql.DataSource;
 
@@ -32,6 +33,7 @@ class AgentLoopExecutorConfigTest {
     @Test
     void providesTheObjectMapperRequiredByCapabilityConversationHistory() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            TestPropertyValues.of("agenttrail.model.id=qwen-plus").applyTo(context);
             context.register(AgentLoopExecutorConfig.class, InfrastructureStubs.class);
             context.refresh();
 
@@ -53,11 +55,6 @@ class AgentLoopExecutorConfigTest {
         @Bean
         DataSource dataSource() {
             return mock(DataSource.class);
-        }
-
-        @Bean("deepSeekChatModel")
-        ChatModel deepSeekChatModel() {
-            return mock(ChatModel.class);
         }
 
         @Bean("openAiChatModel")

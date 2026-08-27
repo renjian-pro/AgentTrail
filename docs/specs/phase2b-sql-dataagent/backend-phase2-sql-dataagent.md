@@ -2,34 +2,34 @@
 
 > 状态：草案，按 `to-spec` 模板整理，尚未发布为 GitHub issue（`ready-for-agent` 标签）。
 > 前提：[`backend-phase2-auth.md`](../phase2a-auth/backend-phase2-auth.md)（Phase 2A）已交付 `sys_user`/`sys_role`/`sys_dept`/`sys_user_role`/`sys_user_dept` 五表 RBAC + `DataScopeResolver`（给定 `userId` 返回可见 `deptId` 列表），并把 `userId` 接进了 `RunnableParams.toolParams` 强制注入通道。这份 spec 是 Phase 2A 之后的下一步——SQL 分析工具本身：Schema、消歧、SQL 安全、执行、权限改写（消费 Phase 2A 的产出）、脱敏、计算、图表。
-> 关联文档：[`roadmap.md`](../../roadmap.md) Phase 2 表格（机制清单的原始来源）、[`ADR-0003`](../../adr/0003-agentscope-isolated-data-agent-runtime.md)（AgentScope 仅作隔离 Runtime Adapter 的边界）、[`dodoagentx-crosscheck-2026-08-03.md`](../../dodoagentx-crosscheck-2026-08-03.md)（交叉核对结论）、[`engineering-pitfalls-and-highlights.md`](../../engineering-pitfalls-and-highlights.md) 第六/八节（踩坑点 #21-#29、#35-#37，实现时逐条对照）。
-> 披露规则：同其余 spec，方法论表述为"研读了真实生产形态 DataAgent 实现后独立实现"，不点名具体来源仓库；不照搬代码，只借鉴架构决策和踩坑经验（见 ADR-0003）。
+> 关联文档：[`roadmap.md`](../../roadmap.md) Phase 2 表格（机制清单的原始来源）、[`ADR-0003`](../../adr/0003-agentscope-isolated-data-agent-runtime.md)（AgentScope 仅作隔离 Runtime Adapter 的边界）、[`dataagent-design-audit-2026-08-03.md`](../../dataagent-design-audit-2026-08-03.md)（工程约束审计）、[`engineering-pitfalls-and-highlights.md`](../../engineering-pitfalls-and-highlights.md) 第六/八节（踩坑点 #21-#29、#35-#37，实现时逐条对照）。
+> 证据规则：同其余 spec，只陈述 AgentTrail 的领域约束、架构决策、代码事实和测试结论；不记录私人素材、本机路径或历史项目名（见 ADR-0003）。
 >
 > **已拆票**：本 spec 的实现拆成 10 张票（后端 06-13、前端 F4-F5），依赖图和建议顺序见 [`phase2b-sql-dataagent-tickets.md`](phase2b-sql-dataagent-tickets.md)。每张票都有独立的技术开发文档，本 spec 只定"做什么和为什么"，"怎么做"在票里。
 
 ## 0. 这份文档解决什么问题
 
-`roadmap.md` 的 Phase 2 表格（机制清单）和 `dodoagentx-crosscheck-2026-08-03.md`（交叉核对结论）已经确定了方向性决策，但停留在"机制名称 + 一句话说明"的粒度，还没有落到"类名/接口/表结构/算法/测试计划"这一级，不足以直接拆票实现。这份 spec 把粒度下沉一级，并且**明确标注哪些内容是对照 `E:\study\AI\porject\Clippings`（19 篇笔记）和 `E:\book\LLMentor\agent\dodo-agentx` 源码逐条核对后，发现 roadmap 里完全没有覆盖、需要作为新增设计补齐的部分**（见第 1 节）。
+`roadmap.md` 的 Phase 2 表格和 `dataagent-design-audit-2026-08-03.md` 已经确定方向性决策，但仍停留在“机制名称 + 一句话说明”的粒度，没有下沉到类名、接口、表结构、算法和测试计划，不能直接拆票实现。这份 spec 将设计细化一级，并明确标注当前 roadmap 尚未覆盖、需要新增设计的部分（见第 1 节）。
 
-## 1. Gap Analysis：对照 Clippings + dodo-agentx 源码的核对结果
+## 1. Gap Analysis：当前能力与工程目标核对结果
 
 ### 1.1 已覆盖、可直接细化为实现方案的部分
 
-roadmap.md Phase 2 表格里列的机制（M-Schema、SQL 安全校验、核心工具、业务消歧、复杂计算工具、完整数据权限模型、敏感字段脱敏）在 Clippings 和 dodo-agentx 源码里都能找到对应的、比 roadmap 更具体的实现细节，本文档第 5 节逐条展开。这部分不是"遗漏"，是"需要加细节"。
+roadmap.md Phase 2 已列出 M-Schema、SQL 安全校验、核心工具、业务消歧、复杂计算工具、完整数据权限模型和敏感字段脱敏。本文档第 5 节把这些方向落到可实现的接口、算法与测试；它们不是遗漏，而是需要补足工程细节。
 
-### 1.2 真正的遗漏点：三个 roadmap 没有提及、且 dodo-agentx 本身也没做好的方向
+### 1.2 真正的遗漏点：roadmap 尚未覆盖的三个方向
 
-这三点是逐篇读完全部 19 篇 Clippings 笔记 + 读完 dodo-agentx 全部相关源码后确认的**空白**——不是"抄参考项目就能填上"，因为参考项目自己也没做：
+这三点来自对当前代码、现有测试和部署目标的逐项审计，不能靠套用通用样例解决，必须在 AgentTrail 内形成独立设计：
 
-| 主题 | roadmap.md 现状 | Clippings/dodo-agentx 实际情况 | 结论 |
+| 主题 | roadmap.md 现状 | 当前项目证据 | 结论 |
 |---|---|---|---|
-| **data-agent 评测体系** | Phase 3 治理层有通用"Golden Set 50-200条 + LLM-as-Judge"，未细化到 DataAgent | 19 篇笔记里唯一相关内容是引用业界公开 benchmark（Spider 2.0/BIRD/DIN-SQL/MAC-SQL）论证"Text2SQL 很难"，**dodo-agentx 项目自己没有任何测试用例、Golden SQL 对照集、权限泄漏自动化检测**；源码里 `src/test` 目录完全不存在，`ValidateSqlTool`/`SqlCondSupport` 被 CodeGraph 标记"无覆盖测试" | 需要在本文档新增设计（见 5.10），不能参照 dodo-agentx，因为它没有 |
-| **中断恢复（SQL 分析场景特有语义）** | Phase 1 已有通用 `PauseState`/`SafePoint` 断点恢复机制 | dodo-agentx 确实有恢复机制，但是**框架级、整会话粒度**的通用 ReAct loop 暂停恢复（`JdbcPauseStateStore` 存整段消息历史+挂起工具调用），**没有专门针对"多步 SQL 分析任务"的阶段状态机**（不区分"Schema 已探索/SQL 已生成/已校验/已执行"这些子阶段），TodoWrite+`TodoProgress`+`TimelineCollector` 解决的是进度可视化和历史回放，**不是**故障后从中断点恢复执行 | 好消息：AgentTrail 复用 Phase 1 已有的通用 `PauseState` 机制就足够（DataAgent 是 ReAct+Skill，不是固定 DAG，天然没有"子阶段状态机"这个需求）；需要新增的只是**只读工具的恢复语义说明**（见 5.11），比 dodo-agentx 更进一步 |
-| **多节点/多实例部署（DataAgent 专属）** | Phase 1 已有 Redis 分布式任务锁 + Pub/Sub 跨实例中断（issue #11/#12，比 dodo-agentx 更完善） | dodo-agentx **不是**为多实例部署设计的：`docker-compose.yml` 没有它自己的服务条目、README 让你直接在 IDE 里跑；唯一的分布式设计是 Redis 存 M-Schema 缓存（`MschemaCacheService`，无并发刷新保护）；活跃任务注册表 `AgentTaskManager.taskMap` 是纯本地 `ConcurrentHashMap`（这一点 AgentTrail 已经用 Redis SETNX + Pub/Sub 做得更好，见 Phase 1）；部门树用邻接表全量加载进内存做 BFS，笔记原文承认"真实业务部门规模上万，建议改 Redis 存储" | AgentTrail 的部门范围解析走 `ancestors LIKE '前缀,%'`（见 Phase 2A spec），**从设计上就不需要 dodo-agentx 那种内存邻接树/BFS**，这个具体缺口不适用；仍需补齐的是 **M-Schema 缓存的多实例并发刷新保护** + **SQL 目标库只读连接池在多实例下的容量重算**（见 5.12），两者 roadmap 都没提 |
+| **DataAgent 评测体系** | Phase 3 治理层有通用“Golden Set 50-200 条 + LLM-as-Judge”，未细化到 DataAgent | 现有测试没有覆盖 Golden SQL、权限泄漏、敏感字段泄漏和查询资源上限；Spider 2.0/BIRD 等公开 benchmark 也不验证本项目的权限边界 | 需要在本文档新增领域评测设计（见 5.10） |
+| **中断恢复（SQL 分析场景特有语义）** | Phase 1 已有通用 `PauseState`/`SafePoint` 断点恢复机制 | DataAgent 采用 ReAct+Skill 而非固定 DAG，无需另建七阶段状态机；但必须明确只读工具是否可安全重放 | 复用通用 `PauseState`，新增只读工具恢复语义（见 5.11） |
+| **多节点/多实例部署（DataAgent 专属）** | Phase 1 已有 Redis 分布式任务锁 + Pub/Sub 跨实例中断 | 部门范围解析使用 `ancestors LIKE '前缀,%'` 的实时查询，不依赖进程内部门树；但 M-Schema 缓存刷新和只读连接池容量仍受实例数影响 | 补齐 M-Schema 并发刷新保护与连接池容量核算（见 5.12） |
 
 ### 1.3 一个值得单独指出的架构优势
 
-因为 Phase 2A 已经选择"部门范围用 `ancestors` 前缀查询而不是内存邻接表 BFS"，AgentTrail 在"数据范围解析要不要考虑多节点一致性"这个问题上，比 dodo-agentx 的参考实现天然更简单——不存在"哪个实例的内存树是最新的"这类问题，因为范围解析每次都是一条实时 SQL，不依赖任何进程内缓存。这一点在后续技术分享/面试叙事里可以直接作为"设计选型的连锁收益"来讲。
+因为 Phase 2A 已经选择“部门范围用 `ancestors` 前缀查询而不是内存邻接表 BFS”，数据范围解析不存在“哪个实例的内存树是最新的”这类一致性问题：每次解析都是实时 SQL，不依赖进程内缓存。这是当前数据模型带来的直接简化。
 
 ---
 
@@ -158,35 +158,35 @@ Phase 2A 交付后，AgentTrail 有了真实用户身份和"这个用户能看�
 
 沿用 roadmap Phase 5 已定的 `mcp-echarts`（streamable HTTP，不用 stdio——stdio 在并发多用户多轮场景下"第一次调用成功、后续被拒绝"）+ 对象存储（Artifact URL，不把 base64 塞进上下文）。这里不重复设计，只强调 DataAgent 侧的调用方式是把 `calculate`/聚合查询的结果传给图表工具，工具本身在 Phase 5 已有归属。
 
-### 5.10 评测体系（新增设计，roadmap 和参考项目都未覆盖）
+### 5.10 评测体系（新增设计，roadmap 尚未覆盖）
 
-Golden Tasks 集合，覆盖以下维度（对齐 `dodoagentx-crosscheck-2026-08-03.md` 已经列出的评测方向，这里给出具体落地形态）：
+Golden Tasks 集合覆盖以下维度（延续 `dataagent-design-audit-2026-08-03.md` 的上线门禁要求，这里给出具体落地形态）：
 
 - **SQL 正确率**：每条任务预置"自然语言问题 + 预期 SQL 或预期结果集（数值/行数容差）"，跑 DataAgent 生成的 SQL 执行后对比结果而不是逐字符比对 SQL 文本（同一问题存在多种正确写法）
-- **越权检测**：仿照参考项目 `cross_analyst`（跨部门用户）的思路，为每个 `data_scope` 档位（`ALL`/`DEPT_AND_SUB`/`DEPT`/`SELF`）各准备至少一个测试账号，同一问题用不同账号问，断言返回的行严格落在该账号的可见范围内，且**多部门用户的结果是所有挂载部门的并集**（不是只读到第一个关联记录）
+- **越权检测**：为每个 `data_scope` 档位（`ALL`/`DEPT_AND_SUB`/`DEPT`/`SELF`）各准备至少一个测试账号，同一问题用不同账号执行，断言返回行严格落在该账号的可见范围内，且**多部门用户的结果是所有挂载部门的并集**（不是只读到第一个关联记录）
 - **敏感字段泄漏检测**：故意让测试问题涉及 `mask-fields` 里的列（含用 `AS` 别名的变体），断言返回值必须是掩码而不是明文
 - **空结果解释**：断言查询结果为空时返回的引导文案存在（不是裸的空数组）
 - **重试次数 / 延迟 / Token**：记录每条任务实际触发的 `TRANSIENT` 重试次数、端到端延迟、Token 消耗，作为性能基线
 - **可复现性**：同一问题多次运行，SQL 生成路径可能不同，但最终结果集应该一致（排除受当前时间影响的查询，这类要用 5.3 的时间锚点规则固定基准时间）
 
-落地位置：新增测试模块（比如 `analytics-golden-it`），复用 Phase 0.0 已有的 `ScriptedLlmClient` 和 Ticket 06 的 `AnalyticsLocalDbTestSupport`（连本机真实 MySQL），不新造一套测试框架。按 `dodoagentx-crosscheck-2026-08-03.md` 第 3 条结论，这套评测是 DataAgent 的**上线前置门禁**，不是锦上添花的后续工作——SQL 安全、权限改写有任何改动，都必须先过这套回归集。
+落地位置：新增测试模块（比如 `analytics-golden-it`），复用 Phase 0.0 已有的 `ScriptedLlmClient` 和 Ticket 06 的 `AnalyticsLocalDbTestSupport`（连本机真实 MySQL），不新造一套测试框架。按工程约束审计的结论，这套评测是 DataAgent 的**上线前置门禁**，不是锦上添花的后续工作——SQL 安全、权限改写有任何改动，都必须先过这套回归集。
 
-### 5.11 中断恢复语义（新增设计，比参考项目更进一步）
+### 5.11 中断恢复语义（新增设计）
 
 DataAgent 是开放式 ReAct+Skill（不是固定 DAG），Phase 1 已有的通用 `PauseState`/`SafePoint` 断点恢复机制天然适用，**不需要为 SQL 分析设计专属的子阶段状态机**——这一点本身是 ADR-0003"不把七阶段硬编码成不可变 DAG"的直接推论。
 
-本节需要补充的是一条参考项目完全没有讨论过的边界声明：**DataAgent 目前挂载的全部工具都是只读或纯函数**（`listTables`/`describeTables`/`lookupGlossary`/`validateSql`/`executeSql`——只读查询/`calculate`——纯函数求值），这意味着中断发生在 `SafePoint.TOOL_EXECUTION` 阶段、恢复时重新执行同一个 `pendingToolCall`，**不会有踩坑点 #34 描述的"非幂等操作重复执行"风险**——不需要为这些工具设计幂等键/upsert。唯一需要单独考虑的是图表生成（写 MinIO 对象存储）：给生成的对象用**内容确定性的 key**（比如对渲染输入做哈希）而不是随机文件名，这样恢复后重新生成同一张图表不会在对象存储里留下孤儿文件。
+本节需要补充一条明确的边界声明：**DataAgent 目前挂载的全部工具都是只读或纯函数**（`listTables`/`describeTables`/`lookupGlossary`/`validateSql`/`executeSql`——只读查询；`calculate`——纯函数求值），这意味着中断发生在 `SafePoint.TOOL_EXECUTION` 阶段、恢复时重新执行同一个 `pendingToolCall`，**不会有踩坑点 #34 描述的“非幂等操作重复执行”风险**——不需要为这些工具设计幂等键/upsert。唯一需要单独考虑的是图表生成（写 MinIO 对象存储）：生成对象使用**内容确定性的 key**（例如对渲染输入做哈希）而不是随机文件名，避免恢复后重做同一张图表产生孤儿文件。
 
 如果未来 Phase 2 之后要给 DataAgent 加写类能力（当前完全没有计划，只是为了让这条边界声明更完整），届时才需要引入幂等设计——这不是这次交付范围。
 
-### 5.12 多节点部署（新增设计，roadmap 和参考项目都未覆盖到 DataAgent 专属部分）
+### 5.12 多节点部署（新增设计，roadmap 尚未覆盖 DataAgent 专属部分）
 
-Phase 1 的 Redis 分布式任务锁 + Pub/Sub 跨实例中断已经覆盖了"任务级"的多实例协调，比参考项目的本地 `ConcurrentHashMap` 方案更完善，这里不重复。DataAgent 专属、且目前完全没人设计过的两点：
+Phase 1 的 Redis 分布式任务锁 + Pub/Sub 跨实例中断已经覆盖“任务级”的多实例协调，这里不重复。DataAgent 仍需补齐两个专属问题：
 
 - **M-Schema 缓存的并发刷新保护**：`MschemaCacheService` 的定时刷新如果多个实例同时到点触发，会有多个实例并发跑内省+写 Redis（内省本身对数据库有一定压力，且存在"后写覆盖先写"的竞态，虽然数据一致不会错，但是浪费）。解法：复用 Phase 1 已有的 `RedisTaskLock` 工具，刷新前抢一把短 TTL 的锁（比如 60 秒），抢不到的实例跳过本次刷新，直接读其他实例已经刷好的 Redis 缓存——不需要引入新的分布式协调机制，`RedisTaskLock` 现成可用。
 - **SQL 目标库只读连接池容量核算**：`executeSql` 连接的是 SQL 场景库（sakila），这是一个和 AgentTrail 自身元数据库（会话/审计/记忆）**物理隔离的独立连接池**（不要复用同一个 HikariCP 实例，两者的流量特征、超时策略、故障域都不同）。按 Phase 1 已有踩坑点 #33 的方法论——连接池大小 = (目标库 `max_connections` × 安全系数) / 实例数，做成可由部署环境覆盖的配置项，不写死常量。
 
-部门树范围解析（`ancestors LIKE` 前缀查询）不需要额外设计——见第 1.3 节，这是 Phase 2A 选型自带的架构优势，不存在参考项目那种"内存邻接树在多节点下要不要挪到 Redis"的问题。
+部门树范围解析（`ancestors LIKE` 前缀查询）不需要额外设计——见第 1.3 节，这是 Phase 2A 选型自带的架构优势，不存在进程内邻接树的跨节点一致性问题。
 
 ## 6. Testing Decisions
 
@@ -205,7 +205,7 @@ Phase 1 的 Redis 分布式任务锁 + Pub/Sub 跨实例中断已经覆盖了"�
 - Phase 3 通用治理框架（Hooks 生命周期、审计哈希链、成本治理）——本文档只负责列出 DataAgent 要挂哪些 Hook 点，Hooks 框架本身是 Phase 3 的范围
 - 图表生成工具本身的实现——归属 Phase 5，本文档只描述 DataAgent 如何调用
 
-## 8. 参考来源映射
+## 8. 设计证据映射
 
-- Schema/消歧/SQL 安全/执行/权限改写/脱敏/计算：研读 `E:\study\AI\porject\Clippings` 全部 19 篇 data-agent 相关笔记 + 对照真实生产形态 DataAgent 项目源码逐条核对
-- 评测/中断恢复/多节点三个新增设计点：明确识别为参考材料的空白后独立设计，不是改写自任何现成方案
+- Schema/消歧/SQL 安全/执行/权限改写/脱敏/计算：以当前领域模型、威胁模型、SQL AST 行为和集成测试结果为设计依据
+- 评测/中断恢复/多节点三个新增设计点：以当前测试缺口、恢复语义和部署约束为依据独立设计

@@ -17,6 +17,7 @@ import json
 import os
 import sys
 from pptx import Presentation
+from pptx.enum.text import MSO_AUTO_SIZE
 from urllib.parse import urlparse
 from io import BytesIO
 import requests
@@ -100,9 +101,16 @@ def replace_text_keep_style(shape, value, font_limit=None):
         # 如果只多出 1-2 个字符，则保留完整文本
         if len(text) > (font_limit + 2):
             text = text[:font_limit]
+            # 多行正文通常按项目符号逐条组织。硬截断落在某一条中间时，
+            # 回退到上一条完整内容，避免在幻灯片中留下残缺项目符号。
+            if "\n" in text:
+                complete_lines = text.rsplit("\n", 1)[0].rstrip()
+                if complete_lines:
+                    text = complete_lines
     # -----------------------
 
     tf = shape.text_frame
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
     if not tf.paragraphs:
         tf.text = text

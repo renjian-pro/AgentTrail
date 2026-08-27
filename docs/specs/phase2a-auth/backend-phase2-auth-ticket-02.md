@@ -88,4 +88,4 @@ Controller 方法上再加 `@SaCheckRole("admin")` 作为第二道声明（和 T
 - **不要**用编程式 `if/else` 判断角色，用 `@SaCheckRole` + `SaRouter` 规则（第 6 节已说明原因）
 - **不要**在 `replaceRoles`/`replaceDepts` 里做增量 diff（先查旧的再算差集再分别插入删除）——先整体删除该用户的全部关联记录，再插入新的，逻辑更简单，用户的角色/部门数量级不需要为性能做这个优化
 - **不要**让 `SysRoleController`/`SysDeptController` 直接调用 `JdbcRoleStore`/`JdbcDeptStore`——一律经过 `SysRoleService`/`SysDeptService`，哪怕当前逻辑只是单纯转发，这是为了和 `SysUserController`/`LoginController` 保持同一套"Controller 薄封装、业务逻辑在 Service"的约定，不要因为逻辑简单就破例跳过这一层
-- 其余共享约束（Testcontainers 不用 H2、不点名参考来源、注释用中文）同 Ticket 1，不再重复
+- 其余共享约束（Testcontainers 不用 H2、只记录项目内证据、注释用中文）同 Ticket 1，不再重复

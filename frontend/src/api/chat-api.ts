@@ -11,7 +11,6 @@ import { clearToken, readToken } from './auth-token'
 export type ChatRequest = {
   message: string
   conversationId?: string
-  modelId?: string
   webSearchEnabled: boolean
   mode?: string
   fileIds?: number[]

@@ -180,23 +180,14 @@
 			<scope>test</scope>
 		</dependency>
 
-		<!-- V1 生产环境的 ChatModel 供应方——自动装配 DeepSeekChatModel Bean（spring.ai.deepseek.*
-		     配置项），替代之前只在 test scope 声明的 spring-ai-deepseek（该依赖已被这个 starter
-		     以 compile scope 传递引入，测试代码里用到的 DeepSeekChatOptions 不受影响） -->
-		<dependency>
-			<groupId>org.springframework.ai</groupId>
-			<artifactId>spring-ai-starter-model-deepseek</artifactId>
-		</dependency>
-
-		<!-- 多模型路由（issue #20）：Qwen（qwen-plus）走 OpenAI 兼容模式接入 DashScope，
-		     不是独立的厂商模块——DashScope 本身提供 OpenAI 兼容端点，直接复用 openai starter -->
+		<!-- 统一文本模型走 DashScope 的 OpenAI 兼容端点；模型名只在 agenttrail.model.id 配置一次。 -->
 		<dependency>
 			<groupId>org.springframework.ai</groupId>
 			<artifactId>spring-ai-starter-model-openai</artifactId>
 		</dependency>
 
-		<!-- 文件问答（issue #21）：统一解析 PDF/Office/HTML/纯文本，不手写 PDFBox+POI 各自的分支——
-		     版本对齐参考实现（dodo-agentx）已验证可用的 2.9.2 -->
+		<!-- 文件问答（issue #21）：统一解析 PDF/Office/HTML/纯文本，不手写 PDFBox+POI 各自的分支；
+		     2.9.2 由项目兼容性测试锁定，升级时需重新验证解析回归。 -->
 		<dependency>
 			<groupId>org.apache.tika</groupId>
 			<artifactId>tika-core</artifactId>

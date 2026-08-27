@@ -3,6 +3,7 @@ import com.agenttrail.web.service.AgentLoopExecutorFactory;
 
 import com.agenttrail.loop.context.ContextCompactor;
 import com.agenttrail.loop.context.ContextPolicy;
+import com.agenttrail.platform.model.AgentModelProperties;
 import com.agenttrail.capability.deepresearch.DeepResearchService;
 import com.agenttrail.capability.deepresearch.DeepResearchTaskWorker;
 import com.agenttrail.capability.deepresearch.DeepResearchWorkflow;
@@ -25,21 +26,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * DeepResearch（issue #25/#34/#35/#36/#37）的生产装配。模型分两档，不是单一 {@code deepseek-chat}：
- * {@code plainExecutor}（需求澄清/主题生成/plan/critique/综合报告，见 {@link DeepResearchService}
- * 里对应调用点）不挂工具，默认落到更便宜的 {@code qwen-plus}——这几步占了 DeepResearch 绝大多数的
- * LLM 调用次数，省 token 主要靠这里。{@code searchExecutor} 必须真的调用联网搜索工具，默认单独钉在
- * {@code deepseek-chat}：issue #22 联调时发现 qwen-plus 走 {@code spring-ai-openai:2.0.0} 合并流式
- * tool_call chunk 有个未修的第三方库兼容性问题（见踩坑点 #78a），deepseek-chat 不受影响——这一步
- * 不能为了省 token 去踩这个坑，工具调用一旦失败整个检索任务就废了。
+ * DeepResearch（issue #25/#34/#35/#36/#37）的生产装配。规划、检索、总结、写作和反思统一使用
+ * {@link AgentModelProperties} 中的文本模型；能力差异只由是否挂载搜索工具决定，不再维护第二套
+ * 模型配置。
  */
 @Configuration
 public class DeepResearchConfig {
 
     @Bean
     public DeepResearchService deepResearchService(AgentLoopExecutorFactory executorFactory,
-            @Value("${agenttrail.deepresearch.model:qwen-plus}") String modelId,
-            @Value("${agenttrail.deepresearch.search-model:deepseek-chat}") String searchModelId,
+            AgentModelProperties modelProperties,
             @Value("${agenttrail.deepresearch.max-concurrent-tasks-per-layer:3}") int maxConcurrentTasksPerLayer,
             @Value("${agenttrail.deepresearch.max-tasks-per-plan:20}") int maxTasksPerPlan,
             @Value("${agenttrail.deepresearch.max-task-retries:2}") int maxTaskRetries,
@@ -47,10 +43,11 @@ public class DeepResearchConfig {
             // 默认沿用 ContextPolicy.DEFAULT_TOKEN_THRESHOLD（60_000）——研究上下文和
             // AgentLoopExecutor 自己单轮 ReAct 历史的膨胀量级类似，没有理由默认给一个不同的阈值
             @Value("${agenttrail.deepresearch.context.token-threshold:60000}") int contextTokenThreshold) {
+        String modelId = modelProperties.id();
         // DeepResearch 专用的上下文压缩器（issue #37）——只压缩 critique()/summarize() 用到的
         // 累积检索结果 + 批判反馈这份文本，跟 executorFactory.forModel(...) 返回的执行器各自
-        // 内部 ReAct 子循环的上下文压缩是两回事，互不干扰、各自独立配置。压缩本身不调用工具，
-        // 跟着 plainExecutor 走同一档便宜模型即可。
+        // 内部 ReAct 子循环的上下文压缩是两回事，互不干扰。压缩本身不调用工具，但仍复用统一模型，
+        // 不再为这一条内部链路单设模型配置。
         ContextPolicy researchContextPolicy = ContextPolicy.builder()
                 .tokenThreshold(contextTokenThreshold)
                 .retainLatestOnlyMarkers(DeepResearchService.CRITIQUE_FEEDBACK_MARKER)
@@ -60,7 +57,7 @@ public class DeepResearchConfig {
 
         return new DeepResearchService(
                 executorFactory.forInternalOrchestration(modelId, false),
-                executorFactory.forInternalOrchestration(searchModelId, true),
+                executorFactory.forInternalOrchestration(modelId, true),
                 maxConcurrentTasksPerLayer, maxTasksPerPlan, maxTaskRetries, maxCritiqueRounds,
                 researchContextCompactor);
     }

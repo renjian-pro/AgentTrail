@@ -179,7 +179,7 @@ public class GoldenCaseController {
 ## Out of Scope
 
 - `GoldenEvaluationController`（`/agent/v1/evaluation/run`/`/{taskId}`/`/history`）同样完全没有
-  权限注解，问题性质和这一票一样，但不在题面列出的三个类范围内，本票不动它。发现的人可以照抄
+  权限注解，问题性质和这一票一样，但不在题面列出的三个类范围内，本票不动它。后续可复用
   这一票的模式单独开一个小改动，不需要等下一轮排期评审。
 - 前端页面级别的权限展示（比如根据权限码动态隐藏按钮）——这一票只做后端强制校验，前端 UX
   层面的权限感知不在范围内。

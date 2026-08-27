@@ -20,7 +20,7 @@
    这一票要顺手把它修掉，不是新发现另开一张票——加取消端点本来就要设计"谁能取消谁的任务"，
    这个校验逻辑和补 `status()` 的校验是同一段代码。
 2. **PPT 这边没有这个问题**——`PptGenerationController` 的 `resume`/`status`/`download` 都已经在走
-   `pptGenerationService.describe(userId, taskId)` 做归属校验，这一票新增的 `cancel` 端点照抄
+   `pptGenerationService.describe(userId, taskId)` 做归属校验，这一票新增的 `cancel` 端点沿用
    这个已有模式即可。
 3. **两边都是 `ExecutorService`**（`PptGenerationConfig`/`DeepResearchConfig` 的
    `pptGenerationExecutor`/`deepResearchExecutor` 都是 `@Bean(destroyMethod = "shutdown")
@@ -90,7 +90,7 @@ taskIdHolder[0] = taskRegistry.start(userId, future);
 上面用一个单元素数组做可变闭包捕获是一种解法，但**不优雅、容易读错**——更干净的做法是让
 `taskRegistry.start()` 先分配号（不需要 `future`），登记时状态是"待运行"，`submit` 拿到 `future`
 后再用一个 `taskRegistry.attachFuture(taskId, future)` 方法把两者关联起来（两次 map 写入，
-但语义更清楚）。**实现时选后一种写法**，上面的单元素数组只是说明问题，不是要照抄的最终代码。
+但语义更清楚）。**实现时选后一种写法**，上面的单元素数组只是说明问题，不是最终代码。
 
 ### 2.3 取消端点
 

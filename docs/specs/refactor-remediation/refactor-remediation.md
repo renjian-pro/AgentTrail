@@ -2,7 +2,7 @@
 
 > **状态：规划中**（2026-08-11 立项）。派生自 [`docs/refactor-blueprint.md`](../../refactor-blueprint.md)——
 > 那份文档是"发现了什么问题、目标架构长什么样"，这份 Spec 是"拆成能实际开工的票"。
-> 每张票的详细设计见 `refactor-remediation-ticket-NN.md`，格式照抄 `../phase3-governance/backend-phase3-governance-ticket-09.md`
+> 每张票的详细设计见 `refactor-remediation-ticket-NN.md`，格式沿用 `../phase3-governance/backend-phase3-governance-ticket-09.md`
 > 的深度：范围边界 + 代码级实现指引 + 先验证提示 + 测试方案 + Out of Scope。
 > 完成一张票后回来把下表状态改成 ✅，不要另开"完成报告"文档——状态就活在这张表里。
 

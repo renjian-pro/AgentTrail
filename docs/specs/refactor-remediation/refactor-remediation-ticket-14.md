@@ -140,7 +140,7 @@ public record RuntimeProfile(
 `PreReasoningEvent` 上；SAA 的 `SkillsAgentHook`），证明"把技能注入做成一个可插拔的拦截点"在
 生产里是被验证过的真实需求，**不是**"当初写代码顺手加的、没人真的需要的抽象"。
 
-**但这个场景不能直接照抄进 AgentTrail 的 `Hook` 契约**——ASJ 的 `Hook.onEvent(T event)` 返回
+**但这个场景不能直接套进 AgentTrail 的 `Hook` 契约**——ASJ 的 `Hook.onEvent(T event)` 返回
 `Mono<T>`，是"接收事件、可以修改后传回"的拦截器模式；AgentTrail 的 `SessionStartHook` 等六个
 接口全部是 `void` 观察型（`HookContext` 也是只读 record，没有可写字段），这是 `architecture.md`
 已经记录过的刻意设计："限速/预算这类需要'拦截并改变行为'的机制刻意没有塞进 Hook 契约，而是
@@ -181,7 +181,7 @@ public record RuntimeProfile(
 
 ## 5. 验收标准
 
-照抄 `refactor-blueprint.md` §6 Phase 3：**"Runtime facade 对外接口不超过 5 个核心动作；内部实现可单独替换和测试"**——即 `AgentLoopExecutor` 收缩到 `start`/`call`/`resume`/`snapshot`/`cancel` 五个 facade 方法，6 个内部模块任一都能独立写单元测试而不需要拉起整个 `AgentLoopExecutor`。
+沿用 `refactor-blueprint.md` §6 Phase 3：**“Runtime facade 对外接口不超过 5 个核心动作；内部实现可单独替换和测试”**——即 `AgentLoopExecutor` 收缩到 `start`/`call`/`resume`/`snapshot`/`cancel` 五个 facade 方法，6 个内部模块任一都能独立写单元测试而不需要拉起整个 `AgentLoopExecutor`。
 
 ## Out of Scope
 

@@ -51,8 +51,8 @@ sakila 是 MySQL 官方公开示例数据集。从官方站点/GitHub 镜像拿 
 ```bash
 # 注意：sakila-schema.sql 开头有 CREATE DATABASE sakila / USE sakila，
 # 导进 agenttrail 之前必须把这两行去掉，否则会建出一个新库来
-docker exec -i llmentor-mysql mysql -uroot -proot agenttrail < sakila-schema-no-createdb.sql
-docker exec -i llmentor-mysql mysql -uroot -proot agenttrail < sakila-data.sql
+docker exec -i agenttrail-mysql mysql -uroot -proot agenttrail < sakila-schema-no-createdb.sql
+docker exec -i agenttrail-mysql mysql -uroot -proot agenttrail < sakila-data.sql
 ```
 
 > **不要**把 sakila 的建表和数据放进 `src/main/resources/db/schema.sql`。那个文件由 `spring.sql.init` 每次启动执行，塞 1.6 万行 INSERT 进去会让每次启动都变慢，而且它的定位是"应用自己的表结构"。业务数据导入是**一次性运维操作**，脚本单独放，见第 3 节。
@@ -466,7 +466,7 @@ agenttrail:
 - **不要**用 Testcontainers（第 8 节已说明）、**不要**用 H2
 - **不要**把真实数据库密码写进 `application.yml` 或任何会提交的文件
 - **不要**在这一票里写任何 `ToolCallback`、`SchemaProvider`、SQL 校验逻辑
-- **不要**在代码注释、commit message 或文档里点名具体的参考实现来源仓库（`AGENTS.md` 披露规则）
+- 代码注释、commit message 和文档只记录 AgentTrail 的设计与验证证据，不包含私人素材、本机路径或历史项目名（见 `AGENTS.md`）
 
 ## 12. 和现有代码的边界
 

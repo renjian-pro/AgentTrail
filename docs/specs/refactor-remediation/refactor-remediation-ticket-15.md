@@ -258,7 +258,7 @@ CREATE TABLE IF NOT EXISTS agent_run_outbox
 
 ## 6. 验收标准
 
-照抄 `refactor-blueprint.md` §6 Phase 4："**任何长任务都可通过 taskId 查询、取消、恢复和重放事件；单实例/多实例测试语义一致**"——即：`TaskCoordinator.query(taskId)` 能查到状态、`cancel(taskId)` 能可靠取消（即使当前没有实例在监听）、`resume(taskId)` 能从 `CheckpointStore` 最新版本恢复、`RunEventStore` 支持从任意 `sequence` 之后重放；上述能力在单实例部署和多实例部署（Testcontainers 模拟两个进程）下行为一致。
+沿用 `refactor-blueprint.md` §6 Phase 4："**任何长任务都可通过 taskId 查询、取消、恢复和重放事件；单实例/多实例测试语义一致**"——即：`TaskCoordinator.query(taskId)` 能查到状态、`cancel(taskId)` 能可靠取消（即使当前没有实例在监听）、`resume(taskId)` 能从 `CheckpointStore` 最新版本恢复、`RunEventStore` 支持从任意 `sequence` 之后重放；上述能力在单实例部署和多实例部署（Testcontainers 模拟两个进程）下行为一致。
 
 ## Out of Scope
 

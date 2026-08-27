@@ -8,7 +8,7 @@
 
 **这一票只做**：一个评测页面（触发评测、看进度、看历史报告、两次报告对比），挂在现有的
 `admin` 子应用下（已核实 `frontend/src/admin/views/` 现在有 `RoleListView.vue`/
-`UserManagementView.vue` 两个页面，`admin/api/sys-api.ts` 是现有唯一的 API 模块，这一票照抄
+`UserManagementView.vue` 两个页面，`admin/api/sys-api.ts` 是现有唯一的 API 模块，这一票沿用
 这套命名/组织方式）。**不做**压缩 trade-off 曲线的可视化（Out of Scope，见下）。
 
 ## 1. 新增文件
@@ -20,14 +20,14 @@ frontend/src/admin/views/EvaluationView.vue  -- 页面本体
 ```
 
 **先验证**：`admin` 子应用的路由注册方式（现有两个页面是怎么挂到路由表和侧边菜单上的，
-照抄同样的接入方式，不要另起一套路由组织逻辑）。
+沿用同样的接入方式，不要另起一套路由组织逻辑）。
 
 ## 2. 页面功能拆解
 
 ### 2.1 触发评测
 
 一个"开始评测"按钮，点击后调用 `POST /agent/v1/evaluation/run`，拿到 `taskId` 后开始轮询
-（照抄 DeepResearch/PPT 前端轮询组件的写法——**先验证**这两个能力包的前端轮询逻辑现在长什么样，
+（沿用 DeepResearch/PPT 前端轮询组件的写法——**先验证**这两个能力包的前端轮询逻辑现在长什么样，
 是不是已经抽成了一个可复用的 composable，如果是，这一票直接复用，不要重新写一遍轮询逻辑）。
 
 ### 2.2 进度展示

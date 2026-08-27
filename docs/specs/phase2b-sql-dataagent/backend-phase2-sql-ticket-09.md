@@ -140,7 +140,7 @@ final class DangerousFunctionFinder extends TablesNamesFinder {
 
 > **`super.visit(function)` 这一行不能省**——不调的话 `CONCAT('x', LOAD_FILE(...))` 这种嵌套调用就检查不到，验收标准里有专门的用例覆盖它。
 >
-> 方法签名以第 1 节验证出的 JSqlParser 版本为准（不同大版本 Visitor 接口不同），**不要照抄这段伪代码的签名**。
+> 方法签名以第 1 节验证出的 JSqlParser 版本为准（不同大版本 Visitor 接口不同），**不要直接套用这段伪代码的签名**。
 
 ### 4.3 查询形状校验（必须递归）
 

@@ -57,10 +57,6 @@ public class AgentLoopExecutorFactory {
     private static final com.agenttrail.loop.prompt.PromptRegistry PROMPTS =
             com.agenttrail.loop.prompt.PromptRegistry.shared();
 
-    private static final String QWEN_PLUS = com.agenttrail.platform.model.ToolCallingCompatibility.QWEN_PLUS;
-    private static final String TOOL_CALLING_COMPATIBLE_MODEL =
-            com.agenttrail.platform.model.ToolCallingCompatibility.FALLBACK_MODEL_ID;
-
     private final Map<String, RegisteredModel> modelsById;
     private final Map<String, AgentLoopExecutor> plainExecutorsByModelId;
     private final Map<String, AgentLoopExecutor> webSearchExecutorsByModelId = new ConcurrentHashMap<>();
@@ -274,19 +270,9 @@ public class AgentLoopExecutorFactory {
             assembledBaseTools.add(viewImageTool.toolCallback());
         }
         this.baseTools = List.copyOf(assembledBaseTools);
-        // baseTools 现在可能非空（文件工具无条件挂载），所以这里也必须经过
-        // resolveToolCallingModel 那道 qwen-plus→deepseek-chat 的安全切换——之前这里直接
-        // buildExecutor(model, ...) 用的是请求方自己的 ChatModel，跳过了这道开关，
-        // 是踩坑点 #78a（OpenAiChatModel 合并流式 tool_call 分片时对 Optional 直接 get()，
-        // 第三方库兼容性 bug）復现的真正原因：qwen-plus 的 plain 执行器第一次真的带上工具，
-        // 但从没被换到 deepseek-chat。
         this.plainExecutorsByModelId = models.stream().collect(Collectors.toMap(
                 RegisteredModel::id,
-                model -> {
-                    String effectiveId = resolveToolCallingModel(model.id(), !baseTools.isEmpty());
-                    RegisteredModel effectiveModel = modelsById.get(effectiveId);
-                    return buildExecutor(effectiveModel, baseTools, null, true);
-                }));
+                model -> buildExecutor(model, baseTools, null, true)));
     }
 
     /**
@@ -442,10 +428,9 @@ public class AgentLoopExecutorFactory {
         // 设计的机制，六个工具用它是错配，不是调参能解决的问题。
         List<ToolCallback> residentTools = new ArrayList<>(analyticsToolProvider.tools());
         residentTools.addAll(chartTools);
-        String effectiveId = resolveToolCallingModel(resolvedId, true);
-        RegisteredModel model = modelsById.get(effectiveId);
+        RegisteredModel model = modelsById.get(resolvedId);
         if (model == null) {
-            throw new IllegalArgumentException("未知的模型标识: " + effectiveId);
+            throw new IllegalArgumentException("未知的模型标识: " + resolvedId);
         }
         // 图表工具的产出是一段 URL，被压掉就再也拿不回来；分析工具的结果可以重查，不进保护名单。
         // Skill 正文由 ContextPolicy 的内置名单按工具名保护，不用在这里列。
@@ -477,15 +462,14 @@ public class AgentLoopExecutorFactory {
         }
 
         List<ToolCallback> webSearchTools = webSearchToolProvider.toolCallbacks();
-        String effectiveModelId = resolveToolCallingModel(resolvedId, !webSearchTools.isEmpty());
-        AgentLoopExecutor cached = webSearchExecutorsByModelId.get(effectiveModelId);
+        AgentLoopExecutor cached = webSearchExecutorsByModelId.get(resolvedId);
         if (cached != null) {
             return cached;
         }
 
-        RegisteredModel model = modelsById.get(effectiveModelId);
+        RegisteredModel model = modelsById.get(resolvedId);
         if (model == null) {
-            throw new IllegalArgumentException("未知的模型标识: " + effectiveModelId);
+            throw new IllegalArgumentException("未知的模型标识: " + resolvedId);
         }
         List<ToolCallback> tools = new ArrayList<>(baseTools);
         tools.addAll(webSearchTools);
@@ -493,7 +477,7 @@ public class AgentLoopExecutorFactory {
         // 只缓存"搜索工具真的挂上了"的结果——如果这次是降级（工具列表为空），
         // 不缓存，让下一次请求有机会在 Tavily 恢复后重新拿到一个真正带搜索的执行器
         if (!webSearchTools.isEmpty()) {
-            webSearchExecutorsByModelId.put(effectiveModelId, executor);
+            webSearchExecutorsByModelId.put(resolvedId, executor);
         }
         return executor;
     }
@@ -523,16 +507,15 @@ public class AgentLoopExecutorFactory {
         List<ToolCallback> tools = new ArrayList<>(baseTools);
         tools.addAll(webSearchTools);
         tools.addAll(chartTools);
-        String effectiveModelId = resolveToolCallingModel(resolvedId, !tools.isEmpty());
-        String cacheKey = effectiveModelId + "|" + webSearchEnabled;
+        String cacheKey = resolvedId + "|" + webSearchEnabled;
         AgentLoopExecutor cached = chartExecutorsByKey.get(cacheKey);
         if (cached != null) {
             return cached;
         }
 
-        RegisteredModel model = modelsById.get(effectiveModelId);
+        RegisteredModel model = modelsById.get(resolvedId);
         if (model == null) {
-            throw new IllegalArgumentException("未知的模型标识: " + effectiveModelId);
+            throw new IllegalArgumentException("未知的模型标识: " + resolvedId);
         }
 
         // 只保护图表工具：它的产出是一段 URL，压掉就再也拿不回来；其它工具的结果可以重查
@@ -555,10 +538,9 @@ public class AgentLoopExecutorFactory {
         String resolvedId = resolve(modelId);
         List<ToolCallback> tools = (webSearchEnabled && webSearchToolProvider != null)
                 ? webSearchToolProvider.toolCallbacks() : List.of();
-        String effectiveModelId = resolveToolCallingModel(resolvedId, !tools.isEmpty());
-        RegisteredModel model = modelsById.get(effectiveModelId);
+        RegisteredModel model = modelsById.get(resolvedId);
         if (model == null) {
-            throw new IllegalArgumentException("未知的模型标识: " + effectiveModelId);
+            throw new IllegalArgumentException("未知的模型标识: " + resolvedId);
         }
         return buildExecutor(model, tools, null, false);
     }
@@ -580,21 +562,6 @@ public class AgentLoopExecutorFactory {
 
     private String resolve(String modelId) {
         return (modelId == null || modelId.isBlank()) ? defaultModelId : modelId;
-    }
-
-    /**
-     * OpenAI 流式协议允许 tool call 后续增量分片省略 id，但当前 OpenAI 兼容客户端会对该 Optional
-     * 直接调用 get。qwen-plus 走这条客户端路径时，工具仍需保留流式分片给 Runtime 自己重组，
-     * 因此统一切到原生客户端已验证兼容的 deepseek-chat；不挂工具的执行器仍使用用户选择的 qwen-plus。
-     */
-    private String resolveToolCallingModel(String requestedModelId, boolean hasTools) {
-        if (!com.agenttrail.platform.model.ToolCallingCompatibility.needsFallback(requestedModelId, hasTools)) {
-            return requestedModelId;
-        }
-        if (!modelsById.containsKey(TOOL_CALLING_COMPATIBLE_MODEL)) {
-            throw new IllegalStateException("工具调用需要兼容模型，但未注册: " + TOOL_CALLING_COMPATIBLE_MODEL);
-        }
-        return TOOL_CALLING_COMPATIBLE_MODEL;
     }
 
     private static AgentLoopExecutor requireExecutor(Map<String, AgentLoopExecutor> executors, String modelId) {

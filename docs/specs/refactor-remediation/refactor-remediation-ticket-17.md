@@ -22,7 +22,7 @@ PptGenerationStrategy>` + `PptGenerationService` 显式驱动）已经验证过"
 
 **这一票改成**：把 `DeepResearchService` 现有的计划-执行-批判循环保留为具体的 Java 方法调用，
 不套进任何通用节点/引擎接口，只在阶段之间插入检查点（复用 Ticket 15 的 `CheckpointStore`，做法
-照抄 `PptGenerationService` 每步之后落 checkpoint 的模式）；把 `Semaphore` 并发控制换成
+复用 `PptGenerationService` 每步之后落 checkpoint 的模式）；把 `Semaphore` 并发控制换成
 `ConcurrencyPolicy`；给每个搜索任务加独立幂等键；把研究证据/报告落 Artifact/Repository 而不是纯
 内存传递；新建 `DeepResearchTaskWorker`（一个专门为 DeepResearch 写的具体驱动类，不是某个通用引擎的
 实例化），`DeepResearchController` 收缩成只提交任务；`/deepresearch/{taskId}/events` SSE + 标准化
@@ -83,7 +83,7 @@ PptGenerationStrategy>` + `PptGenerationService` 显式驱动）已经验证过"
 ## 2. `DeepResearchState`/`DeepResearchStage` 与显式驱动
 
 **不定义通用节点接口**——新建 `capability.deepresearch.application.DeepResearchWorkflow`（类名沿用，但它是一个
-具体类，不 `implements` 任何通用 Workflow 接口）作为 `DeepResearchService` 的迁移落点，内部结构照抄
+具体类，不 `implements` 任何通用 Workflow 接口）作为 `DeepResearchService` 的迁移落点，内部结构沿用
 `PptGenerationService` 的形状：一个 `DeepResearchStage` 枚举 + 一组具体私有方法（不是通用 `Node` 实现）+
 一个显式的驱动方法负责"当前在哪个阶段、下一步调哪个方法、调完写不写 checkpoint"。
 
@@ -272,10 +272,9 @@ Controller 既负责提交任务，又负责在任务完成时写会话历史，
 - 已经跑完的层/已经拿到的 `TaskResult`（哪怕只有第一层的检索结果）
 - 取消发生时 `DeepResearchState` 处在哪个节点（`Clarify`/`Plan`/`FanOut`/`Critique`/`Synthesize` 之一）
 
-这个设计参考了 dodoagent 的持久化模式（"会话与消息的持久化"一文）：`chat_message.extra` 是一个
-JSON 字段，注释明确写着"进度快照/推荐问题等非结构化扩展"——消息记录本身就是带进度快照落库的，
-不是只有终态文本。AgentTrail 结构上对应的槽位是 `agent_session.timeline`（已经在存"思考/正文/
-工具调用时间线"的 JSON 数组，见 `db/schema.sql:22`），取消记录应该往这个字段里追加一条能反映
+这里直接复用 AgentTrail 已有的会话持久化能力：`agent_session.timeline` 已用于保存结构化的
+思考、正文和工具调用事件，因此消息记录可以携带进度快照，而不必只保存终态文本。取消记录应该往
+这个字段里追加一条能反映
 "跑到哪一步、已经查到什么"的条目，复用 `architecture.md` 已经定义的 `{"type":"StageOutput",
 "stage":"research",...}` 结构，不新发明一套格式。前端历史列表因此能看到"这次研究被取消了，
 当时已经完成到第 N 层检索"，而不是一条和其它失败记录混在一起、看不出区别的"failed"。
@@ -306,7 +305,7 @@ JSON 字段，注释明确写着"进度快照/推荐问题等非结构化扩展"
   还在跑"）。
 - 集成测试延续项目一贯约定，起真实 MySQL/Redis（Testcontainers），不用 H2 替代。
 
-## 验收标准（照抄 `refactor-blueprint.md` §6 Phase 6）
+## 验收标准（沿用 `refactor-blueprint.md` §6 Phase 6）
 
 - Research 请求立即返回 `taskId`。
 - Worker 重启后可从最近 checkpoint 继续。

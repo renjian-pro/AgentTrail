@@ -17,10 +17,9 @@ import java.util.UUID;
  * Tavily 联网搜索工具收集 PPT 素材，不再是占位/canned 输入。
  *
  * <p>信息收集走自研的 {@link AgentLoopExecutor}（issue #20/#22 已经在用的手写 ReAct 循环）
- * 做联网搜索 + 流式输出，不用 Spring AI 官方的"流式 + 工具调用"组合——参考实现（dodo-agent）
- * 在这个组合场景下实测"稳定性很差，有一些 bug，导致工具无法调用"，退回自研 ReAct Agent 才
- * 解决（见 {@code docs/engineering-pitfalls-and-highlights.md} 踩坑点 #51）。本项目从 issue #17
- * 起手写 loop 就是同一个取舍的延续，不是这里新引入的决策——{@link #execute} 拿到的
+ * 做联网搜索 + 流式输出，不使用框架内部的“流式 + 工具调用”组合；项目回归已确认该组合存在
+ * 工具调用不稳定问题（见 {@code docs/engineering-pitfalls-and-highlights.md} 踩坑点 #51）。
+ * 本项目从 issue #17 起统一由自有 loop 掌握工具执行权——{@link #execute} 拿到的
  * {@code searchExecutor} 必须是挂了搜索工具的执行器（{@code AgentLoopExecutorFactory
  * .forModel(modelId, true)}，见 {@code PptGenerationConfig}），本类自己不关心工具是怎么挂上去的。
  *

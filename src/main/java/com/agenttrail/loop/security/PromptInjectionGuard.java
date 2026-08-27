@@ -11,8 +11,8 @@ import org.springframework.ai.chat.prompt.Prompt;
 import java.util.List;
 
 /**
- * 用户输入的 Prompt Injection 检测：一次同步的小模型分类调用，照抄
- * {@link com.agenttrail.loop.memory.MemoryExtractor} 已验证过的调用模式，不新发明一套。
+ * 用户输入的 Prompt Injection 检测：一次同步的小模型分类调用，复用
+ * {@link com.agenttrail.loop.memory.MemoryExtractor} 已验证过的调用模式。
  *
  * <p>分类器不是 100% 准确——检测失败（模型调用异常）按"放行"处理而不是拒绝整轮请求，
  * 理由和 {@code MemoryExtractor} 提取失败静默跳过一致：这是一道纵深防御，不是唯一防线，

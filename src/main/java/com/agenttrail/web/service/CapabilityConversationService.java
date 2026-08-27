@@ -66,8 +66,8 @@ public class CapabilityConversationService {
     private Long record(String userId, String conversationId, String question, String answer, String capability,
             Object payload, String error, long totalResponseTimeMillis) {
         try {
-            // 对齐 dodo-agentx：timeline 根节点始终是 TimelineEntry[]，能力结果也作为
-            // StageOutput 事件进入数组，而不是发明另一种根对象形状。
+            // timeline 根节点始终保持 TimelineEntry[]，能力结果也作为 StageOutput 事件进入数组，
+            // 避免同一字段出现多种根对象形状。
             String timeline = objectMapper.writeValueAsString(List.of(
                     new CapabilityStageOutput("StageOutput", capability, new CapabilityData(payload, error))));
             return persistenceHook.onTurnComplete(new TurnRecord(

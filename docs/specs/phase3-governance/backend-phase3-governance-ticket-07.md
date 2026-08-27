@@ -40,9 +40,9 @@ LLM-as-Judge、压缩 trade-off 实测脚本。**不做**前端页面（Ticket 8
 现有 28 条 fixture 全部是 SQL 数据分析场景（`dimension` 字段区分维度）。这一票新增覆盖对话/
 文件问答/DeepResearch/PPT 的 fixture——**先验证**这四个能力包各自现在有没有已经写好的、可以
 拿来当 fixture 参照的测试用例（比如 `AgentLoopExecutorFileTest`/`DeepResearchServiceTest`
-这些集成测试里已经有真实的问答场景），能复用现成场景的直接照抄改写成 YAML，不需要凭空编。
+这些集成测试里已经有真实的问答场景），能复用现成场景的直接转换成 YAML，不需要凭空编。
 
-YAML 结构照抄现有 `analytics/golden/*.yml` 的字段（`id`/`dimension`/`question`/`as_user`/
+YAML 结构沿用现有 `analytics/golden/*.yml` 的字段（`id`/`dimension`/`question`/`as_user`/
 `reference_sql`/`expected`/`assertions`）——非 SQL 场景没有 `reference_sql`，留空即可
 （`GoldenCase` 该字段已经是 `text(item.get("reference_sql"))`，`null` 时返回空串，兼容）。
 
@@ -118,7 +118,7 @@ GET  /agent/v1/evaluation/{taskId}   查询评测进度/结果
 GET  /agent/v1/evaluation/history    查看历史评测报告列表
 ```
 
-异步模式照抄 DeepResearch/PPT 已经验证过的"提交即返回任务号 + 轮询"模式，不新发明一套——
+异步模式沿用 DeepResearch/PPT 已经验证过的“提交即返回任务号 + 轮询”模式，不另起一套——
 Golden Set 全量跑一遍可能需要几分钟到十几分钟（取决于 case 数量和真实模型调用延迟），不能是
 同步阻塞的 HTTP 请求。
 

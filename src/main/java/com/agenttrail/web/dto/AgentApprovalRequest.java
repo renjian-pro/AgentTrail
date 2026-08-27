@@ -1,10 +1,7 @@
 package com.agenttrail.web.dto;
 
-/** 普通对话 HITL 审批结果；model/mode 用于恢复时选择和原请求一致的执行器。 */
+/** 普通对话 HITL 审批结果；恢复所需的模型和工具范围以服务端暂停快照为准。 */
 public record AgentApprovalRequest(
         boolean approved,
-        String rejectionReason,
-        String modelId,
-        boolean webSearchEnabled,
-        String mode) {
+        String rejectionReason) {
 }

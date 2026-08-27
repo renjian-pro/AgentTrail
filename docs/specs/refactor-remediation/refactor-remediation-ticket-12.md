@@ -6,8 +6,8 @@
 
 这一票**只新增接口和值类型，不删除、不修改**任何现有 `AgentLoopExecutor`/`AgentLoopExecutorFactory`
 代码——新端口先由一个 `LegacyAgentLoopExecutorAdapter` 委托给现有执行器实现，两条路径并存。
-验收标准（照抄 `refactor-blueprint.md` §6 Phase 1）：**"新业务只允许依赖 `AgentRuntimePort`；
-旧业务仍可运行"**——这一票不强制迁移任何现有调用点（`DeepResearchService`/PPT 策略类是 Ticket
+验收标准（沿用 `refactor-blueprint.md` §6 Phase 1）：**“新业务只允许依赖 `AgentRuntimePort`；
+旧业务仍可运行”**——这一票不强制迁移任何现有调用点（`DeepResearchService`/PPT 策略类是 Ticket
 13/16-18 的事），只是把新端口建好、能用。
 
 **先验证**（开工前务必重读一遍，接口签名和字段可能已经和这里写的有出入）：`AgentLoopExecutor`
@@ -85,7 +85,7 @@ public enum RetryClass {
 }
 
 /**
- * 已知取值直接照抄 {@code AgentLoopExecutor}/{@code AgentCallException} 里已经在用的错误码字符串
+ * 已知取值直接复用 {@code AgentLoopExecutor}/{@code AgentCallException} 里已经在用的错误码字符串
  * （第 543/551/627-628/1101 行），保证一比一映射，不凭空发明新码。
  */
 public record ErrorCode(String code, RetryClass retryClass) {
@@ -103,7 +103,7 @@ public record ErrorCode(String code, RetryClass retryClass) {
 
 ## 3. `runtime.api`：`AgentRuntimePort` 契约本体
 
-新增 `com.agenttrail.runtime.api` 包。接口签名照抄 `refactor-blueprint.md` §1.8 给出的定义：
+新增 `com.agenttrail.runtime.api` 包。接口签名采用 `refactor-blueprint.md` §1.8 给出的定义：
 
 ```java
 package com.agenttrail.runtime.api;
@@ -432,7 +432,7 @@ public class AgentRuntimeException extends RuntimeException {
 **先验证**：`ResumeInstruction.ApprovalDecision.approve()`/`.reject(String)` 和
 `ResumeInstruction.NewInstruction` 的真实构造方式以 `src/main/java/com/agenttrail/loop/pause/ResumeInstruction.java`
 当前声明为准，上面代码框架按 `AgentLoopExecutor.java` 第 973-980 行的调用方式反推得出，
-实现时要打开这个文件核对，不要直接照抄。
+实现时要打开这个文件核对，不要只凭本文示例直接套用。
 
 ## 5. `RunnableParams` 标记 `@Deprecated`
 

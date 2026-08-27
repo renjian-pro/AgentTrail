@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.regex.Pattern;
 
 /**
- * 结构化输出的 JSON 自动修复兜底（issue #18）。移植自 agentx-core 的 {@code JsonRepairUtil}——
+ * 结构化输出的 JSON 自动修复兜底（issue #18）。
  * 模型即便被明确要求输出 JSON，也常常夹带 markdown 代码块、尾部逗号、中文引号这类"几乎是 JSON"
  * 的瑕疵，这里按启发式规则逐步修，而不是模型一犯错就直接报错了事。
  *

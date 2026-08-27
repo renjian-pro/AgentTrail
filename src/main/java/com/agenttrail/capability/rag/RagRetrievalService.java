@@ -23,13 +23,13 @@ import static com.agenttrail.capability.rag.FileVectorizationService.FILE_ID_MET
 
 /**
  * RAG 检索管线（issue #26）：查询压缩 → 多查询扩展（3 个改写 + 原始）→ 按 fileId 过滤的
- * PgVector 相似度检索 → 按文档 id 去重合并。管线本身照抄参考实现（dodo-agentx
- * {@code EmbeddingService#ragRetrieve}）——两份参考实现在这一段和本项目规划几乎逐字一致。
+ * PgVector 相似度检索 → 按文档 id 去重合并。顺序由查询改写、召回覆盖率和去重语义共同决定，
+ * 各阶段可分别测试与替换。
  *
  * <p>压缩/扩展用的 {@link ChatModel} 是固定的默认模型，不跟随 issue #20 的按会话模型选择——
  * 这是内部检索管线的辅助步骤，不是用户看到的那一轮回答，没有必要跟着会话切换。
  *
- * <p>不做 rerank：两份参考实现都没做，属于有意识的简化而非遗漏。
+ * <p>暂不做 rerank：当前召回规模较小，先以 Golden QA 评估基础管线；质量不足时再引入重排。
  */
 public class RagRetrievalService {
 

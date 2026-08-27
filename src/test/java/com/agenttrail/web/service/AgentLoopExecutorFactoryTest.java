@@ -183,7 +183,7 @@ class AgentLoopExecutorFactoryTest {
     }
 
     @Test
-    void routesQwenWebSearchThroughTheNativeCompatibleModelBeforeToolChunksReachOpenAiSdk() {
+    void webSearchKeepsTheConfiguredModel() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(twoModels(deepSeek, qwen), "qwen-plus")
@@ -192,20 +192,12 @@ class AgentLoopExecutorFactoryTest {
 
         String answer = factory.forModel("qwen-plus", true).call("hi", new RunnableParams("conv-1", "user-1"));
 
-        assertThat(answer).isEqualTo("from deepseek");
-        assertThat(qwen.roundCount()).isZero();
+        assertThat(answer).isEqualTo("from qwen");
+        assertThat(deepSeek.roundCount()).isZero();
     }
 
-    /**
-     * 回归测试：文件工具挂载在 {@code plainExecutorsByModelId}（{@link #forModel(String)} 走的
-     * 就是这条最常见路径，不需要开联网搜索），构造时如果不经过 {@code resolveToolCallingModel}
-     * 就直接用请求方自己的 qwen-plus ChatModel 建执行器，工具调用分片会真的打到
-     * {@code OpenAiChatModel} 里那个已知的 {@code Optional.get()} bug（踩坑点 #78a）——这个测试
-     * 用 {@link ScriptedChatModel} 顶替不了那个真实 SDK 里的 bug，但能保证"请求走的确实是
-     * deepseek-chat、不是 qwen-plus"这件事本身不会再回归。
-     */
     @Test
-    void routesPlainQwenConversationsThroughTheNativeCompatibleModelWhenTheFileToolIsMounted() {
+    void fileToolsKeepTheConfiguredModel() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         FileContentTool fileContentTool = new FileContentTool(mock(FileQaService.class));
@@ -215,8 +207,8 @@ class AgentLoopExecutorFactoryTest {
 
         String answer = factory.forModel("qwen-plus").call("hi", new RunnableParams("conv-1", "user-1"));
 
-        assertThat(answer).isEqualTo("from deepseek");
-        assertThat(qwen.roundCount()).isZero();
+        assertThat(answer).isEqualTo("from qwen");
+        assertThat(deepSeek.roundCount()).isZero();
     }
 
     @Test
@@ -277,7 +269,7 @@ class AgentLoopExecutorFactoryTest {
     }
 
     @Test
-    void routesQwenChartConversationsThroughTheNativeCompatibleModelToo() {
+    void chartToolsKeepTheConfiguredModel() {
         ScriptedChatModel deepSeek = new ScriptedChatModel(List.of(text("from deepseek")));
         ScriptedChatModel qwen = new ScriptedChatModel(List.of(text("from qwen")));
         AgentLoopExecutorFactory factory = AgentLoopExecutorFactory.builder(twoModels(deepSeek, qwen), "qwen-plus")
@@ -287,8 +279,8 @@ class AgentLoopExecutorFactoryTest {
         String answer = factory.forModelWithCharts("qwen-plus", false)
                 .call("hi", new RunnableParams("conv-1", "user-1"));
 
-        assertThat(answer).isEqualTo("from deepseek");
-        assertThat(qwen.roundCount()).isZero();
+        assertThat(answer).isEqualTo("from qwen");
+        assertThat(deepSeek.roundCount()).isZero();
     }
 
     private static final List<String> ANALYTICS_TOOLS = List.of(

@@ -153,7 +153,7 @@ class TavilySearchToolProviderIT {
   这批 IT 的连接方式统一改造，且要重新评估"分钟级 initdb"这个已知的性能代价在 CI 场景下是否
   可接受，本票不做，留给后续单独评估。
 - `ChartToolProviderIT`/`TavilySearchToolProviderIT` 之外的其它需要外部服务的 IT 逐个补跳过
-  门槛——本票先把最典型的几个改完立个样板，其余的可以照抄同一个模式陆续补齐，不强制这一票
+  门槛——本票先把最典型的几个改完立个样板，其余的可以复用同一模式陆续补齐，不强制这一票
   全部覆盖完。
 - 给 Testcontainers 引入镜像缓存/复用机制（比如 Ryuk 复用、`testcontainers.reuse.enable`）——
   当前 4 个容器的启动开销本身就很小，没有必要在这一票里做额外的性能优化。

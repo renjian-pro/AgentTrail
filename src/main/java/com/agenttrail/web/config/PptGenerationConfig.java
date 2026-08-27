@@ -32,10 +32,13 @@ import com.agenttrail.capability.ppt.strategy.SearchStrategy;
 import com.agenttrail.capability.ppt.strategy.TemplateStrategy;
 import com.agenttrail.capability.ppt.strategy.VerifyStrategy;
 import com.agenttrail.capability.ppt.strategy.VisualPlanStrategy;
+import com.agenttrail.capability.ppt.application.LlmPptRequirementPreflight;
+import com.agenttrail.capability.ppt.application.PptRequirementPreflight;
 import com.agenttrail.runtime.lifecycle.InMemoryLeaseManager;
 import com.agenttrail.runtime.lifecycle.LeaseManager;
 import com.agenttrail.infrastructure.lease.RedisLeaseManager;
 import com.agenttrail.loop.task.RedisTaskLock;
+import com.agenttrail.platform.model.AgentModelProperties;
 import io.minio.MinioClient;
 import io.micrometer.core.instrument.MeterRegistry;
 import okhttp3.OkHttpClient;
@@ -59,9 +62,8 @@ import java.util.UUID;
 
 /**
  * PPT 生成状态机（issue #24）的生产装配。REQUIREMENT/OUTLINE/SCHEMA 三个状态共用同一个不挂
- * 任何工具的 {@link AgentLoopExecutor}（issue #20 多模型路由里已经装配好的执行器，默认
- * {@code deepseek-chat}，和 {@code DeepResearchConfig} 同样的理由——这几步都是纯文本/结构化输出
- * 生成，不需要工具）。
+ * 任何工具的 {@link AgentLoopExecutor}。所有文本与结构化输出步骤统一使用
+ * {@link AgentModelProperties} 中的模型。
  *
  * <p>Python 渲染脚本路径、模板文件路径、渲染超时时间全部走配置（{@code agenttrail.ppt.*}），
  * 不写死本地绝对路径——issue #24 明确要求避免的第二个反面案例。默认值是相对于项目根目录的
@@ -156,27 +158,32 @@ public class PptGenerationConfig {
      */
     @Bean
     public ClarifyStrategy pptClarifyStrategy(AgentLoopExecutorFactory executorFactory,
-            @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new ClarifyStrategy(executorFactory.forInternalOrchestration(modelId, false));
+            AgentModelProperties modelProperties) {
+        return new ClarifyStrategy(executorFactory.forInternalOrchestration(modelProperties.id(), false));
     }
 
     @Bean
     public RequirementStrategy pptRequirementStrategy(AgentLoopExecutorFactory executorFactory,
-            @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new RequirementStrategy(executorFactory.forInternalOrchestration(modelId, false));
+            AgentModelProperties modelProperties) {
+        return new RequirementStrategy(executorFactory.forInternalOrchestration(modelProperties.id(), false));
+    }
+
+    @Bean
+    public PptRequirementPreflight pptRequirementPreflight(AgentLoopExecutorFactory executorFactory,
+            AgentModelProperties modelProperties) {
+        return new LlmPptRequirementPreflight(
+                executorFactory.forInternalOrchestration(modelProperties.id(), false));
     }
 
     /**
      * SEARCH 状态（issue #29）：必须是挂了联网搜索工具的执行器（{@code forModel(id, true)}），
      * 和 {@code DeepResearchConfig#deepResearchService} 里 {@code searchExecutor} 的装配理由
-     * 完全一致——单独用 {@code agenttrail.ppt.model} 而不是复用 {@code agenttrail.deepresearch.model}，
-     * 是为了让 PPT 流水线的模型选择只受 PPT 自己的配置项控制，不因为改 DeepResearch 的默认模型
-     * 而意外联动到 PPT 的 SEARCH 状态。
+     * 完全一致。模型标识来自统一配置，PPT 自己只决定这一阶段是否需要搜索能力。
      */
     @Bean
     public SearchStrategy pptSearchStrategy(AgentLoopExecutorFactory executorFactory,
-            @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new SearchStrategy(executorFactory.forInternalOrchestration(modelId, true));
+            AgentModelProperties modelProperties) {
+        return new SearchStrategy(executorFactory.forInternalOrchestration(modelProperties.id(), true));
     }
 
     @Bean
@@ -204,15 +211,16 @@ public class PptGenerationConfig {
 
     @Bean
     public OutlineStrategy pptOutlineStrategy(AgentLoopExecutorFactory executorFactory,
-            @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId) {
-        return new OutlineStrategy(executorFactory.forInternalOrchestration(modelId, false));
+            AgentModelProperties modelProperties) {
+        return new OutlineStrategy(executorFactory.forInternalOrchestration(modelProperties.id(), false));
     }
 
     @Bean
     public SchemaStrategy pptSchemaStrategy(AgentLoopExecutorFactory executorFactory,
-            @Value("${agenttrail.ppt.model:deepseek-chat}") String modelId,
+            AgentModelProperties modelProperties,
             PptTemplateRegistry pptTemplateRegistry) {
-        return new SchemaStrategy(executorFactory.forInternalOrchestration(modelId, false), pptTemplateRegistry);
+        return new SchemaStrategy(executorFactory.forInternalOrchestration(modelProperties.id(), false),
+                pptTemplateRegistry);
     }
 
     /** 视觉规划独立落 checkpoint，后续模板/Schema/素材阶段共享同一份规划。 */

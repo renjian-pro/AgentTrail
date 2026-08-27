@@ -49,7 +49,7 @@ public class ImageDescriptionService {
      *
      * <p>和"大文件带着问题走 RAG 检索"是同一个模式：不预先把全部内容塞进上下文，
      * 而是带着真实问题按需取。主对话模型因此不需要换成视觉模型——那会和 tool calling 冲突
-     * （带工具的请求已经被强制路由到不带视觉的 deepseek-chat，见踩坑点 #78a）。
+     * （文本模型只消费这里生成并缓存的图片描述，不直接接收原图）。
      */
     public String answerAbout(byte[] imageBytes, String fileName, String question) {
         if (question == null || question.isBlank()) {

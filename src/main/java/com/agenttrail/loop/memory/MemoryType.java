@@ -1,7 +1,7 @@
 package com.agenttrail.loop.memory;
 
 /**
- * 长期记忆的语义类型（issue #19）。移植自 agentx-core 的同名枚举，覆盖用户相关信息的四个维度。
+ * 长期记忆的语义类型（issue #19），覆盖用户身份、偏好、指令和事实四个维度。
  */
 public enum MemoryType {
 

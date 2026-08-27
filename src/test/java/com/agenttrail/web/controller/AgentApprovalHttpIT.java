@@ -225,8 +225,7 @@ class AgentApprovalHttpIT extends MySqlContainerTestSupport {
         @Bean
         ChatApplicationService chatApplicationService() {
             return new ChatApplicationService(
-                    new RuntimeProfileRegistry(Map.of("deepseek-chat", activeRuntime),
-                            "deepseek-chat", "deepseek-chat"),
+                    new RuntimeProfileRegistry(Map.of("qwen-plus", activeRuntime), "qwen-plus"),
                     mock(ConversationPort.class), activePausedRuns);
         }
 

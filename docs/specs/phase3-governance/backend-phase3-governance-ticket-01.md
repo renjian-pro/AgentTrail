@@ -188,7 +188,7 @@ public record AgentHooks(
 
 ## 4. 工具风险分级：`ToolRiskLevel` + `ToolRiskRegistry`
 
-**先验证后确认的结论**（不要照抄 spec 总纲里"Bash/executeSql（写场景）标记为 HIGH_RISK"这句话，
+**先验证后确认的结论**（不要直接套用 spec 总纲里“Bash/executeSql（写场景）标记为 HIGH_RISK”这句话，
 那句话是错的）：逐个读了 `capability/analytics/tools|schema|sql|glossary` 下的实现，
 `execute_sql` 走的是 `ReadOnlyQueryRunner`，工具描述原文是"执行**只读**分析 SQL"——
 Phase 2 SQL 能力包目前没有任何写库工具。当前代码库里唯一的 `HIGH_RISK` 工具在通用 Runtime 层

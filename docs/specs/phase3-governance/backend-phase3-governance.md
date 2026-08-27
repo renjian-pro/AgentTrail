@@ -7,8 +7,8 @@
 > **DeepResearch/PPT 不能取消、刷新页面接不回正在跑的任务**这一项还没还，这次并入本 spec 一起交付（见下方 3a）。
 > 关联文档：`docs/roadmap.md` Phase 3 表格是这份 spec 的上位设计意图，`docs/validation-report.md`
 > "缺口 2/3/5"是对 Phase 3 原表格的工程细节补充，两者已经吸收进本文各节，不需要再单独对照阅读。
-> 披露规则：同其余 spec，方法论表述为"研读了真实生产形态治理设计后独立实现"；`spring-ai-alibaba/DataAgent`、
-> Langfuse、houbb/sensitive 均为公开开源项目，roadmap/ADR 已直接点名引用，这里沿用同样的处理，不做匿名化。
+> 证据规则：同其余 spec，只陈述 AgentTrail 的治理边界、架构决策、代码事实和测试结论。涉及 Langfuse、
+> houbb/sensitive 等公开依赖时，仅保留必要的产品名、版本和官方契约，不记录私人素材、本机路径或历史项目名。
 
 ## Problem Statement
 
@@ -100,8 +100,8 @@ Runtime 核心和 SQL 数据分析能力包都已经交付，但完全没有治�
 
 ### 3a-1：Hook 接口与注册
 
-六个拦截点对齐已有设计稿（`E:\study\AI\porject\wiki\projects\dev-efficiency-agent-portfolio.md`
-的 Hooks 设计表）：`SessionStart`/`PreToolUse`/`PostToolUse`/`Budget`/`OnError`/`SessionEnd`。
+六个拦截点由当前 Runtime 生命周期与治理需求推导：`SessionStart`/`PreToolUse`/`PostToolUse`/
+`Budget`/`OnError`/`SessionEnd`。
 
 接入方式延续项目已经定过的取舍——不用 Spring AOP/Advisor 链（呼应"直连 `ChatModel.stream()`，
 不经过 Advisor"的架构决策），Hook 是显式接口 + `@Order` 排序的 Bean 列表，在 `loop/core` 内部

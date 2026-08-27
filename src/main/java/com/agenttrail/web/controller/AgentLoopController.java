@@ -42,8 +42,8 @@ public class AgentLoopController {
     @PostMapping(value = "/agent/v1/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<EventEnvelope>> chat(@Valid @RequestBody AgentChatRequest request) {
         try {
-            return asSse(chatService.send(principal(), request.conversationId(), request.modelId(),
-                    request.message(), new ToolScope(request.webSearchEnabled(), true, java.util.Set.of()),
+            return asSse(chatService.send(principal(), request.conversationId(), request.message(),
+                    new ToolScope(request.webSearchEnabled(), true, java.util.Set.of()),
                     request.mode(), request.fileIds()));
         } catch (IllegalStateException | IllegalArgumentException failure) {
             // IllegalArgumentException 这一支是 issue #106：未知的 mode 取值必须 400 出去。
@@ -58,7 +58,7 @@ public class AgentLoopController {
     public Flux<ServerSentEvent<EventEnvelope>> approve(@PathVariable String conversationId,
                                                          @RequestBody AgentApprovalRequest request) {
         try {
-            return asSse(chatService.approve(principal(), conversationId, request.modelId(), request.approved(),
+            return asSse(chatService.approve(principal(), conversationId, request.approved(),
                     request.rejectionReason()));
         } catch (IllegalArgumentException failure) {
             throw new ResponseStatusException(NOT_FOUND, failure.getMessage(), failure);

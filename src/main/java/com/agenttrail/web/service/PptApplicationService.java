@@ -52,10 +52,9 @@ public class PptApplicationService {
 
     public Result handleMessage(String userId, PptMessageRequest request) {
         long startedAt = System.nanoTime();
+        PptMessageRouter.Decision decision = routeMessage(userId, request);
+        Optional<PptTask> latest = latestTask(userId, request.conversationId());
         String scopedUserId = userId == null ? "legacy" : userId;
-        List<PptTask> tasks = generationService.describeConversation(scopedUserId, request.conversationId());
-        Optional<PptTask> latest = tasks.stream().findFirst();
-        PptMessageRouter.Decision decision = router.route(latest, request.message());
         log.info("PPT message routed userIdHash={} conversationId={} taskId={} operation={} routeReason={} pipelineState={} runStatus={} messageLength={}",
                 Integer.toHexString(scopedUserId.hashCode()), request.conversationId(), decision.taskId(), decision.action(), decision.reason(),
                 latest.map(task -> task.status().name()).orElse("NONE"),
@@ -93,6 +92,17 @@ public class PptApplicationService {
                 yield create(userId, request.conversationId(), request.message(), request.idempotencyKey());
             }
         };
+    }
+
+    /** 需求会话先只读取路由决定；CREATE 分支可在真正建任务前插入预检。 */
+    public PptMessageRouter.Decision routeMessage(String userId, PptMessageRequest request) {
+        return router.route(latestTask(userId, request.conversationId()), request.message());
+    }
+
+    private Optional<PptTask> latestTask(String userId, String conversationId) {
+        String scopedUserId = userId == null ? "legacy" : userId;
+        List<PptTask> tasks = generationService.describeConversation(scopedUserId, conversationId);
+        return tasks.stream().findFirst();
     }
 
     /** 旧 /create 的兼容入口；语义始终是显式新建，不再偷偷调用旧关键词识别器。 */

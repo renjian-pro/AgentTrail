@@ -765,7 +765,7 @@ Phase 5 迁移普通 Chat；Phase 6 把 DeepResearch 接入 Task 基础设施（
 3. 【业务层】MinIO 公开读二选一（§2.3）：接上已写好的 `presignedUrl()` 并撤掉 Caddy 公开路由，或者明确接受风险并删掉 `publicReadPolicy()`/`presignedUrl()` 两块死代码——不要停在"代码看着私有、部署实际公开"。
 4. 【观测审计层】CI 接入 Testcontainers 类 IT（§4.4）——新增 profile，立刻有回归保护。
 5. 【核心层】主 HikariCP 连接池显式调参、两个后台线程池的队列/大小改成可配置+有界（§1.5）——纯配置改动。
-6. 【核心层】`AgentLoopExecutor` 看门狗定时器改用 `.timeout(...)` 串联管道，同时把锁释放挪到调用方拿到异常之前（§1.4）——`ToolCallExecutor` 已有先例，照抄即可。计时测试当前不复现，但竞态代码原样，这一条不因此降级。
+6. 【核心层】`AgentLoopExecutor` 看门狗定时器改用 `.timeout(...)` 串联管道，同时把锁释放挪到调用方拿到异常之前（§1.4）——`ToolCallExecutor` 已有可复用模式。计时测试当前不复现，但竞态代码原样，这一条不因此降级。
 7. 【业务层】`GoldenCaseService` 去重、`ToolCallExecutor` 构造函数瘦身（§2.4）——低风险机械改动。
 8. 【监控层】补齐 Redis/PgVector/MinIO/DashScope 的 `HealthIndicator`（§3.3）。
 9. ~~【业务层】DeepResearch 补 `currentStep` 字段~~ ✅ 已完成（见 §2.7）。

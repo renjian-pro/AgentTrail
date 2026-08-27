@@ -52,7 +52,7 @@ private void scheduleRoundWatchdog(RunContext context, RoundState state, String 
 `subscription.isDisposed()` 已经是 `true` 就直接返回——**这个"发现已经晚了"的动作本身，就是
 泄漏在多轮对话下持续堆积的定时器/引用**。
 
-## 2. 先验证：`ToolCallExecutor` 的写法，和为什么不能直接照抄成 `.timeout(roundTimeout)`
+## 2. 先验证：`ToolCallExecutor` 的写法，和为什么不能直接改成 `.timeout(roundTimeout)`
 
 `ToolCallExecutor.java:133-155`：
 
@@ -78,7 +78,7 @@ List<ToolResponse> execute(List<ToolCall> toolCalls, Consumer<AgentStreamEvent> 
 }
 ```
 
-**关键区别，读代码才能发现，不能凭票面描述直接照抄**：`ToolCallExecutor` 这里的 `.timeout(...)`
+**关键区别，读代码才能发现，不能凭票面描述直接套用**：`ToolCallExecutor` 这里的 `.timeout(...)`
 挂在 `.collectList()` **之后**——`collectList()` 把多元素 `Flux<ToolResponse>` 折叠成**只发一次
 信号**的 `Mono<List<ToolResponse>>`。对只发一次终结信号的 `Mono`，`.timeout(Duration)` 等价于
 "从订阅到这一次信号之间不能超过 `Duration`"，天然就是绝对时钟语义。

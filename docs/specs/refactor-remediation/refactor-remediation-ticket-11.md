@@ -24,7 +24,7 @@
 
 版本交给 `spring-boot-dependencies` BOM 管不到（ArchUnit 不在 Spring Boot BOM 里），需要显式给
 一个版本号——写票时 ArchUnit 最新稳定线是 1.3.x，**开工前先查一次 Maven Central 确认当前可用的
-最新版本**，不要照抄这个数字。
+最新版本**，不要直接使用这个数字。
 
 新增测试类 `com.agenttrail.architecture.ArchitectureBaselineTest`（新包 `src/test/java/com/agenttrail/architecture/`），
 用 `ClassFileImporter` 扫描 `com.agenttrail` 全部产物类。**这一票的核心不是"让规则全绿"，是
@@ -155,7 +155,7 @@ private void logRuntimeProfileSummary(List<RegisteredModel> models, String defau
 tools=[web-search,chart] pause=false memory=false trace=true persistence=jdbc`——**先验证**：
 这个例子里 `model=deepseek-chat` 是文档给的示例值，当前生产装配的默认模型实际是 `qwen-plus`
 （见 `agentLoopExecutorFactory` 方法体第 282 行 `new AgentLoopExecutorFactory(models, "qwen-plus", ...)`），
-不要照抄文档示例值当作要断言的真实默认模型；日志字段可以按上面代码框架的取舍来（比如
+不要把文档示例值当作要断言的真实默认模型；日志字段可以按上面代码框架的取舍来（比如
 `persistence` 字段——`turnPersistenceHook` 目前只有 `JdbcSessionStore` 一种实现，不像
 `pause`/`memory`/`trace` 那样有"启用/不启用"的二态，是否要在摘要里单列一个恒定值字段，
 或者干脆不列，两种做法都合理，写票时不强制）。
@@ -171,14 +171,14 @@ tools=[web-search,chart] pause=false memory=false trace=true persistence=jdbc`�
 
 ## 3. HTTP 契约快照测试
 
-**先验证，这一步很重要**：Ticket 09 的原始设计假设"用现有 MockMvc/WebTestClient 风格照抄项目
-已有测试的写法"——实地核实后发现这个假设不成立。全仓库搜索 `MockMvc`/`WebTestClient` 命中的
+**先验证，这一步很重要**：Ticket 09 的原始设计假设“沿用项目现有 MockMvc/WebTestClient 风格和
+已有测试的写法”——实地核实后发现这个假设不成立。全仓库搜索 `MockMvc`/`WebTestClient` 命中的
 文件里没有一个是真正对 Controller 发起 HTTP 请求的用法，`web/controller` 下现有的四个测试
 （`AgentControllerTest`/`CapabilityControllersTest`/`DeepResearchTaskRegistryTest`/
 `FileUploadControllerTest`）全部走同一种模式：**mock 依赖 → 直接 `new` 出 Controller → 直接调用
 方法 → 断言返回的 DTO**，`SkillControllerTest` 的类注释把理由写得很明确——"权限校验是方法级 AOP
 注解，脱离 Spring 容器直接调用不会触发，这层测试只验证 controller 把请求正确转译成了对
-XxxManager 的调用"。这一票的契约快照测试**照抄这个既有约定，不引入 MockMvc**——引入一种全新的
+XxxManager 的调用”。这一票的契约快照测试**沿用这个既有约定，不引入 MockMvc**——引入一种全新的
 测试风格只为了五个快照测试，会和仓库里其余几十个 Controller/Service 测试的写法割裂，且要额外
 解决 Sa-Token 拦截器在无容器场景下怎么绕过的问题，本身就是这套既有约定已经解决掉的问题。
 
