@@ -1,26 +1,36 @@
 # 文档索引
 
-这份索引是唯一入口——新建文档前先看这里有没有已经该放的地方，避免"想到什么就开一个新文件"。
+这里仅保留理解、运行和评审 AgentTrail 所需的当前文档。历史审计、施工票据和内部材料不作为当前事实来源。
 
-| 文档 | 角色 | 何时更新 | 状态 |
-|---|---|---|---|
-| [`requirements.md`](requirements.md) | **文档级别最高**：做什么/为什么/明确不做什么、目标函数、验收标准、Out of Scope | 目标或优先级变化时 | 活文档 |
-| [`../CONTEXT.md`](../CONTEXT.md) | 领域术语表，只放术语和边界 | 引入新概念时 | 活文档 |
-| [`architecture.md`](architecture.md) | 架构图 + 代码目录结构 | 分层/包结构变化时 | 活文档 |
-| [`roadmap.md`](roadmap.md) | **实施计划**（从属于 `requirements.md`）：阶段划分、技术决策、依赖关系、设计证据映射。与需求文档冲突时以需求文档为准 | 阶段完成/范围调整/技术决策变化时 | 活文档 |
-| [`engineering-pitfalls-and-highlights.md`](engineering-pitfalls-and-highlights.md) | 踩坑点/亮点清单，`roadmap.md` 里的 `#N` 都指向这里 | 实现中发现新坑位/新亮点时追加编号 | 活文档 |
-| [`interview-narrative.md`](interview-narrative.md) | 面试叙事三条主线 + demo/工程落地对照表 | 有新的可讲素材时 | 活文档 |
-| [`adr/`](adr) | 架构决策记录（谁推翻了谁、为什么） | 做出不可逆的架构选择时新增一份，不修改旧的 | 只增不改 |
-| [`specs/`](specs) | 涉及范围较大的新功能 spec（问题/方案/用户故事/实现决策/测试决策/范围外），`to-spec` 技能同一套模板；发 GitHub issue 前的书面留痕，issue 化之后本文件继续作为可读版本维护 | 新 spec 或 spec 状态变化时 | 活文档 |
-| [`validation-report.md`](validation-report.md) | 一次性工程审查快照 | 结论被新证据推翻时 | **已归档** |
-| [`../AGENTS.md`](../AGENTS.md) | 工程技能配置入口（`/to-spec`/`/to-tickets`/`/triage` 等读取的三份配置指针） | 切换 issue tracker/triage 词汇/文档布局时 | 活文档 |
-| [`agents/issue-tracker.md`](agents/issue-tracker.md) | Issue tracker 配置：GitHub，`gh` CLI 操作约定 | 切换 tracker 时 | 活文档 |
-| [`agents/triage-labels.md`](agents/triage-labels.md) | 五个标准 triage 标签到本仓库实际标签的映射 | 标签体系变化时 | 活文档 |
-| [`agents/domain.md`](agents/domain.md) | 工程技能消费本仓库领域文档的规则（含不暴露迁移融合的规则） | 领域文档布局变化时 | 活文档 |
+## 当前文档
 
-## 文档写作规则
+| 文档 | 作用 | 更新条件 |
+|---|---|---|
+| [需求与边界](requirements.md) | 产品目标、现有能力、非功能要求和明确边界 | 范围或验收口径变化 |
+| [架构说明](architecture.md) | 当前分层、主要链路、状态与存储模型 | 代码分层或主链路变化 |
+| [配置说明](configuration.md) | 本地配置、密钥和部署覆盖方式 | 配置键或部署方式变化 |
+| [路线图](roadmap.md) | 已完成基线和候选后续工作 | 阶段完成或优先级变化 |
+| [工程案例](engineering-pitfalls-and-highlights.md) | 已验证的问题、修复与防回归证据 | 出现可复用工程结论 |
+| [领域术语](../CONTEXT.md) | Runtime、Capability Pack、Tool、Skill、Hook 等统一词汇 | 引入或调整领域概念 |
+| [ADR](adr/) | 已作出的架构决策及其理由 | 出现新的不可逆决策 |
 
-1. **先查这张表，缺口应该并进现有文档，而不是新开文件。** 只有出现全新的文档类型（比如 ADR、比如运维手册）才新建。
-2. **`requirements.md` 是唯一的需求来源，`roadmap.md` 是唯一的计划来源。** 不要在别的地方（issue、注释、临时笔记）另起一份互相不同步的需求或计划。两者冲突时以 `requirements.md` 为准，并且要回头修正 `roadmap.md`，不能让两边各说各话。
-3. **ADR 只增不改**：决策被推翻时新增一份 ADR 说明"为什么推翻"，旧 ADR 打上 `superseded-by` 标记，不删除、不覆写。
-4. **文档只陈述 AgentTrail 自身的设计与可复核证据。** 不记录私人素材库、本机绝对路径、历史项目名或来源导向的叙述。需要引用时，仅引用必要的公开标准、官方文档、项目内 ADR、代码、测试和基准结果。
+## 设计摘要
+
+- [Runtime 与工具执行](design/runtime.md)
+- [数据分析与权限](design/analytics.md)
+- [PPT 与深度研究工作流](design/workflows.md)
+- [安全、可观测性与评测](design/security-observability.md)
+
+## 工程协作配置
+
+- [Issue tracker](agents/issue-tracker.md)
+- [Triage 标签](agents/triage-labels.md)
+- [领域文档消费规则](agents/domain.md)
+
+## 写作规则
+
+1. “当前状态”必须能由代码、测试、配置或已关闭的交付记录复核。
+2. 日期快照不得冒充活文档；一次性审计和失败报告放入本地 `.local-docs/`。
+3. 已解决问题写成“问题—修复—回归证据”，不继续使用“待实现”描述。
+4. ADR 只增不改；决策被推翻时新增 ADR 并标记替代关系。
+5. 不记录私人素材、本机绝对路径、真实密钥或来源导向的叙述。

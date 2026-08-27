@@ -1,50 +1,20 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+工程任务开始前按需读取以下当前文档：
 
-## Before exploring, read these
+- `CONTEXT.md`：领域词汇和边界；
+- `docs/requirements.md`：产品范围和验收口径；
+- `docs/architecture.md`：当前分层与主链路；
+- `docs/roadmap.md`：仍在计划中的工作；
+- `docs/engineering-pitfalls-and-highlights.md`：已经验证的工程案例；
+- `docs/adr/`：与改动相关的架构决策。
 
-- **`CONTEXT.md`** at the repo root
-- **`docs/adr/`** — read ADRs that touch the area you're about to work in
-- **`docs/roadmap.md`** — the execution-level plan (phases, tech decisions, dependency graph); read it alongside `CONTEXT.md`/ADRs when the work touches sequencing or scope
-- **`docs/engineering-pitfalls-and-highlights.md`** — numbered pitfall/highlight entries cross-referenced by `#N` from the roadmap; check it when implementing anything the roadmap flags with a number
+仓库是单 Maven 模块，不使用 `CONTEXT-MAP.md`。
 
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
+## 写入规则
 
-## File structure
-
-Single-context repo:
-
-```
-/
-├── CONTEXT.md
-├── docs/
-│   ├── README.md              ← doc index: what each file is for, when to update it
-│   ├── architecture.md
-│   ├── roadmap.md
-│   ├── engineering-pitfalls-and-highlights.md
-│   ├── interview-narrative.md
-│   ├── validation-report.md   ← internal-only, not for external display
-│   └── adr/
-│       ├── 0001-runtime-scope-and-stack.md
-│       └── 0002-hand-rolled-loop-as-v1-mainline.md
-└── src/
-```
-
-This repo is single-context (single Maven module, no monorepo signals) — no `CONTEXT-MAP.md`.
-
-## Use the glossary's vocabulary
-
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `CONTEXT.md` (Runtime / Capability Pack / Tool / Skill / Hook / LlmClient / Gateway). Don't drift to synonyms the glossary explicitly avoids.
-
-If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
-
-## Flag ADR conflicts
-
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
-
-> _Contradicts ADR-0002 (hand-rolled loop as V1 mainline) — but worth reopening because…_
-
-## Disclosure rule for anything written in this repo
-
-This repo's code and its externally-visible docs (`architecture.md`, `roadmap.md`, ADRs, `engineering-pitfalls-and-highlights.md`, `interview-narrative.md`) must read as solo original work — never write "ported from X" or name a specific other personal repo as a source of literal code reuse. "I studied a real production-shaped framework's source + design rationale, then independently designed and implemented my own version" is fine and expected; naming the specific other repo/module as where code was moved from is not. `validation-report.md` is the one exception — it's explicitly internal-only and not subject to this rule.
+1. 使用 `CONTEXT.md` 中的 Runtime、Capability Pack、Tool、Skill、Hook 等术语。
+2. 如果方案与 ADR 冲突，显式指出冲突并新增 ADR，不静默覆盖旧决策。
+3. 当前状态必须回到代码、测试或配置验证，不能从旧审计和旧票据复制。
+4. 公开文档不记录私人素材、本机路径、私有准备话术、内部来源或未脱敏凭据。
+5. 调研、失败快照和施工过程材料写入本机 `.local-docs/`，不要强制加入 Git。

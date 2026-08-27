@@ -2,7 +2,7 @@
 
 ## Local-only documentation and publication constraint (global)
 
-- All research notes, wiki imports, interview materials, architecture documents, and related artifacts must remain local to this workspace by default.
+- Research notes, internal planning, private preparation materials, architecture drafts, archived audits, and related working artifacts must remain local to this workspace by default. Curated current documentation may be tracked when it follows `docs/README.md`.
 - Do not publish, upload, push, open a public PR/issue, or sync these materials to any external service unless the user explicitly authorizes that specific action.
 - Do not call GitHub/remote publishing workflows as a normal completion step. If external publication is requested later, confirm the exact files and destination first.
 - Treat credentials, API keys, database passwords, tokens, personal data, and copied private-source content as local-sensitive material. Never include them in public artifacts; recommend rotation/removal when discovered.

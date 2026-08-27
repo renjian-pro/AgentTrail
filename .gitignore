@@ -17,6 +17,7 @@ src/main/resources/application.yaml
 application-local.yml
 secrets.properties
 .local-backup/
+.local-docs/
 .env
 .env.*
 !.env.example

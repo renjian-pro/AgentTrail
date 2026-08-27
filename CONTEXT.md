@@ -22,10 +22,10 @@ Runtime 可调用的单个原子动作，带名称、描述、参数契约。模
 
 Runtime 生命周期上的拦截点（如工具执行前后、会话开始结束、预算检查），承载权限门禁、审计、熔断、降级。治理逻辑只能放在 Hook/代码层，不依赖模型自觉。
 
-## LlmClient（模型接入口）
+## 模型接入口
 
-Runtime 与模型之间的唯一边界接口。当前实现直连 DeepSeek；将来替换为指向独立网关服务的实现，调用方不感知。
+Runtime 当前直接消费 Spring AI `ChatModel`，所有文本生成链路统一读取 `agenttrail.model.id`。供应商地址和凭据由 Spring AI OpenAI-compatible 客户端配置承载；多模态、向量和文生图模型保持独立配置。
 
 ## Gateway（网关）
 
-未来独立部署的模型调用治理服务（路由、Fallback、预算、审计）。不属于 Runtime 的一部分；Runtime 通过 LlmClient 消费它。
+未来可独立部署的模型调用治理服务（路由、Fallback、预算、审计）。它不属于 Runtime；若引入，应在 `ChatModel` 适配边界后接入，使 Capability Pack 不感知供应商变化。

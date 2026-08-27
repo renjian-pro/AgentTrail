@@ -30,7 +30,8 @@ git check-ignore -v application-local.yml
 
 不需要在 YAML 中写 `${同名环境变量:默认值}`。Spring 会把属性名转换为环境变量名，例如：
 
-- `spring.ai.deepseek.api-key` → `SPRING_AI_DEEPSEEK_API_KEY`
+- `spring.ai.openai.api-key` → `SPRING_AI_OPENAI_API_KEY`
+- `agenttrail.model.id` → `AGENTTRAIL_MODEL_ID`
 - `agenttrail.minio.access-key` → `AGENTTRAIL_MINIO_ACCESS_KEY`
 - `spring.datasource.url` → `SPRING_DATASOURCE_URL`
 
@@ -38,7 +39,7 @@ git check-ignore -v application-local.yml
 
 按实际启用的能力填写：
 
-- 模型：`spring.ai.deepseek.api-key`、`spring.ai.openai.api-key`
+- 文本模型：`spring.ai.openai.api-key`，模型名由 `agenttrail.model.id` 统一指定
 - 搜索：`tavily.api-key`
 - MySQL：`spring.datasource.url/username/password`
 - PgVector：`agenttrail.pgvector.url/username/password`
