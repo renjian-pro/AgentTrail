@@ -79,9 +79,9 @@ sa-token:
   is-read-header: true
   is-read-cookie: false
   is-read-body: false
-  # 默认不配置就是 Sa-Token 自带的 2592000 秒（30 天）——token 存在浏览器 localStorage 里，
-  # 意味着登录一次一个月内重新打开都不会看到登录页。改成 3 天（259200 秒）更合理。
-  timeout: 259200
+  # 默认不配置就是 Sa-Token 自带的 2592000 秒（30 天）。本项目令牌仅保留 30 分钟，
+  # 以缩短浏览器 localStorage 中凭据泄露后的可用窗口。
+  timeout: 1800
 
 tavily:
   mcp-url: https://mcp.tavily.com/mcp/
